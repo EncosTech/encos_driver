@@ -1,0 +1,29 @@
+{
+    "cmake.testEnvironment": {
+        "ENCOS_PLUGIN_PATH": "${workspaceFolder}/build/plugins"
+    },
+    "cmake.environment": {
+        "ENCOS_PLUGIN_PATH": "${workspaceFolder}/build/plugins"
+    },
+    "cmake.ctestArgs": [
+        "--output-on-failure"
+    ],
+    "cmake.configureArgs": [
+        "-DENCOS_BUILD_TESTS=ON",
+        "-DENCOS_ENABLE_TRACY=ON"
+    ],
+    "chat.tools.terminal.autoApprove": {
+        "git rev-parse": true
+    },
+    "editor.fontFamily": "Maple Mono NF CN",
+    "editor.fontLigatures": true,
+    "VSCodeCounter.exclude": [
+        "**/.gitignore",
+        "**/.vscode/**",
+        "**/node_modules/**",
+        "**/external/**",
+        "**/.claude/**",
+        "**/.agents/**",
+        "**/.codex/**",
+    ]
+}

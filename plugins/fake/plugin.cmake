@@ -1,0 +1,12 @@
+function(encos_fake_check out_available out_reason)
+    set(${out_available} TRUE PARENT_SCOPE)
+    set(${out_reason} "" PARENT_SCOPE)
+endfunction()
+
+set(ENCOS_PLUGIN_CHECK_FUNCTION encos_fake_check)
+set(ENCOS_PLUGIN_ADAPTER_TYPE "Fake")
+set(ENCOS_PLUGIN_DYNAMIC_TARGET "FakePlugin")
+set(ENCOS_PLUGIN_STATIC_TARGET "FakeAdapterSupport")
+set(ENCOS_PLUGIN_STATIC_HEADER "fake/fake_adapter.h")
+set(ENCOS_PLUGIN_STATIC_FACTORY "encos::CreateFakeAdapterStatic")
+set(ENCOS_PLUGIN_VISIBLE OFF)

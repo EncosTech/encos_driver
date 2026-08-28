@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    participant U as 用户代码
+    participant M as Motor 类
+    participant D as 电机
+
+    U->>M: 持有 Motor
+
+    loop 每一轮控制流程
+        U->>M: 发送控制指令
+        M->>D: 下发报文
+        D-->>M: 返回状态
+        Note over M: 写缓存\nlife_cycle = max
+
+        U->>M: GetStatus(deduction)
+        M-->>U: 返回缓存状态
+        Note over M: life_cycle -= deduction
+
+        alt life_cycle > 0
+            Note over U,M: 缓存仍有效
+            U->>M: 继续控制/记录
+        else life_cycle <= 0
+            Note over M: 删除缓存
+            Note over U,M: 后续读取返回 nullopt
+            Note over M,D: 等待新状态并重置生命周期
+        end
+    end

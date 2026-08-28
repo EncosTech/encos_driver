@@ -1,0 +1,45 @@
+{
+  "name": "@encos/encos-driver",
+  "version": "0.0.0-development",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/index.js",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://git.in.encos.cn/api/packages/packages/npm/"
+  },
+  "scripts": {
+    "clean": "rm -rf dist *.tgz",
+    "sync-version": "node ./scripts/sync-version.mjs",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "copy:wasm": "node ./scripts/copy-wasm-artifacts.mjs",
+    "build": "pnpm run sync-version && pnpm run clean && pnpm run build:ts && pnpm run copy:wasm",
+    "test": "bash ../scripts/test-wasm.sh",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "setup:browsers": "playwright install chromium",
+    "test:browser": "playwright test --config playwright.config.ts",
+    "pack:check": "pnpm run sync-version && node ./scripts/pack-staging.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0",
+    "@types/node": "^25.9.3",
+    "@types/ws": "^8.18.1",
+    "playwright": "^1.61.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  }
+}

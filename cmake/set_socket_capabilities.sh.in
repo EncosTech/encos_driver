@@ -1,0 +1,58 @@
+#!/bin/bash
+# Unified script to set capabilities on a plugin executable
+# Usage: set_<plugin>_capabilities.sh <install_prefix>
+
+set -e
+
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <install_prefix>" >&2
+    exit 1
+fi
+
+INSTALL_PREFIX="$1"
+PLUGIN_DIR="${INSTALL_PREFIX}/@ENCOS_PLUGIN_INSTALL_LIBDIR@"
+
+# This placeholder must be provided by CMake's configure_file.
+# `PLUGIN_EXECUTABLE_BASENAME` is required; do not provide a fallback here.
+PLUGIN_EXECUTABLE_BASENAME="@PLUGIN_EXECUTABLE_BASENAME@"
+
+if [ -z "${PLUGIN_EXECUTABLE_BASENAME}" ] || [[ "${PLUGIN_EXECUTABLE_BASENAME}" == @* ]]; then
+    echo "Error: PLUGIN_EXECUTABLE_BASENAME must be set by configure_file." >&2
+    echo "Please ensure CMake calls: set(PLUGIN_EXECUTABLE_BASENAME \"<name>\") and configure_file(...)" >&2
+    exit 2
+fi
+
+EXECUTABLE="${PLUGIN_DIR}/${PLUGIN_EXECUTABLE_BASENAME}"
+
+set_capability() {
+    local exe_path="$1"
+    
+    if [ ! -f "${exe_path}" ]; then
+        return 1
+    fi
+    
+    echo "Setting capabilities on ${exe_path}"
+    
+    if ! command -v setcap >/dev/null 2>&1; then
+        echo "Warning: setcap command not found. Please install libcap2-bin package." >&2
+        echo "Then run: sudo setcap cap_net_raw,cap_net_admin+ep ${exe_path}" >&2
+        return 2
+    fi
+    
+    if setcap cap_net_raw,cap_net_admin+ep "${exe_path}" 2>&1; then
+        echo "Successfully set capabilities on ${exe_path}"
+        return 0
+    else
+        echo "Warning: Failed to set capabilities on ${exe_path}" >&2
+        echo "You may need to run: sudo setcap cap_net_raw,cap_net_admin+ep ${exe_path}" >&2
+        return 3
+    fi
+}
+
+if [ ! -f "${EXECUTABLE}" ]; then
+    echo "Warning: ${PLUGIN_EXECUTABLE_BASENAME} not found in ${PLUGIN_DIR}" >&2
+    exit 1
+fi
+
+set_capability "${EXECUTABLE}"
+exit $?

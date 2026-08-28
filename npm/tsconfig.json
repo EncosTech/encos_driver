@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "paths": {
+      "@encos/encos-driver": ["src/index.ts"],
+      "ws": ["node_modules/@types/ws/index.d.ts"],
+      "vite": ["node_modules/vite/dist/node/index.d.ts"],
+      "vitest": ["node_modules/vitest/dist/index.d.ts"]
+    },
+    "types": ["node", "vitest/globals", "@playwright/test"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "../tests/wasm-node/**/*.ts",
+    "tests/browser/**/*.ts",
+    "playwright.config.ts",
+    "vitest.config.ts"
+  ]
+}

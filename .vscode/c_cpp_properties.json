@@ -1,0 +1,32 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/external/zmpqq/src",
+                "${workspaceFolder}/external/SOEM",
+                "${workspaceFolder}/external/SOEM/include"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/include",
+                    "${workspaceFolder}/src",
+                    "${workspaceFolder}/external/zmpqq/src",
+                    "${workspaceFolder}/external/SOEM",
+                    "${workspaceFolder}/external/SOEM/include"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "compilerPath": "/usr/bin/g++",
+            "intelliSenseMode": "linux-gcc-x64",
+            "cppStandard": "c++17",
+            "cStandard": "c17",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "configurationProvider": "ms-vscode.cmake-tools"
+        }
+    ],
+    "version": 4
+}

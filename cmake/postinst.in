@@ -1,0 +1,50 @@
+#!/bin/bash
+# postinst script for encosmotordriver
+
+set -e
+
+case "$1" in
+    configure)
+        # Set capabilities on EthercatPluginExecutable using unified script
+        SCRIPT_DIR="@CPACK_PACKAGING_INSTALL_PREFIX@/@ENCOS_PLUGIN_INSTALL_LIBDIR@"
+        SETCAP_SCRIPT1="${SCRIPT_DIR}/set_ethercat_capabilities.sh"
+        SETCAP_SCRIPT2="${SCRIPT_DIR}/set_socketcan_capabilities.sh"
+        PRIORITY_CAP_SCRIPT="${SCRIPT_DIR}/set_thread_priority_capability.sh"
+        
+        if [ -f "${SETCAP_SCRIPT1}" ]; then
+            "${SETCAP_SCRIPT1}" "@CPACK_PACKAGING_INSTALL_PREFIX@" || true
+        else
+            echo "Warning: Capability setting script not found at ${SETCAP_SCRIPT1}" >&2
+            echo "Please manually run: sudo setcap cap_net_raw,cap_net_admin+ep @CPACK_PACKAGING_INSTALL_PREFIX@/@ENCOS_PLUGIN_INSTALL_LIBDIR@/EthercatPluginExecutable" >&2
+        fi
+        if [ -f "${SETCAP_SCRIPT2}" ]; then
+            "${SETCAP_SCRIPT2}" "@CPACK_PACKAGING_INSTALL_PREFIX@" || true
+        else
+            echo "Warning: Capability setting script not found at ${SETCAP_SCRIPT2}" >&2
+            echo "Please manually run: sudo setcap cap_net_raw,cap_net_admin+ep @CPACK_PACKAGING_INSTALL_PREFIX@/@ENCOS_PLUGIN_INSTALL_LIBDIR@/CanExecutable" >&2
+        fi
+        if [ -f "${PRIORITY_CAP_SCRIPT}" ]; then
+            "${PRIORITY_CAP_SCRIPT}" "@CPACK_PACKAGING_INSTALL_PREFIX@" || true
+        else
+            echo "Warning: Thread priority capability script not found at ${PRIORITY_CAP_SCRIPT}" >&2
+            echo "GUI authorization will remain available at runtime." >&2
+        fi
+
+        # Refresh dynamic linker cache so newly installed libraries are found
+        if command -v ldconfig >/dev/null 2>&1; then
+            ldconfig || true
+        else
+            echo "Warning: ldconfig not found, skipping linker cache refresh" >&2
+        fi
+        ;;
+    
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

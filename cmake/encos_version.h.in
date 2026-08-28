@@ -1,0 +1,3 @@
+#pragma once
+
+#define ENCOS_PROJECT_VERSION "@PROJECT_VERSION@"

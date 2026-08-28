@@ -1,0 +1,26 @@
+#!/bin/bash
+
+set -e
+
+# 本脚本仅为 ThreadPriorityHelper 授予 CAP_SYS_NICE，使其能够提升目标线程的
+# SCHED_FIFO 优先级。调用 SetCurrentThreadPriority() 的进程仍需自行通过 mlockall()
+# 锁定内存页，因此该进程通常还需要 CAP_IPC_LOCK（或 unlimited 的 RLIMIT_MEMLOCK）。
+
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <install_prefix>" >&2
+    exit 1
+fi
+
+helper="$1/@ENCOS_PLUGIN_INSTALL_LIBDIR@/ThreadPriorityHelper"
+if [ ! -f "${helper}" ]; then
+    echo "Warning: ThreadPriorityHelper not found at ${helper}" >&2
+    exit 1
+fi
+if ! command -v setcap >/dev/null 2>&1; then
+    echo "Warning: setcap not found; install libcap2-bin or authorize through the GUI." >&2
+    exit 2
+fi
+if ! setcap cap_sys_nice=ep "${helper}"; then
+    echo "Warning: unable to grant cap_sys_nice to ${helper}; GUI authorization remains available." >&2
+    exit 3
+fi

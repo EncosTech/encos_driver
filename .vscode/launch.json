@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach to Process (gdb)",
+      "type": "cppdbg",
+      "request": "attach",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "processId": "${command:pickProcess}",
+      "program": "${workspaceFolder}/build/EncosMotorDriverBench",
+      "cwd": "${workspaceFolder}",
+      "logging": { "trace": true, "engineLogging": false }
+    },
+    {
+      "name": "Attach to Process (lldb)",
+      "type": "cppdbg",
+      "request": "attach",
+      "MIMode": "lldb",
+      "processId": "${command:pickProcess}",
+      "program": "${workspaceFolder}/build/EncosMotorDriverBench",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
