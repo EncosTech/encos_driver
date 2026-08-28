@@ -1,0 +1,13 @@
+example_soem is licensed under the GNU General Public License version 3.
+
+This program uses and links against the Simple Open EtherCAT Master (SOEM)
+library in `external/SOEM`. SOEM is distributed under the GNU General Public
+License version 3, with an alternative commercial license available from its
+authors. Because this example uses the GPLv3 SOEM library, this example program
+is distributed under GPLv3 as well.
+
+The full GNU GPLv3 license text is available from:
+
+    https://www.gnu.org/licenses/gpl-3.0.txt
+
+SPDX-License-Identifier: GPL-3.0-only
