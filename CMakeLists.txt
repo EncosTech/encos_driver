@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(encos_driver VERSION 3.2.0)
+project(encos_driver VERSION 3.2.1)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
@@ -18,6 +18,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(ENCOS_BUILD_TESTS "Build EncosMotorDriver tests" OFF)
+option(ENCOS_BUILD_DOCS "Build EncosDriver LaTeX API documentation" OFF)
 option(ENCOS_ENABLE_RELAY "Build WebSocket relay support" ON)
 option(ENCOS_ENABLE_TSAN "Run Port concurrency tests with ThreadSanitizer" OFF)
 option(ENCOS_ENABLE_TRACY "Enable Tracy performance profiling" OFF)
@@ -101,6 +102,117 @@ endif()
 
 if(CLANG_TIDY_BIN STREQUAL "CLANG_TIDY_BIN-NOTFOUND")
     set_property(TARGET tidy PROPERTY EXCLUDE_FROM_ALL TRUE)
+endif()
+
+if(ENCOS_BUILD_DOCS)
+    find_package(Doxygen REQUIRED)
+
+    set(ENCOS_DOXYGEN_TEMPLATE_DIRECTORY
+        "${CMAKE_CURRENT_BINARY_DIR}/docs/doxygen-templates")
+    file(MAKE_DIRECTORY "${ENCOS_DOXYGEN_TEMPLATE_DIRECTORY}")
+    set(ENCOS_DOXYGEN_LATEX_HEADER
+        "${ENCOS_DOXYGEN_TEMPLATE_DIRECTORY}/header.tex")
+    execute_process(
+        COMMAND "${DOXYGEN_EXECUTABLE}" -w latex
+                "${ENCOS_DOXYGEN_LATEX_HEADER}"
+                "${ENCOS_DOXYGEN_TEMPLATE_DIRECTORY}/footer.tex"
+                "${ENCOS_DOXYGEN_TEMPLATE_DIRECTORY}/doxygen.sty"
+        RESULT_VARIABLE ENCOS_DOXYGEN_TEMPLATE_RESULT
+        ERROR_VARIABLE ENCOS_DOXYGEN_TEMPLATE_ERROR
+    )
+    if(NOT ENCOS_DOXYGEN_TEMPLATE_RESULT EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to generate Doxygen LaTeX template: "
+            "${ENCOS_DOXYGEN_TEMPLATE_ERROR}")
+    endif()
+    file(READ "${ENCOS_DOXYGEN_LATEX_HEADER}" ENCOS_DOXYGEN_LATEX_HEADER_CONTENT)
+    string(REPLACE
+        "\\documentclass[twoside]{book}"
+        "\\documentclass[twoside,openany]{book}"
+        ENCOS_DOXYGEN_LATEX_HEADER_CONTENT
+        "${ENCOS_DOXYGEN_LATEX_HEADER_CONTENT}"
+    )
+    string(REPLACE
+        "$generatedby Doxygen $doxygenversion"
+        "南京因克斯智能科技有限公司"
+        ENCOS_DOXYGEN_LATEX_HEADER_CONTENT
+        "${ENCOS_DOXYGEN_LATEX_HEADER_CONTENT}"
+    )
+    string(REPLACE
+        "$generatedby Doxygen "
+        "南京因克斯智能科技有限公司 "
+        ENCOS_DOXYGEN_LATEX_HEADER_CONTENT
+        "${ENCOS_DOXYGEN_LATEX_HEADER_CONTENT}"
+    )
+    string(REPLACE
+        "{\\Large $title}\\\\"
+        "{\\Large EncosDriver API文档}\\\\"
+        ENCOS_DOXYGEN_LATEX_HEADER_CONTENT
+        "${ENCOS_DOXYGEN_LATEX_HEADER_CONTENT}"
+    )
+    string(FIND "${ENCOS_DOXYGEN_LATEX_HEADER_CONTENT}"
+        "\\documentclass[twoside,openany]{book}"
+        ENCOS_DOXYGEN_OPENANY_POSITION)
+    string(FIND "${ENCOS_DOXYGEN_LATEX_HEADER_CONTENT}"
+        "南京因克斯智能科技有限公司"
+        ENCOS_DOXYGEN_COMPANY_POSITION)
+    string(FIND "${ENCOS_DOXYGEN_LATEX_HEADER_CONTENT}"
+        "{\\Large EncosDriver API文档}\\\\"
+        ENCOS_DOXYGEN_TITLE_POSITION)
+    if(ENCOS_DOXYGEN_OPENANY_POSITION EQUAL -1 OR
+       ENCOS_DOXYGEN_COMPANY_POSITION EQUAL -1 OR
+       ENCOS_DOXYGEN_TITLE_POSITION EQUAL -1)
+        message(FATAL_ERROR
+            "The installed Doxygen LaTeX template is incompatible with the "
+            "EncosDriver documentation customizations")
+    endif()
+    file(WRITE "${ENCOS_DOXYGEN_LATEX_HEADER}"
+        "${ENCOS_DOXYGEN_LATEX_HEADER_CONTENT}")
+
+    file(GLOB_RECURSE ENCOS_PUBLIC_HEADERS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
+    )
+
+    set(DOXYGEN_PROJECT_NAME "EncosDriver")
+    set(DOXYGEN_PROJECT_NUMBER "${PROJECT_VERSION}")
+    set(DOXYGEN_PROJECT_BRIEF "Encos 电机控制 C++17 库")
+    set(DOXYGEN_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/docs")
+    set(DOXYGEN_OUTPUT_LANGUAGE Chinese)
+    set(DOXYGEN_INPUT_ENCODING UTF-8)
+    set(DOXYGEN_GENERATE_HTML NO)
+    set(DOXYGEN_GENERATE_LATEX YES)
+    set(DOXYGEN_GENERATE_RTF NO)
+    set(DOXYGEN_GENERATE_XML NO)
+    set(DOXYGEN_GENERATE_MAN NO)
+    set(DOXYGEN_LATEX_OUTPUT latex)
+    set(DOXYGEN_LATEX_HEADER "${ENCOS_DOXYGEN_LATEX_HEADER}")
+    set(DOXYGEN_USE_PDFLATEX YES)
+    set(DOXYGEN_PDF_HYPERLINKS YES)
+    set(DOXYGEN_PAPER_TYPE a4)
+    set(DOXYGEN_LATEX_BATCHMODE YES)
+    set(DOXYGEN_EXTRACT_ALL NO)
+    set(DOXYGEN_EXTRACT_PRIVATE NO)
+    set(DOXYGEN_EXTRACT_STATIC NO)
+    set(DOXYGEN_MARKDOWN_SUPPORT YES)
+    set(DOXYGEN_VERBATIM_HEADERS NO)
+    set(DOXYGEN_FULL_PATH_NAMES NO)
+    set(DOXYGEN_STRIP_FROM_PATH "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(DOXYGEN_ENABLE_PREPROCESSING YES)
+    set(DOXYGEN_MACRO_EXPANSION YES)
+    set(DOXYGEN_EXPAND_ONLY_PREDEF YES)
+    set(DOXYGEN_PREDEFINED
+        "ENCOS_API="
+        "ENCOS_BASE_API="
+    )
+    set(DOXYGEN_WARN_IF_DOC_ERROR YES)
+    set(DOXYGEN_WARN_IF_UNDOCUMENTED YES)
+
+    doxygen_add_docs(
+        docs-latex
+        ${ENCOS_PUBLIC_HEADERS}
+        COMMENT "Generating EncosDriver LaTeX API documentation"
+    )
 endif()
 
 if(ENCOS_ENABLE_SPDLOG AND NOT TARGET spdlog)
@@ -466,37 +578,11 @@ if(ENCOS_ENABLE_INSTALL)
         INCLUDES DESTINATION include
     )
 
-    install(FILES include/encos/export.h DESTINATION include/encos)
-    install(FILES include/encos/driver_manager.h DESTINATION include/encos)
-    install(FILES include/encos/encos_driver.h DESTINATION include/encos)
-    install(FILES include/encos_motor.h DESTINATION include/encos)
-    install(FILES include/adapter/base_adapter.h
-                   include/adapter/fake_adapter_control.h
-             DESTINATION include/encos/adapter)
-    install(FILES include/battery/battery.h DESTINATION include/encos/battery)
-    install(FILES include/bus/bus.h DESTINATION include/encos/bus)
-    install(FILES include/glove/glove.h DESTINATION include/encos/glove)
-    install(FILES include/imu/imu.h DESTINATION include/encos/imu)
-    install(FILES include/pms/pms.h DESTINATION include/encos/pms)
-    install(FILES
-        include/platform/delay.h
-        include/platform/log.h
-        include/platform/os.h
-        include/platform/sync.h
-        DESTINATION include/encos/platform
-    )
-    install(FILES
-        include/motor/motor.h
-        include/motor/types.h
-        ${MOTOR_MODEL_GENERATED_HEADER}
-        DESTINATION include/encos/motor
-    )
-    install(FILES include/relay/relay_frame.h DESTINATION include/encos/relay)
-    install(FILES
-        include/utils/log_writer.h
-        include/utils/port.h
-        include/utils/thread_priority.h
-        DESTINATION include/encos/utils
+    install(DIRECTORY include/
+        DESTINATION include/encos
+        FILES_MATCHING
+            PATTERN "*.h"
+            PATTERN "*.hpp"
     )
     if(TARGET ThreadPriorityHelper)
         install(TARGETS ThreadPriorityHelper

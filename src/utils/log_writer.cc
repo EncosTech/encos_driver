@@ -147,15 +147,6 @@ public:
               Run();
           }) {}
 
-    ~LogWriteWorker() {
-        {
-            platform::LockGuard<platform::Mutex> lock(mutex_);
-            stopping_ = true;
-        }
-        cv_.notify_one();
-        thread_.join();
-    }
-
     std::uint64_t Submit(const std::shared_ptr<LogWriterState>& state, std::vector<std::byte> data,
                          bool flush) {
         std::uint64_t sequence = 0;
@@ -165,9 +156,6 @@ public:
         }
         {
             platform::LockGuard<platform::Mutex> lock(mutex_);
-            if (stopping_) {
-                throw std::runtime_error("Log writer worker is stopping");
-            }
             tasks_.push_back({state, std::move(data), sequence, flush});
         }
         cv_.notify_one();
@@ -181,11 +169,8 @@ private:
             {
                 platform::UniqueLock<platform::Mutex> lock(mutex_);
                 cv_.wait(lock, [this]() {
-                    return stopping_ || !tasks_.empty();
+                    return !tasks_.empty();
                 });
-                if (stopping_ && tasks_.empty()) {
-                    return;
-                }
                 task = std::move(tasks_.front());
                 tasks_.pop_front();
             }
@@ -240,13 +225,13 @@ private:
     platform::Mutex mutex_;
     std::condition_variable_any cv_;
     std::deque<LogWriteTask> tasks_;
-    bool stopping_ = false;
     std::thread thread_;
 };
 
 LogWriteWorker& Worker() {
-    static LogWriteWorker worker;
-    return worker;
+    // 电机日志在进程级管理器析构时仍会提交最终刷盘任务。
+    static auto* const worker = new LogWriteWorker();
+    return *worker;
 }
 
 void WaitFor(const std::shared_ptr<LogWriterState>& state, std::uint64_t sequence) {

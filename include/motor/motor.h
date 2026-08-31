@@ -239,8 +239,9 @@ public:
      * 速度为 rad/s，电流为 A，温度为摄氏度。
      */
     template <int FeedbackType>
-    auto PVTControl(float kp, float kd, float pos, float spd,
-                    float torque) -> std::conditional_t<FeedbackType == 0, void, MotorFeedbackMsg1>;
+    std::conditional_t<FeedbackType == 0, void, MotorFeedbackMsg1> PVTControl(float kp, float kd,
+                                                                              float pos, float spd,
+                                                                              float torque);
 
     /**
      * @brief 位置控制命令
@@ -250,42 +251,46 @@ public:
      * @param position 目标位置（rad）
      * @param speed 最大速度（rad/s）
      * @param current 最大电流（A）
+     * @param feedback 请求的反馈类型；默认与 FeedbackType 一致
      * @return 参见 @tparam 描述
      */
     template <int FeedbackType>
-    auto PosControl(float position, float speed, float current, int feedback = FeedbackType)
-        -> std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>>;
+    std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>> PosControl(
+        float position, float speed, float current, int feedback = FeedbackType);
 
     /**
      * @brief 速度控制命令
      * @tparam FeedbackType 反馈行为参见 `PosControl`
      * @param speed 目标速度（rad/s）
      * @param current 最大电流（A）
+     * @param feedback 请求的反馈类型；默认与 FeedbackType 一致
      * @return 参见 `PosControl`
      */
     template <int FeedbackType>
-    auto SpdControl(float speed, float current, int feedback = FeedbackType)
-        -> std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>>;
+    std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>> SpdControl(
+        float speed, float current, int feedback = FeedbackType);
 
     /**
      * @brief 电流控制命令
      * @tparam FeedbackType 反馈行为参见 `PosControl`
      * @param current 目标电流（A）
+     * @param feedback 请求的反馈类型；默认与 FeedbackType 一致
      * @return 参见 `PosControl`
      */
     template <int FeedbackType>
-    auto CurControl(float current, int feedback = FeedbackType)
-        -> std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>>;
+    std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>> CurControl(
+        float current, int feedback = FeedbackType);
 
     /**
      * @brief 扭矩控制命令
      * @tparam FeedbackType 反馈行为参见 `PosControl`
      * @param torque 目标扭矩（Nm）
+     * @param feedback 请求的反馈类型；默认与 FeedbackType 一致
      * @return 参见 `PosControl`
      */
     template <int FeedbackType>
-    auto TorControl(float torque, int feedback = FeedbackType)
-        -> std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>>;
+    std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>> TorControl(
+        float torque, int feedback = FeedbackType);
 
     /**
      * @brief 使用选定的模式使电机刹车
@@ -295,11 +300,12 @@ public:
      *             - `MotorStopMode::DynamicBrake` 能耗制动模式，此时电流为刹车过程最大电流
      *             - `MotorStopMode::RegenerativeBrake` 再生制动模式，此时电流为刹车过程最大电流
      * @param current 停止/制动期间使用的最大电流（A）
+     * @param feedback 请求的反馈类型；默认与 FeedbackType 一致
      * @return 参见 `PosControl`
      */
     template <int FeedbackType>
-    auto Stop(MotorStopMode mode, float current, int feedback = FeedbackType)
-        -> std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>>;
+    std::conditional_t<FeedbackType == 0, void, FeedbackStruct<FeedbackType>> Stop(
+        MotorStopMode mode, float current, int feedback = FeedbackType);
 
     /**
      * @brief 启用或禁用刹车抱闸

@@ -11,10 +11,21 @@
 
 namespace encos {
 
-enum class MotorStopMode { FullBrake = 2, DynamicBrake = 3, RegenerativeBrake = 4 };
+/** @brief 电机停止方式 */
+enum class MotorStopMode {
+    FullBrake = 2,         ///< 全制动
+    DynamicBrake = 3,      ///< 动态制动
+    RegenerativeBrake = 4  ///< 回馈制动
+};
 
-enum class MotorCommunicationMode : uint8_t { ClassicCan = 0x00, CanFd = 0x01, CanOpen = 0x02 };
+/** @brief 电机通信协议模式 */
+enum class MotorCommunicationMode : uint8_t {
+    ClassicCan = 0x00,  ///< 经典 CAN
+    CanFd = 0x01,       ///< CAN FD
+    CanOpen = 0x02      ///< CANopen
+};
 
+/** @brief 可读取或设置的电机参数标识 */
 enum class MotorParameter : uint8_t {
     Position = 1,
     Speed,
@@ -42,14 +53,16 @@ enum class MotorParameter : uint8_t {
 };
 
 #pragma pack(push, 1)
+/** @brief 总线传输使用的紧凑 CAN 消息 */
 struct MotorPackMsg {
-    uint32_t id;
-    uint8_t frame_flags{0};
-    uint8_t len;
-    uint8_t data[8];
+    uint32_t id;             ///< CAN 标识符
+    uint8_t frame_flags{0};  ///< 帧格式标志，见 `kCanFrameFlag*`
+    uint8_t len;             ///< 有效载荷长度
+    uint8_t data[8];         ///< 有效载荷字节
 };
 #pragma pack(pop)
 
+/** @brief 判断两条紧凑 CAN 消息是否完全相同 */
 inline bool operator==(const MotorPackMsg& lhs, const MotorPackMsg& rhs) {
     return lhs.id == rhs.id && lhs.frame_flags == rhs.frame_flags && lhs.len == rhs.len &&
            std::memcmp(lhs.data, rhs.data, sizeof(lhs.data)) == 0;
@@ -57,76 +70,90 @@ inline bool operator==(const MotorPackMsg& lhs, const MotorPackMsg& rhs) {
 
 static_assert(sizeof(MotorPackMsg) == 14, "MotorPackMsg size changed");
 
-constexpr uint8_t kCanFrameFlagEff = 0x01;
-constexpr uint8_t kCanFrameFlagFdBit1 = 0x02;
-constexpr uint8_t kCanFrameFlagFdBit2 = 0x04;
-constexpr uint8_t kCanFrameFlagRtr = 0x08;
-constexpr uint8_t kCanFrameFlagMask = 0x0F;
-constexpr uint8_t kCanFrameFlagFdMask = kCanFrameFlagFdBit1 | kCanFrameFlagFdBit2;
+constexpr uint8_t kCanFrameFlagEff = 0x01;     ///< 扩展帧标识符标志
+constexpr uint8_t kCanFrameFlagFdBit1 = 0x02;  ///< CAN FD 标志位 1
+constexpr uint8_t kCanFrameFlagFdBit2 = 0x04;  ///< CAN FD 标志位 2
+constexpr uint8_t kCanFrameFlagRtr = 0x08;     ///< 远程请求帧标志
+constexpr uint8_t kCanFrameFlagMask = 0x0F;    ///< 已定义帧标志掩码
+constexpr uint8_t kCanFrameFlagFdMask =
+    kCanFrameFlagFdBit1 | kCanFrameFlagFdBit2;  ///< CAN FD 组合标志掩码
 
+/** @brief 丢弃未定义的 CAN 帧标志位 */
 inline uint8_t SanitizeCanFrameFlags(uint8_t flags) {
     return static_cast<uint8_t>(flags & kCanFrameFlagMask);
 }
 
+/** @brief 判断帧标志是否指定扩展 CAN 标识符 */
 inline bool CanFrameFlagsUseExtendedId(uint8_t flags) {
     return (SanitizeCanFrameFlags(flags) & kCanFrameFlagEff) != 0;
 }
 
+/** @brief 判断帧标志是否指定远程请求帧 */
 inline bool CanFrameFlagsUseRtr(uint8_t flags) {
     return (SanitizeCanFrameFlags(flags) & kCanFrameFlagRtr) != 0;
 }
 
+/** @brief 判断帧标志是否指定 CAN FD */
 inline bool CanFrameFlagsUseCanFd(uint8_t flags) {
     return (SanitizeCanFrameFlags(flags) & kCanFrameFlagFdMask) == kCanFrameFlagFdMask;
 }
 
+/** @brief 判断 CAN FD 的两个组合标志位是否一致 */
 inline bool CanFrameFlagsHaveValidCanFdBits(uint8_t flags) {
     const uint8_t fd_bits =
         static_cast<uint8_t>(SanitizeCanFrameFlags(flags) & kCanFrameFlagFdMask);
     return fd_bits == 0 || fd_bits == kCanFrameFlagFdMask;
 }
 
+/** @brief 带总线索引的电机消息 */
 struct MotorMessage {
-    int bus_idx;
-    MotorPackMsg data;
+    int bus_idx;        ///< 总线索引
+    MotorPackMsg data;  ///< CAN 消息内容
 };
 
+/** @brief 电机消息列表 */
 using MotorMessages = std::vector<MotorMessage>;
 
+/** @brief 数值范围 */
 template <typename T>
 struct Range {
-    T min;
-    T max;
+    T min;  ///< 最小值
+    T max;  ///< 最大值
 };
 
+/** @brief PI 控制器增益 */
 template <typename T>
 struct KpKi {
-    T kp;
-    T ki;
+    T kp;  ///< 比例增益
+    T ki;  ///< 积分增益
 };
 
+/** @brief PD 控制器增益 */
 template <typename T>
 struct KpKd {
-    T kp;
-    T kd;
+    T kp;  ///< 比例增益
+    T kd;  ///< 微分增益
 };
 
+/** @brief 固件语义版本号 */
 struct Version {
-    uint8_t major;
-    uint8_t minor;
-    uint8_t patch;
+    uint8_t major;  ///< 主版本号
+    uint8_t minor;  ///< 次版本号
+    uint8_t patch;  ///< 修订号
 };
 
+/** @brief 指定电机型号的 PVT 控制范围与转矩常数 */
 struct MotorPVTRanges {
-    Range<float> kp;
-    Range<float> kd;
-    Range<float> position;
-    Range<float> speed;
-    Range<float> torque;
-    Range<float> current;
-    float kt;
+    Range<float> kp;        ///< 比例增益范围
+    Range<float> kd;        ///< 微分增益范围
+    Range<float> position;  ///< 位置范围（rad）
+    Range<float> speed;     ///< 速度范围（rad/s）
+    Range<float> torque;    ///< 转矩范围（N·m）
+    Range<float> current;   ///< 电流范围（A）
+    float kt;               ///< 转矩常数（N·m/A）
 };
 
+/** @brief 电机反馈错误状态 */
 enum class MotorError : uint8_t {
     NoError = 0,
     OverTemperature = 1,
@@ -140,36 +167,42 @@ enum class MotorError : uint8_t {
     NoResponse = 255
 };
 
+/** @brief 反馈类型 1：完整运动与温度状态 */
 struct MotorFeedbackMsg1 {
-    MotorError error = MotorError::NoResponse;
-    float position = std::numeric_limits<float>::quiet_NaN();
-    float speed = std::numeric_limits<float>::quiet_NaN();
-    float current = std::numeric_limits<float>::quiet_NaN();
-    float motor_temperature = std::numeric_limits<float>::quiet_NaN();
-    float mos_temperature = std::numeric_limits<float>::quiet_NaN();
+    MotorError error = MotorError::NoResponse;                          ///< 错误状态
+    float position = std::numeric_limits<float>::quiet_NaN();           ///< 位置（rad）
+    float speed = std::numeric_limits<float>::quiet_NaN();              ///< 速度（rad/s）
+    float current = std::numeric_limits<float>::quiet_NaN();            ///< 电流（A）
+    float motor_temperature = std::numeric_limits<float>::quiet_NaN();  ///< 电机温度（°C）
+    float mos_temperature = std::numeric_limits<float>::quiet_NaN();    ///< MOS 温度（°C）
 };
 
+/** @brief 反馈类型 2：位置、电流与电机温度 */
 struct MotorFeedbackMsg2 {
-    MotorError error = MotorError::NoResponse;
-    float position;
-    float current;
-    float motor_temperature;
+    MotorError error = MotorError::NoResponse;  ///< 错误状态
+    float position;                             ///< 位置（rad）
+    float current;                              ///< 电流（A）
+    float motor_temperature;                    ///< 电机温度（°C）
 };
 
+/** @brief 反馈类型 3：速度、电流与电机温度 */
 struct MotorFeedbackMsg3 {
-    MotorError error = MotorError::NoResponse;
-    float speed;
-    float current;
-    float motor_temperature;
+    MotorError error = MotorError::NoResponse;  ///< 错误状态
+    float speed;                                ///< 速度（rad/s）
+    float current;                              ///< 电流（A）
+    float motor_temperature;                    ///< 电机温度（°C）
 };
 
+/** @brief 默认的完整电机状态类型 */
 using MotorStatus = MotorFeedbackMsg1;
 
+/** @brief 根据反馈编号选择对应反馈结构 */
 template <int FeedbackType>
 using FeedbackStruct =
     std::conditional_t<FeedbackType == 1, MotorFeedbackMsg1,
                        std::conditional_t<FeedbackType == 2, MotorFeedbackMsg2, MotorFeedbackMsg3>>;
 
+/** @cond INTERNAL */
 template <MotorParameter T>
 struct MotorParameterTraits {
     using RawType = void;
@@ -319,5 +352,6 @@ using MotorParameterRawType = typename MotorParameterTraits<T>::RawType;
 
 template <MotorParameter T>
 using MotorParameterRetType = typename MotorParameterTraits<T>::RetType;
+/** @endcond */
 
 }  // namespace encos

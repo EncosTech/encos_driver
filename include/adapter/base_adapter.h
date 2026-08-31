@@ -172,6 +172,12 @@ public:
     void SetOnStatus(int bus_idx, int motor_idx, std::function<void(const MotorStatus&)> callback);
 
 protected:
+    /**
+     * @brief 构造适配器基类
+     * @param interface_name 传输接口名称
+     * @param logger_name 日志记录器名称
+     * @param log_level 日志过滤级别
+     */
     BaseAdapter(const std::string& interface_name, const std::string& logger_name,
                 LogLevel log_level = LogLevel::Info);
 
@@ -207,6 +213,7 @@ protected:
      */
     virtual void SendSynchronized(const MotorMessages& messages);
 
+    /** @brief 获取该适配器使用的日志记录器 */
     LoggerPtr Logger() const;
 
     /**
@@ -252,6 +259,7 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+/** @brief 非拥有型适配器指针，生命周期由 EncosDriverManager 管理 */
 using BaseAdapterPtr = BaseAdapter*;
 
 }  // namespace encos

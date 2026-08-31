@@ -21,6 +21,7 @@
 namespace encos {
 namespace detail {
 
+/** @cond INTERNAL */
 struct LogWriterState;
 
 ENCOS_BASE_API std::shared_ptr<LogWriterState> CreateLogWriterState(const std::string& base_name);
@@ -109,6 +110,7 @@ inline void AppendBytes(std::vector<std::byte>& buffer, std::string_view text) {
     const auto* first = reinterpret_cast<const std::byte*>(text.data());
     buffer.insert(buffer.end(), first, first + text.size());
 }
+/** @endcond */
 
 }  // namespace detail
 
@@ -129,6 +131,7 @@ public:
         AppendRow(headers);
     }
 
+    /** @brief 刷新剩余数据并销毁写入器，后台错误仅报告而不抛出 */
     ~LogWriter() noexcept {
         try {
             flush();

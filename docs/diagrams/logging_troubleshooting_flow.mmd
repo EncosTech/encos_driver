@@ -1,0 +1,33 @@
+%%{init: {"htmlLabels": false, "flowchart": {"curve": "basis"}}}%%
+flowchart TB
+    Start(["开始排查日志问题"]) --> Adapter{"Adapter 是否构造成功？"}
+
+    Adapter -->|"否"| Init["检查插件文件、依赖、接口、权限与 fd broker"]
+    Init --> Retry["修复后重新创建 Adapter"]
+    Retry --> Adapter
+
+    Adapter -->|"是"| Operational{"接口或 EtherCAT master\n是否 operational？"}
+    Operational -->|"否"| Link["检查物理链路、CAN 时序、PDO、\n从站状态与实时线程"]
+    Link --> Operational
+
+    Operational -->|"是"| Loss{"是否出现丢帧、坏 WKC、\n未知 Bus 或队列过载？"}
+    Loss -->|"是"| Load["降低负载并修复映射、周期或链路"]
+    Load --> Loss
+
+    Loss -->|"否"| Command{"命令日志是否存在预期 type\n和实际限幅后目标值？"}
+    Command -->|"否"| CommandFix["检查业务调用、日志分段、\n父目录、磁盘和 Port 覆盖"]
+    CommandFix --> Command
+
+    Command -->|"是"| Status{"状态日志是否在合理延迟内变化，\nerror 是否为 0？"}
+    Status -->|"否或异常"| Capture["结合原始总线抓包，定位发送、\n链路与设备响应"]
+    Status -->|"是"| Control["检查控制参数、机械系统和\n上层状态使用方式"]
+
+    Capture --> End(["形成故障结论与处置记录"])
+    Control --> End
+
+    classDef decision fill:#fff4d6,stroke:#b9770e,color:#17202a;
+    classDef action fill:#e8f4ff,stroke:#2474a6,color:#17202a;
+    classDef terminal fill:#eafaf1,stroke:#1e8449,color:#17202a;
+    class Adapter,Operational,Loss,Command,Status decision;
+    class Init,Retry,Link,Load,CommandFix,Capture,Control action;
+    class Start,End terminal;

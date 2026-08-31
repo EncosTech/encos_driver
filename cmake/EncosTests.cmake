@@ -199,6 +199,21 @@ function(encos_configure_tests)
     add_test(NAME EncosManagerShutdownContainsCleanupExceptions
              COMMAND EncosManagerShutdownThrowTest)
 
+    add_executable(EncosMotorLogShutdownTest
+        tests/core/motor_log_shutdown_test.cc
+    )
+    target_include_directories(EncosMotorLogShutdownTest PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(EncosMotorLogShutdownTest PRIVATE
+        ${ENCOS_DRIVER_BASE_TARGET}
+        ${ENCOS_ZSTD_TARGET}
+    )
+    add_test(NAME EncosMotorLogShutdownFlushes
+             COMMAND EncosMotorLogShutdownTest)
+    set_tests_properties(EncosMotorLogShutdownFlushes PROPERTIES TIMEOUT 3)
+
     get_property(_plugin_test_sources GLOBAL PROPERTY _ENCOS_PLUGIN_TEST_SOURCES)
     get_property(_plugin_test_libraries GLOBAL PROPERTY _ENCOS_PLUGIN_TEST_LIBRARIES)
     get_property(_plugin_test_include_directories GLOBAL

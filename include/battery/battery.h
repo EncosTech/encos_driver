@@ -16,6 +16,7 @@ class Bus;
 class EncosDriverManager;
 class DeviceStatusTestAccess;
 
+/** @brief 电池电量、电压及充放电能力状态 */
 struct BatteryState {
     bool is_master;                  /**< 是否为主电池 */
     float soc;                       /**< 电池剩余电量百分比（值域 0-1） */
@@ -24,6 +25,7 @@ struct BatteryState {
     float allowed_charge_current;    /**< 允许充电电流（单位：A） */
 };
 
+/** @brief 电池温度与充放电电流状态 */
 struct BatteryTemp {
     float battery;           /**< 电芯温度（单位：°C） */
     float mos;               /**< 主MOS温度（单位：°C） */
@@ -31,6 +33,7 @@ struct BatteryTemp {
     float charge_current;    /**< 当前充电电流（单位：A） */
 };
 
+/** @brief 电池故障位集合 */
 struct BatteryError {
     bool could_not_charge;      /**< 无法充电错误 */
     bool could_not_discharge;   /**< 无法放电错误 */
@@ -45,6 +48,7 @@ struct BatteryError {
     bool charger_fault;         /**< 充电器故障 */
     bool comm_timeout;          /**< 通信超时错误 */
 
+    /** @brief 判断是否存在任一故障 */
     bool AnyError() const {
         return could_not_charge || could_not_discharge || low_battery || over_current_steady ||
                over_current_peak || over_current_charge || battery_over_temp || mos_over_temp ||
@@ -52,6 +56,7 @@ struct BatteryError {
     }
 };
 
+/** @brief BMS 主动上报的控制状态位 */
 struct BatteryActiveCommands {
     bool shutdown_request;         /**< 关机请求 */
     bool discharge_request;        /**< 放电请求 */
@@ -61,6 +66,7 @@ struct BatteryActiveCommands {
     bool mos_status;               /**< MOS 状态 */
 };
 
+/** @brief 要发送给 BMS 的被动控制命令位 */
 struct BatteryPassiveCommands {
     bool allow_shutdown = false;             /**< 允许关机 */
     bool allow_discharge = false;            /**< 允许放电 */
@@ -74,6 +80,7 @@ struct BatteryPassiveCommands {
     bool debug = false;                      /**< 调试输出 */
 };
 
+/** @brief 电池各类状态帧的最新聚合结果 */
 struct BatteryStatus {
     std::optional<BatteryState> state;                    /**< 电池状态数据 */
     std::optional<BatteryTemp> temp;                      /**< 电池温度与电流数据 */

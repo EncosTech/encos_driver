@@ -1,0 +1,30 @@
+%%{init: {"htmlLabels": false}}%%
+flowchart TB
+    App["用户控制程序"]
+
+    subgraph Core["EncosDriver 核心库"]
+        API["公开 API 与 EncosDriverManager\n对象生命周期和注册"]
+        Device["设备控制层\nMotor / Battery / IMU / PMS"]
+        Bus["Bus 层\n逻辑总线、扫描、聚合"]
+        Route["统一消息层\nCAN ID + 属性 + 长度 + 8 字节数据"]
+        Adapter["BaseAdapter\n发送接口、批次提交、接收入口"]
+    end
+
+    subgraph Plugins["传输插件层：CAN 包装"]
+        EC["EtherCAT 插件\nCAN 数据报封装到周期 PDO 槽位"]
+        USB["UsbSerial 插件\nCAN 数据报封装到串口帧"]
+    end
+
+    subgraph Links["物理链路与设备"]
+        ECGW["EtherCAT-CAN 网关"]
+        USBCAN["USB-CAN 设备"]
+        CANBus["标准 CAN Bus"]
+        Motors["电机与其他 CAN 设备"]
+    end
+
+    App --> API --> Device --> Bus --> Route --> Adapter
+    Adapter --> EC --> ECGW --> CANBus
+    Adapter --> USB --> USBCAN --> CANBus
+    CANBus --> Motors
+
+    Motors -. "反馈反向回传并按 Bus + CAN ID 路由" .-> Adapter

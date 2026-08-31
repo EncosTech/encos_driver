@@ -8,6 +8,7 @@
 
 namespace encos {
 
+/** @brief 受支持的电机型号 */
 enum class MotorModel {
     EC_A2806_P2,
     EC_A2806_P2_72V,
@@ -72,10 +73,18 @@ enum class MotorModel {
 };
 
 struct MotorPVTRanges;
+/**
+ * @brief 获取指定电机型号的 PVT 控制范围
+ * @param model 电机型号
+ * @return 该型号的 PVT 控制范围与转矩常数
+ */
 ENCOS_BASE_API MotorPVTRanges GetMotorModelRanges(MotorModel model);
 
+/** @brief 将型号名称转换为枚举，未知名称会抛出 std::invalid_argument */
 ENCOS_BASE_API MotorModel StringToMotorModel(const std::string& str);
+/** @brief 将电机型号枚举转换为静态字符串 */
 ENCOS_BASE_API const char* MotorModelToString(MotorModel model);
+/** @brief 获取全部受支持的电机型号名称 */
 ENCOS_BASE_API std::vector<const char*> GetAllMotorModelStrings();
 
 }  // namespace encos

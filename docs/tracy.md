@@ -1,6 +1,6 @@
 # Tracy 性能分析指南
 
-本文介绍如何采集并分析 EncosMotorDriver 的主线程与 EtherCAT 周期线程性能数据。
+本文介绍如何采集并分析 EncosDriver 的主线程与 EtherCAT 周期线程性能数据。
 
 ## 1. 构建带 Tracy 的库
 
@@ -34,7 +34,7 @@ cmake --build external/tracy/profiler/build -j
 ### 2.2 Wayland 兼容性问题
 
 若编译 `BackendWayland.cpp` 时提示 `wl_display_dispatch_timeout` 未声明，说明系统的
-Wayland 开发库版本不足。无需修改 EncosMotorDriver 或 Tracy 源码，可改用 X11/GLFW 后端：
+Wayland 开发库版本不足。无需修改 EncosDriver 或 Tracy 源码，可改用 X11/GLFW 后端：
 
 ```bash
 cmake -S external/tracy/profiler -B external/tracy/profiler/build-x11 \

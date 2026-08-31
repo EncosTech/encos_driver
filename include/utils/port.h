@@ -359,6 +359,7 @@ class Port final : public BasePort, private Instrumentation {
     static_assert(std::is_trivially_copyable_v<Message>, "Port message must be trivially copyable");
 
 public:
+    /** @brief 消息发布完成后在生产者线程调用的回调 */
     using Callback = std::function<void(const Message&)>;
 
     /**
@@ -545,6 +546,7 @@ private:
 
 namespace detail {
 
+/** @cond INTERNAL */
 template <std::size_t Len, typename Message, typename Instrumentation>
 class PortTestAccess {
 public:
@@ -642,6 +644,7 @@ public:
         return reinterpret_cast<std::uintptr_t>(&port.consumer_sequence_);
     }
 };
+/** @endcond */
 
 }  // namespace detail
 

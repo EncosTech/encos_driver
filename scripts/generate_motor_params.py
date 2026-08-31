@@ -24,6 +24,7 @@ def generate_header(models, csv_sha1):
         "",
         "namespace encos {",
         "",
+        "/** @brief 受支持的电机型号 */",
         "enum class MotorModel {",
     ]
     for row in models:
@@ -31,10 +32,18 @@ def generate_header(models, csv_sha1):
     lines.append("};")
     lines.append("")
     lines.append("struct MotorPVTRanges;")
+    lines.append("/**")
+    lines.append(" * @brief 获取指定电机型号的 PVT 控制范围")
+    lines.append(" * @param model 电机型号")
+    lines.append(" * @return 该型号的 PVT 控制范围与转矩常数")
+    lines.append(" */")
     lines.append("ENCOS_BASE_API MotorPVTRanges GetMotorModelRanges(MotorModel model);")
     lines.append("")
+    lines.append("/** @brief 将型号名称转换为枚举，未知名称会抛出 std::invalid_argument */")
     lines.append("ENCOS_BASE_API MotorModel StringToMotorModel(const std::string& str);")
+    lines.append("/** @brief 将电机型号枚举转换为静态字符串 */")
     lines.append("ENCOS_BASE_API const char* MotorModelToString(MotorModel model);")
+    lines.append("/** @brief 获取全部受支持的电机型号名称 */")
     lines.append("ENCOS_BASE_API std::vector<const char*> GetAllMotorModelStrings();")
     lines.append("")
     lines.append("}  // namespace encos")

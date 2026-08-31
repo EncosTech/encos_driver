@@ -1,6 +1,6 @@
 # 构建说明
 
-本文档说明 EncosMotorDriver 当前支持的构建模式，以及常用 CMake 参数的含义。
+本文档说明 EncosDriver 当前支持的构建模式，以及常用 CMake 参数的含义。
 
 ## 依赖
 
@@ -27,7 +27,7 @@ sudo apt-get install -y libgtest-dev libgmock-dev python3
 
 ## 动态插件模式
 
-动态插件模式是 Linux 原生构建的默认工作方式。主库 `EncosMotorDriver` 负责加载运行期插件，插件会构建为独立 `.so` 文件并放在构建目录的 `plugins/` 下。
+动态插件模式是 Linux 原生构建的默认工作方式。主库 `EncosDriver` 负责加载运行期插件，插件会构建为独立 `.so` 文件并放在构建目录的 `plugins/` 下。
 
 ```bash
 cmake -S . -B build
@@ -194,6 +194,49 @@ cmake --build build-test --target tidy
 
 > `bench` / `stress` 工具已合并到 `motor_cli` 的 `emcli bench` 和 `emcli stress` 命令。请参阅 `motor_cli` 仓库的文档。
 
+## LaTeX API 文档
+
+公开 API 头文件统一位于 `include/`。安装 Doxygen 后，可通过可选目标生成 LaTeX API 文档：
+
+```bash
+cmake -S . -B build-docs -DENCOS_BUILD_DOCS=ON
+cmake --build build-docs --target docs-latex
+```
+
+生成的 LaTeX 源文件位于 `build-docs/docs/latex/`。文档目标默认关闭，普通库构建不依赖 Doxygen 或 LaTeX。
+
+如需进一步编译 PDF，Ubuntu 可安装以下工具链：
+
+```bash
+sudo apt-get install -y \
+  doxygen graphviz ghostscript make pandoc librsvg2-bin fonts-noto-cjk \
+  texlive-latex-base texlive-latex-recommended texlive-latex-extra \
+  texlive-fonts-recommended texlive-lang-chinese texlive-xetex
+```
+
+其中 `graphviz` 用于生成关系图，`texlive-lang-chinese` 提供中文 LaTeX 支持；只导出 `.tex` 而不编译 PDF 时不需要安装 TeX Live。生成 LaTeX 后，可用 Doxygen 写入输出目录的 Makefile 编译 PDF：
+
+```bash
+cmake --build build-docs --target docs-latex
+make -C build-docs/docs/latex pdf
+```
+
+PDF 位于 `build-docs/docs/latex/refman.pdf`。
+
+也可以使用仓库脚本一次生成 API、架构设计、版本变更记录和使用指南四份 PDF：
+
+```bash
+./scripts/build-docs.sh
+```
+
+输出文件为 `docs/dist/api.pdf`、`docs/dist/arch.pdf`、`docs/dist/changes.pdf` 和
+`docs/dist/using_guide.pdf`。脚本使用 Pandoc 和 XeLaTeX 编译 Markdown，默认中文字体为
+`Noto Serif CJK SC`，等宽字体为 `Noto Sans Mono CJK SC`；可通过
+`PANDOC_CJK_MAINFONT`、`PANDOC_MONOFONT` 和 `PANDOC_PDF_ENGINE` 环境变量覆盖。
+构建目录和输出目录也可分别通过 `ENCOS_DOCS_BUILD_DIR`、`ENCOS_DOCS_DIST_DIR` 覆盖。
+代码块使用 Tango 语法高亮和浅灰蓝背景，背景色定义位于
+`docs/pandoc/code-blocks.tex`。
+
 ## 关闭 spdlog
 
 如果目标环境不方便安装 `spdlog` 和 `fmt`，可以关闭 spdlog 后端：
@@ -321,6 +364,7 @@ CMake 会通过 `cmake/FindIGHEtherCAT.cmake` 查找：
 | `CMAKE_BUILD_TYPE` | 未指定时设为 `Release` | 单配置生成器的构建类型。常用值为 `Debug`、`Release`、`RelWithDebInfo`。 |
 | `CMAKE_INSTALL_PREFIX` | CMake 默认值，常用 `/usr/local` | 安装前缀。安装模式和 DEB 打包都会使用它。 |
 | `ENCOS_BUILD_TESTS` | `OFF` | 构建 GoogleTest 测试目标，并注册 CTest。开启时要求 `ENCOS_ENABLE_PYTHON=ON`。 |
+| `ENCOS_BUILD_DOCS` | `OFF` | 增加 Doxygen `docs-latex` 目标，从 `include/` 生成 LaTeX API 文档。 |
 | `ENCOS_ENABLE_PYTHON` | `ON` | 启用 Python，用于刷新电机型号生成文件和运行相关配置测试。 |
 | `ENCOS_SKIP_GENERATED_SHA1_CHECK` | `OFF` | 当 `ENCOS_ENABLE_PYTHON=OFF` 时，跳过 CSV 与生成文件 SHA1 一致性检查。 |
 | `ENCOS_ENABLE_SPDLOG` | 原生构建 `ON`，Emscripten `OFF` | 是否使用 spdlog/fmt 日志后端。关闭后使用轻量 fallback logger。 |

@@ -1,6 +1,6 @@
 ## 项目概述
 
-EncosMotorDriver 是一个 C++17 电机控制库，支持多种通信协议（EtherCAT、CAN、USB-Serial），采用模块化插件架构。
+EncosDriver 是一个 C++17 电机控制库，支持多种通信协议（EtherCAT、CAN、USB-Serial），采用模块化插件架构。
 
 ## 构建命令
 
@@ -87,15 +87,15 @@ for (const auto& [idx, motor] : motors) {
 ## CMake 集成
 
 ```cmake
-find_package(EncosMotorDriver REQUIRED)
-target_link_libraries(your_target PRIVATE Encos::EncosMotorDriver)
+find_package(EncosDriver REQUIRED)
+target_link_libraries(your_target PRIVATE Encos::EncosDriver)
 ```
 
 ## 测试
 
 - 使用 Google Test 框架
 - 通过 `-DENCOS_BUILD_TESTS=ON` 启用
-- 测试可执行文件：`EncosMotorDriverBaseTests`、`EncosMotorDriverPluginsTests`
+- 测试可执行文件：`EncosDriverBaseTests`、`EncosDriverPluginsTests`
 - 真机 `bench`/`stress` 不属于本仓库的自动化测试流程
 
 ### 代码修改后的验证要求

@@ -1,0 +1,27 @@
+%%{init: {"htmlLabels": false, "flowchart": {"curve": "basis"}}}%%
+flowchart TB
+    Core["核心库"] --> Logger["具名 encos::Logger"]
+    Adapter["Adapter 插件"] --> Logger
+    Broker["fd broker 子进程"] --> ChildLogger["父记录器名.FdBroker"]
+    Internal["内部组件\nCanHandle / LogWriter"] --> FixedLogger["固定名称 Logger"]
+    ChildLogger --> Filter["LogLevel 过滤"]
+    FixedLogger --> Filter
+    Logger --> Filter
+
+    Filter --> Backend{"构建时选择日志后端"}
+    Backend -->|"原生默认"| Spdlog["spdlog 异步彩色标准输出"]
+    Backend -->|"原生关闭 spdlog"| Fallback["轻量标准输出与错误输出后端"]
+    Backend -->|"Emscripten"| Console["浏览器或 Node 控制台"]
+
+    Spdlog --> NativeFormat["时间 + 记录器名 + 级别 + 正文"]
+    Fallback --> FallbackFormat["级别 + 记录器名 + 正文"]
+    Console --> FallbackFormat
+
+    classDef source fill:#e8f4ff,stroke:#2474a6,color:#17202a;
+    classDef logger fill:#eafaf1,stroke:#1e8449,color:#17202a;
+    classDef backend fill:#fff4d6,stroke:#b9770e,color:#17202a;
+    classDef output fill:#f4ecf7,stroke:#7d3c98,color:#17202a;
+    class Core,Adapter,Broker,Internal source;
+    class Logger,ChildLogger,FixedLogger,Filter logger;
+    class Backend,Spdlog,Fallback,Console backend;
+    class NativeFormat,FallbackFormat output;

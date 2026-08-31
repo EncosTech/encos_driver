@@ -25,15 +25,6 @@ public:
               Run();
           }) {}
 
-    ~MotorLogWorker() {
-        {
-            platform::LockGuard<platform::Mutex> lock(mutex_);
-            stopping_ = true;
-        }
-        cv_.notify_all();
-        thread_.join();
-    }
-
     void Register(const std::shared_ptr<MotorLogSessionImpl>& session) {
         platform::LockGuard<platform::Mutex> lock(mutex_);
         sessions_.push_back(session);
@@ -55,13 +46,13 @@ private:
     platform::Mutex mutex_;
     std::condition_variable_any cv_;
     std::vector<std::shared_ptr<MotorLogSessionImpl>> sessions_;
-    bool stopping_ = false;
     std::thread thread_;
 };
 
 MotorLogWorker& Worker() {
-    static MotorLogWorker worker;
-    return worker;
+    // 管理器析构时仍需关闭电机日志，因此 worker 必须覆盖全部静态对象的析构阶段。
+    static auto* const worker = new MotorLogWorker();
+    return *worker;
 }
 
 }  // namespace
@@ -242,11 +233,8 @@ void MotorLogWorker::Run() noexcept {
         {
             platform::UniqueLock<platform::Mutex> lock(mutex_);
             cv_.wait_for(lock, std::chrono::milliseconds(1), [this]() {
-                return stopping_ || !sessions_.empty();
+                return !sessions_.empty();
             });
-            if (stopping_) {
-                return;
-            }
             sessions = sessions_;
         }
         for (const auto& session : sessions) {

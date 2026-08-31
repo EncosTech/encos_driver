@@ -1,0 +1,31 @@
+%%{init: {"htmlLabels": false, "flowchart": {"curve": "basis"}}}%%
+flowchart TB
+    subgraph Producer["实时生产路径"]
+        Command["电机控制调用"] -->|"定长命令记录"| CommandPort["命令 Port\n容量 1024 条"]
+        Status["有效状态反馈\n完成解码与过滤"] -->|"定长状态记录"| StatusPort["状态 Port\n容量 1024 条"]
+    end
+
+    CommandPort -->|"保留最新记录"| MotorWorker["进程级 MotorLogWorker\n排空所有活动会话"]
+    StatusPort -->|"保留最新记录"| MotorWorker
+
+    subgraph Session["每个 Motor 的独立日志会话"]
+        MotorWorker --> CommandWriter["命令 CSV 序列化器\n11 列"]
+        MotorWorker --> StatusWriter["状态 CSV 序列化器\n7 列"]
+        CommandWriter --> CommandBuffer["命令内存缓冲区"]
+        StatusWriter --> StatusBuffer["状态内存缓冲区"]
+    end
+
+    CommandBuffer -->|"达到 1 MiB 或关闭/刷新"| FileWorker["进程级 LogWriteWorker\nZstd 压缩与顺序写入"]
+    StatusBuffer -->|"达到 1 MiB 或关闭/刷新"| FileWorker
+
+    FileWorker --> CommandFile["base_command*.csv.zstd"]
+    FileWorker --> StatusFile["base_status*.csv.zstd"]
+
+    classDef producer fill:#e8f4ff,stroke:#2474a6,color:#17202a;
+    classDef queue fill:#fff4d6,stroke:#b9770e,color:#17202a;
+    classDef worker fill:#eafaf1,stroke:#1e8449,color:#17202a;
+    classDef file fill:#f4ecf7,stroke:#7d3c98,color:#17202a;
+    class Command,Status producer;
+    class CommandPort,StatusPort,CommandBuffer,StatusBuffer queue;
+    class MotorWorker,CommandWriter,StatusWriter,FileWorker worker;
+    class CommandFile,StatusFile file;

@@ -16,24 +16,28 @@ class Bus;
 class EncosDriverManager;
 class DeviceStatusTestAccess;
 
+/** @brief 三轴线加速度 */
 struct ImuAcceleration {
     float x; /**< X 轴加速度（单位：m/s^2） */
     float y; /**< Y 轴加速度（单位：m/s^2） */
     float z; /**< Z 轴加速度（单位：m/s^2） */
 };
 
+/** @brief 三轴角速度 */
 struct ImuAngularVelocity {
     float x; /**< X 轴角速度（单位：dps） */
     float y; /**< Y 轴角速度（单位：dps） */
     float z; /**< Z 轴角速度（单位：dps） */
 };
 
+/** @brief 欧拉角姿态 */
 struct ImuEulerAngle {
     float pitch;   /**< 俯仰角（单位：deg） */
     float roll;    /**< 横滚角（单位：deg） */
     float heading; /**< 航向角（单位：deg） */
 };
 
+/** @brief 四元数姿态 */
 struct ImuQuaternion {
     float qw; /**< 四元数 W 分量 */
     float qx; /**< 四元数 X 分量 */
@@ -41,6 +45,7 @@ struct ImuQuaternion {
     float qz; /**< 四元数 Z 分量 */
 };
 
+/** @brief IMU 各类状态帧的最新聚合结果 */
 struct ImuStatus {
     std::optional<ImuAcceleration> acceleration;        /**< 三轴加速度 */
     std::optional<ImuAngularVelocity> angular_velocity; /**< 三轴角速度 */

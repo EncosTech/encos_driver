@@ -19,3 +19,5 @@ npm/test-results/
 __pycache__
 imgui.ini
 *.tracy
+/scripts/.env
+/docs/dist/

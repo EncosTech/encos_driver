@@ -27,7 +27,7 @@ cmake -S . -B build -DENCOS_PLUGINS_BLACKLIST="usbSerial"
 外部插件可以通过 `add_emd_plugin` 在父 CMake 项目中注册。源码树模式下在 `add_subdirectory` 后调用：
 
 ```cmake
-add_subdirectory(EncosMotorDriver)
+add_subdirectory(EncosDriver)
 add_emd_plugin(my_adapter "${CMAKE_CURRENT_SOURCE_DIR}/my_adapter")
 ```
 
@@ -44,7 +44,7 @@ install(TARGETS my_adapterPlugin
 )
 ```
 
-> 安装后的 `add_emd_plugin` 仅用于动态外部插件。EncosMotorDriver 的静态模式不能安装，因此不存在安装后静态插件注册路径。
+> 安装后的 `add_emd_plugin` 仅用于动态外部插件。EncosDriver 的静态模式不能安装，因此不存在安装后静态插件注册路径。
 
 更多细节请参阅 [构建说明](docs/build.md)。
 

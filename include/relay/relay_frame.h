@@ -21,8 +21,8 @@ enum class RelayFrameType : uint8_t {
  * @brief EMR1 帧结构
  */
 struct RelayFrame {
-    RelayFrameType type;
-    std::vector<MotorMessage> records;
+    RelayFrameType type;                ///< 帧传输方向
+    std::vector<MotorMessage> records;  ///< 帧内消息记录
 };
 
 /**

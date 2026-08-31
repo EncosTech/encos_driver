@@ -48,11 +48,16 @@ class ENCOS_BASE_API EncosDriverManager {
 
 public:
     struct Impl;
+    /** @brief 创建适配器实例的工厂函数 */
     using AdapterFactory = std::function<BaseAdapter*()>;
+    /** @brief 向设备发送一帧消息的函数 */
     using DeviceWriteFunction = std::function<void(const MotorPackMsg&)>;
+    /** @brief 设备消息接收回调 */
     using ReceiveCallback = std::function<void(const MotorPackMsg&)>;
+    /** @brief 等待操作取消回调 */
     using CancellationCallback = std::function<void()>;
 
+    /** @cond INTERNAL */
     /** @brief 仅用于测试创建与父级删除竞争的对象发布阶段 */
     enum class CreationStage : std::uint8_t {
         BeforeBusPublish,
@@ -74,6 +79,7 @@ public:
     using DeviceInitializerHook = std::function<void(void*)>;
     using DeletionHook = std::function<void(DeletionStage)>;
     using MigrationHook = std::function<void(MigrationStage)>;
+    /** @endcond */
 
     /** @brief 获取进程级管理器单例 */
     static EncosDriverManager& Instance();

@@ -1,0 +1,35 @@
+%%{init: {"htmlLabels": false}}%%
+sequenceDiagram
+    autonumber
+    participant U as 用户程序
+    participant M as Motor
+    participant B as Bus
+    participant A as BaseAdapter
+    participant P as EtherCAT 或 UsbSerial 插件
+    participant D as CAN 电机
+
+    U->>M: 调用位置、速度、电流、扭矩或 PVT 控制
+    M->>M: 量程限制、单位换算、编码 CAN ID 和数据
+    M->>B: 提交 MotorPackMsg
+
+    alt 默认直接发送
+        B->>A: 立即提交
+    else 软同步模式
+        B->>B: 聚合待发消息
+        U->>B: Commit()
+        B->>A: 提交同步批次
+    end
+
+    A->>P: 发送 CAN 数据报
+    P->>P: 封装为 PDO 槽位或串口帧
+    P->>D: 经网关还原并发送标准 CAN 帧
+    D-->>P: CAN 反馈帧
+    P-->>A: 解封装为 MotorMessage
+    A-->>M: 按 Bus 和 CAN ID 路由
+    M->>M: 解码、过滤并更新状态缓存
+
+    alt 同步应答
+        M-->>U: 唤醒等待者并返回反馈
+    else 异步反馈
+        M-->>U: 状态回调或后续 GetStatus()
+    end

@@ -20,7 +20,7 @@
 | 组件 | 测试时版本 | 源码提交 |
 | --- | --- | --- |
 | `emcli`（`motor_cli`） | v1.9.7 | `432d7af` |
-| EncosMotorDriver / SOEM EtherCAT 插件 | v3.0.9 | `e60145e` |
+| EncosDriver / SOEM EtherCAT 插件 | v3.0.9 | `e60145e` |
 | 内置 SOEM | v2.0.0 | `785d7dd` |
 
 ## 3 ms 的时序推导

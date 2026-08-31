@@ -1,4 +1,4 @@
-EncosMotorDriver License Information
+EncosDriver License Information
 =====================================
 
 This package contains both open-source and proprietary components. Different parts 
@@ -77,8 +77,8 @@ PROPRIETARY COMPONENTS
 
 The following components are proprietary and closed-source:
 
-- EncosMotorDriver core library
-- EncosMotorDriverBase library
+- EncosDriver core library
+- EncosDriverBase library
 - EthercatIGH Plugin (plugins/ethercatIGH/)
 - All other source files not explicitly mentioned above
 

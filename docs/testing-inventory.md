@@ -14,8 +14,8 @@
 
 | 类别 | CTest 项数 | 注册方式 | 备注 |
 | --- | ---: | --- | --- |
-| 核心 GoogleTest | 358 | `gtest_discover_tests(EncosMotorDriverBaseTests)` | 核心库、Motor、设备状态和 WASM Runtime |
-| 插件 GoogleTest | 116 | `gtest_discover_tests(EncosMotorDriverPluginsTests)` | 已启用的 Fake、CAN、fd broker、USB Serial、EtherCAT Base、Relay 和动态加载测试 |
+| 核心 GoogleTest | 358 | `gtest_discover_tests(EncosDriverBaseTests)` | 核心库、Motor、设备状态和 WASM Runtime |
+| 插件 GoogleTest | 116 | `gtest_discover_tests(EncosDriverPluginsTests)` | 已启用的 Fake、CAN、fd broker、USB Serial、EtherCAT Base、Relay 和动态加载测试 |
 | 独立 CTest | 2 | `add_test()` | 关机异常与条件 Emscripten Port 编译 |
 
 `ENCOS_ENABLE_TSAN=ON` 时会额外注册一个带筛选器的 TSan CTest；Emscripten WASM 构建不允许开启 `ENCOS_BUILD_TESTS`，而使用独立 WASM 测试链路。
@@ -28,8 +28,8 @@
 
 | 目标 | 内容 | 变化条件 |
 | --- | --- | --- |
-| `EncosMotorDriverBaseTests` | 核心库、Motor、路由/并发、设备状态与 WASM Runtime | 测试源码位于 `tests/core/`，不包含任何具体 adapter 插件实现测试 |
-| `EncosMotorDriverPluginsTests` | 主库加载机制及已启用插件的测试 | 插件在自身 `CMakeLists.txt` 通过 `encos_register_plugin_tests()` 声明源、链接库和私有 include；主工程统一发现 |
+| `EncosDriverBaseTests` | 核心库、Motor、路由/并发、设备状态与 WASM Runtime | 测试源码位于 `tests/core/`，不包含任何具体 adapter 插件实现测试 |
+| `EncosDriverPluginsTests` | 主库加载机制及已启用插件的测试 | 插件在自身 `CMakeLists.txt` 通过 `encos_register_plugin_tests()` 声明源、链接库和私有 include；主工程统一发现 |
 
 两目标都通过 `gtest_discover_tests()` 展开为“每个 GoogleTest 用例一个 CTest 项”，并统一设置 `ENCOS_DISABLE_PRIORITY_GUI=1`。因此日常执行入口仍是：
 

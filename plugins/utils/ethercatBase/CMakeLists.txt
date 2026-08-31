@@ -13,6 +13,7 @@ target_link_libraries(EthercatBaseHandle PUBLIC
 target_include_directories(EthercatBaseHandle PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../external/SOEM/include
     ${CMAKE_BINARY_DIR}/external/SOEM/include
 )

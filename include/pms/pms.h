@@ -16,6 +16,7 @@ class Bus;
 class EncosDriverManager;
 class DeviceStatusTestAccess;
 
+/** @brief 电源管理系统状态快照 */
 struct PmsStatus {
     std::array<bool, 6> v48_channel_enabled; /**< V48 通道 1-6 开关状态 */
     uint8_t battery_soc;                     /**< 电池 SOC（单位：%） */
@@ -26,6 +27,7 @@ struct PmsStatus {
     std::array<float, 2> v19_currents;       /**< V19 通道 1-2 电流（单位：A） */
 };
 
+/** @brief 可按位组合的 PMS 通道控制命令 */
 enum class PmsCommand : uint16_t {
     None = 0,
     DisableChannel1 = 1u << 0u,
@@ -42,6 +44,7 @@ enum class PmsCommand : uint16_t {
     EnableChannel6 = 1u << 13u,
 };
 
+/** @brief 合并两组 PMS 通道控制命令 */
 inline PmsCommand operator|(PmsCommand lhs, PmsCommand rhs) {
     return static_cast<PmsCommand>(static_cast<uint16_t>(lhs) | static_cast<uint16_t>(rhs));
 }
