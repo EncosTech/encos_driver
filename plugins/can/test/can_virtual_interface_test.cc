@@ -49,6 +49,11 @@ int OpenCanSocket(const std::string& ifname) {
     if (fd < 0) {
         return -1;
     }
+    const int enable = 1;
+    if (setsockopt(fd, SOL_CAN_RAW, CAN_RAW_FD_FRAMES, &enable, sizeof(enable)) < 0) {
+        close(fd);
+        return -1;
+    }
 
     struct ifreq ifr {};
     std::snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", ifname.c_str());
@@ -68,9 +73,7 @@ int OpenCanSocket(const std::string& ifname) {
     return fd;
 }
 
-}  // namespace
-
-TEST(CanVirtualInterfaceTests, CanPluginReceiveOnVcan) {
+void CheckVcanReceive(bool can_fd) {
     const std::string ifname = "vcan0";
     if (!EnsureVcanInterface(ifname)) {
         GTEST_SKIP() << "vcan setup failed (need iproute2 and sufficient permissions).";
@@ -89,14 +92,13 @@ TEST(CanVirtualInterfaceTests, CanPluginReceiveOnVcan) {
         }
         msg_cv.notify_one();
     });
+    const int tx_fd = OpenCanSocket(ifname);
+    ASSERT_GE(tx_fd, 0);
     std::thread receiver_thread([&]() {
         receiver.Loop();
     });
 
-    const int tx_fd = OpenCanSocket(ifname);
-    ASSERT_GE(tx_fd, 0);
-
-    struct can_frame frame {};
+    struct canfd_frame frame {};
     frame.can_id = 0x123;
     frame.len = 3;
     std::memset(frame.data, 0xA5, sizeof(frame.data));
@@ -104,7 +106,8 @@ TEST(CanVirtualInterfaceTests, CanPluginReceiveOnVcan) {
         frame.data[i] = static_cast<uint8_t>(i + 1);
     }
 
-    ASSERT_EQ(write(tx_fd, &frame, sizeof(frame)), static_cast<ssize_t>(sizeof(frame)));
+    const auto frame_size = can_fd ? CANFD_MTU : CAN_MTU;
+    EXPECT_EQ(write(tx_fd, &frame, frame_size), frame_size);
 
     std::unique_lock<std::mutex> lock(msg_mutex);
     const bool arrived = msg_cv.wait_for(lock, std::chrono::seconds(2), [&]() {
@@ -121,10 +124,21 @@ TEST(CanVirtualInterfaceTests, CanPluginReceiveOnVcan) {
     ASSERT_TRUE(arrived) << "No CAN frame received by CanHandle on vcan0";
     EXPECT_EQ(received_msg.data.id, frame.can_id);
     EXPECT_EQ(received_msg.data.len, frame.len);
+    EXPECT_EQ(encos::CanFrameFlagsUseCanFd(received_msg.data.frame_flags), can_fd);
     EXPECT_EQ(std::memcmp(received_msg.data.data, frame.data, frame.len), 0);
     for (std::size_t i = frame.len; i < sizeof(received_msg.data.data); ++i) {
         EXPECT_EQ(received_msg.data.data[i], 0);
     }
+}
+
+}  // namespace
+
+TEST(CanVirtualInterfaceTests, CanPluginReceiveOnVcan) {
+    CheckVcanReceive(false);
+}
+
+TEST(CanVirtualInterfaceTests, CanPluginReceiveCanFdOnVcan) {
+    CheckVcanReceive(true);
 }
 
 #else

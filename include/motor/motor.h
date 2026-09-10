@@ -104,9 +104,11 @@ public:
      * @brief 设置电流反馈满量程范围
      * @param range 新的电流范围（单位：安培）
      *
-     * 此函数仅更新用于电流反馈缩放的上层范围。
+     * 此函数更新本地 PVTRanges.current 为 {-range, range}。
+     * @deprecated 请通过 SetDriverPVTRanges 设置明确的电流最小值、最大值。
      * 不会向电机本身发送任何命令。
      */
+    [[deprecated("Use SetDriverPVTRanges to set current.min and current.max")]]
     void SetCurrentRange(float range);
 
     /**
@@ -308,10 +310,10 @@ public:
         MotorStopMode mode, float current, int feedback = FeedbackType);
 
     /**
-     * @brief 启用或禁用刹车抱闸
-     * @param enabled true 启用制动，false 释放
+     * @brief 按协议 §9.1.4 启用或禁用刹车抱闸，使用类型 6 状态回报
+     * @param enabled true 抱紧（协议状态 0），false 释放（协议状态 1）
      * @param wait_for_ack 如果为 true，等待确认包
-     * @return 如果请求的状态已应用则返回 true
+     * @return 等待确认时，收到无错误且状态匹配的确认包返回 true；不等待时，发送流程完成返回 true
      */
     bool Brake(bool enabled, bool wait_for_ack = true);
 
@@ -495,7 +497,7 @@ public:
      * - `MotorParameter::CurKpKi`      -> `KpKi` (kp, ki 浮点数)
      * - `MotorParameter::SpdKpKi`      -> `KpKi` (kp, ki 浮点数)
      * - `MotorParameter::PosKpKd`      -> `KpKd` (kp, kd 浮点数)
-     * - `MotorParameter::BrakeStatus`  -> `uint16_t` (状态位)
+     * - `MotorParameter::BrakeStatus`  -> `uint16_t` (协议状态：0 抱紧，1 释放)
      *
      * 注意事项：
      * - 模板返回上面列出的类型；调用者应相应选择 `Param`

@@ -5,6 +5,8 @@
 #include <cstring>
 #include <poll.h>
 #include <stdexcept>
+#include <sys/eventfd.h>
+#include <system_error>
 
 #include "platform/log.h"
 
@@ -44,11 +46,11 @@ MotorPackMsg DecodeCanFrame(const struct canfd_frame& frame, ssize_t nbytes) {
 }  // namespace
 
 CanHandle::CanHandle(const std::string& interface_name) {
-    can_fd_ = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+    can_fd_ = socket(PF_CAN, SOCK_RAW | SOCK_CLOEXEC, CAN_RAW);
     if (can_fd_ < 0) {
         throw std::runtime_error("Failed to Create CAN socket");
     }
-    struct ifreq ifr;
+    struct ifreq ifr {};
     std::strncpy(ifr.ifr_name, interface_name.c_str(), IFNAMSIZ - 1);
     if (ioctl(can_fd_, SIOCGIFINDEX, &ifr) < 0) {
         close(can_fd_);
@@ -63,6 +65,7 @@ CanHandle::CanHandle(const std::string& interface_name) {
         throw std::runtime_error("Failed to bind CAN socket");
     }
     fd_frames_enabled_ = enable_can_fd_frames(can_fd_);
+    InitializeWakeFd();
     running_.store(true);
 }
 
@@ -72,11 +75,23 @@ CanHandle::CanHandle(int existing_fd) {
     }
     can_fd_ = existing_fd;
     fd_frames_enabled_ = enable_can_fd_frames(can_fd_);
+    InitializeWakeFd();
     running_.store(true);
+}
+
+void CanHandle::InitializeWakeFd() {
+    wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (wake_fd_ < 0) {
+        const int error = errno;
+        close(can_fd_);
+        can_fd_ = -1;
+        throw std::system_error(error, std::generic_category(), "create CAN wake event");
+    }
 }
 
 CanHandle::~CanHandle() {
     Stop();
+    close(wake_fd_);
     if (can_fd_ >= 0) {
         close(can_fd_);
         can_fd_ = -1;
@@ -84,6 +99,9 @@ CanHandle::~CanHandle() {
 }
 
 void CanHandle::Send(const MotorMessage& message) {
+    if (!Ok()) {
+        return;
+    }
     const MotorPackMsg& msg = message.data;
     const uint8_t flags = SanitizeCanFrameFlags(msg.frame_flags);
     auto logger = CanHandleLogger();
@@ -128,7 +146,7 @@ void CanHandle::Send(const MotorMessage& message) {
         frame.can_id = can_id;
         frame.len = msg.len;
         std::memcpy(frame.data, msg.data, msg.len);
-        res = write(can_fd_, &frame, CANFD_MTU);
+        res = send(can_fd_, &frame, CANFD_MTU, MSG_DONTWAIT | MSG_NOSIGNAL);
     } else {
         struct can_frame frame;
         std::memset(&frame, 0, sizeof(frame));
@@ -140,7 +158,7 @@ void CanHandle::Send(const MotorMessage& message) {
         if (!rtr) {
             std::memcpy(frame.data, msg.data, msg.len);
         }
-        res = write(can_fd_, &frame, CAN_MTU);
+        res = send(can_fd_, &frame, CAN_MTU, MSG_DONTWAIT | MSG_NOSIGNAL);
     }
 
     if (res < 0) {
@@ -149,44 +167,83 @@ void CanHandle::Send(const MotorMessage& message) {
 }
 
 void CanHandle::Loop() {
-    struct pollfd pfd;
-    pfd.fd = can_fd_;
-    pfd.events = POLLIN;
-
-    while (running_) {
-        int ret = poll(&pfd, 1, 5);
-
-        if (ret > 0) {
-            if (pfd.revents & POLLIN) {
-                struct canfd_frame frame;
-                std::memset(&frame, 0, sizeof(frame));
-                const ssize_t nbytes = ::read(can_fd_, &frame, sizeof(frame));
-                if (nbytes == CAN_MTU || nbytes == CANFD_MTU) {
-                    MotorPackMsg msg = DecodeCanFrame(frame, nbytes);
-
-                    MotorMessage message;
-                    message.bus_idx = 0;
-                    message.data = msg;
-
-                    if (callback_) {
-                        callback_(message);
-                    }
-                }
+    constexpr std::size_t kBatchSize = 64;
+    MotorMessages messages;
+    messages.reserve(kBatchSize);
+    while (running_.load()) {
+        pollfd descriptors[] = {{can_fd_, POLLIN, 0}, {wake_fd_, POLLIN, 0}};
+        const int ret = poll(descriptors, 2, -1);
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;
             }
-        } else if (ret < 0) {
-            if (errno != EINTR) {
-                // Error, but no Logger
+            CanHandleLogger()->error("CAN poll failed: {}", std::strerror(errno));
+            break;
+        }
+        if (descriptors[1].revents || !running_.load()) {
+            break;
+        }
+        messages.clear();
+        if (descriptors[0].revents & POLLIN) {
+            for (std::size_t i = 0; i < kBatchSize && running_.load(); ++i) {
+                struct canfd_frame frame {};
+                const ssize_t nbytes =
+                    recv(can_fd_, &frame, sizeof(frame), MSG_DONTWAIT | MSG_TRUNC);
+                if (nbytes < 0) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                        CanHandleLogger()->error("CAN receive failed: {}", std::strerror(errno));
+                        Stop();
+                    }
+                    break;
+                }
+                if (nbytes == 0) {
+                    Stop();
+                    break;
+                }
+                if ((nbytes != CAN_MTU && nbytes != CANFD_MTU) || (frame.can_id & CAN_ERR_FLAG) ||
+                    frame.len > (nbytes == CAN_MTU ? CAN_MAX_DLEN : CANFD_MAX_DLEN)) {
+                    continue;
+                }
+                MotorMessage message{};
+                message.bus_idx = 0;
+                message.data = DecodeCanFrame(frame, nbytes);
+                messages.push_back(message);
             }
         }
+        if (!messages.empty()) {
+            if (batch_callback_) {
+                batch_callback_(messages);
+            } else if (callback_) {
+                for (const auto& message : messages) {
+                    callback_(message);
+                }
+            }
+        }
+        if (descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            CanHandleLogger()->error("CAN socket is no longer operational");
+            break;
+        }
     }
+    Stop();
 }
 
 void CanHandle::SetCallback(const std::function<void(MotorMessage)>& callback) {
     callback_ = callback;
+    batch_callback_ = nullptr;
+}
+
+void CanHandle::SetBatchCallback(const std::function<void(const MotorMessages&)>& callback) {
+    batch_callback_ = callback;
+    callback_ = nullptr;
 }
 
 void CanHandle::Stop() {
     running_.store(false);
+    const uint64_t signal = 1;
+    while (write(wake_fd_, &signal, sizeof(signal)) < 0 && errno == EINTR) {}
 }
 
 bool CanHandle::Ok() {

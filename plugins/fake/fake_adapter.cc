@@ -208,12 +208,18 @@ MotorMessage FakeAdapter::MakeFeedbackMessageLocked(int bus_idx, int motor_idx,
     pack.data[0] = static_cast<uint8_t>((feedback_type << 5) | static_cast<uint8_t>(status.error));
 
     const auto snapshot_it = snapshots_.find(MakeKey(bus_idx, motor_idx));
-    const float current_range =
-        snapshot_it == snapshots_.end() ? 0.0f : snapshot_it->second.ranges.current.max;
+    const auto current_range = snapshot_it == snapshots_.end() ? Range<float>{0.0f, 0.0f}
+                                                               : snapshot_it->second.ranges.current;
     if (feedback_type == 1) {
-        const int pos_int = FloatToUint(status.position, -12.5f, 12.5f, 16);
-        const int spd_int = FloatToUint(status.speed, -18.0f, 18.0f, 12);
-        const int cur_int = FloatToUint(status.current, -current_range, current_range, 12);
+        const auto position_range = snapshot_it == snapshots_.end()
+                                        ? Range<float>{-12.5f, 12.5f}
+                                        : snapshot_it->second.ranges.position;
+        const auto speed_range = snapshot_it == snapshots_.end() ? Range<float>{-18.0f, 18.0f}
+                                                                 : snapshot_it->second.ranges.speed;
+        const int pos_int =
+            FloatToUint(status.position, position_range.min, position_range.max, 16);
+        const int spd_int = FloatToUint(status.speed, speed_range.min, speed_range.max, 12);
+        const int cur_int = FloatToUint(status.current, current_range.min, current_range.max, 12);
         pack.data[1] = static_cast<uint8_t>(pos_int >> 8);
         pack.data[2] = static_cast<uint8_t>(pos_int & 0xFF);
         pack.data[3] = static_cast<uint8_t>(spd_int >> 4);
@@ -535,9 +541,10 @@ void FakeAdapter::Send(const MotorMessage& message) {
             snapshot_it->second.brake_enabled = payload->enabled;
             MotorPackMsg ack{};
             ack.id = static_cast<uint32_t>(message.data.id);
-            ack.len = 3;
-            ack.data[0] = 0xB2;
-            ack.data[1] = static_cast<uint8_t>(payload->enabled ? 1 : 0);
+            ack.len = 2;
+            ack.data[0] =
+                static_cast<uint8_t>(0xC0 | static_cast<uint8_t>(snapshot_it->second.error));
+            ack.data[1] = static_cast<uint8_t>(payload->enabled ? 0 : 1);
             notify_observer();
             dispatch_message(MotorMessage{message.bus_idx, ack});
         } else {
@@ -684,7 +691,7 @@ void FakeAdapter::Send(const MotorMessage& message) {
                 reply_payload = EncodeU16(snapshot_it->second.can_timeout_ms);
                 break;
             case MotorParameter::BrakeStatus:
-                reply_payload = EncodeU16(snapshot_it->second.brake_enabled ? 1 : 0);
+                reply_payload = {static_cast<uint8_t>(snapshot_it->second.brake_enabled ? 0 : 1)};
                 break;
             default:
                 reply_payload = EncodeFloatBe(0.0f);

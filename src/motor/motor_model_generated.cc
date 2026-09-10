@@ -1,4 +1,4 @@
-// Auto-generated from motor_models.csv. CSV SHA1: 9c5f88a3c8688225cf1c588e6e70d83e3c1ce298
+// Auto-generated from motor_models.csv. CSV SHA1: 76e81b1f3b808e9430446b3a21e3dafc9ef207cb
 #include "motor/motor_model_generated.h"
 
 #include <stdexcept>
@@ -176,10 +176,10 @@ MotorPVTRanges GetMotorModelRanges(MotorModel model) {
             ranges.kp = {0.0f, 500.0f};
             ranges.kd = {0.0f, 50.0f};
             ranges.position = {-12.5f, 12.5f};
-            ranges.speed = {-30.0f, 30.0f};
+            ranges.speed = {-18.0f, 18.0f};
             ranges.torque = {-400.0f, 400.0f};
-            ranges.current = {-300.0f, 300.0f};
-            ranges.kt = 1.65f;
+            ranges.current = {-220.0f, 220.0f};
+            ranges.kt = 2.5f;
             break;
         case MotorModel::EC_A13720_P1_72V:
             ranges.kp = {0.0f, 500.0f};
@@ -187,8 +187,8 @@ MotorPVTRanges GetMotorModelRanges(MotorModel model) {
             ranges.position = {-12.5f, 12.5f};
             ranges.speed = {-30.0f, 30.0f};
             ranges.torque = {-400.0f, 400.0f};
-            ranges.current = {-300.0f, 300.0f};
-            ranges.kt = 1.65f;
+            ranges.current = {-220.0f, 220.0f};
+            ranges.kt = 2.5f;
             break;
         case MotorModel::EC_A13715_P1:
             ranges.kp = {0.0f, 500.0f};
@@ -370,6 +370,60 @@ MotorPVTRanges GetMotorModelRanges(MotorModel model) {
             ranges.current = {-140.0f, 140.0f};
             ranges.kt = 2.6f;
             break;
+        case MotorModel::EC_A10010_P2_16:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 50.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-18.0f, 18.0f};
+            ranges.torque = {-120.0f, 120.0f};
+            ranges.current = {-90.0f, 90.0f};
+            ranges.kt = 1.8f;
+            break;
+        case MotorModel::EC_A10015_P2_16:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 50.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-18.0f, 18.0f};
+            ranges.torque = {-150.0f, 150.0f};
+            ranges.current = {-90.0f, 90.0f};
+            ranges.kt = 1.85f;
+            break;
+        case MotorModel::EC_A10020_P2_16:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 50.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-18.0f, 18.0f};
+            ranges.torque = {-180.0f, 180.0f};
+            ranges.current = {-90.0f, 90.0f};
+            ranges.kt = 2.0f;
+            break;
+        case MotorModel::EC_A10010_P2_24:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 50.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-18.0f, 18.0f};
+            ranges.torque = {-150.0f, 150.0f};
+            ranges.current = {-100.0f, 100.0f};
+            ranges.kt = 2.0f;
+            break;
+        case MotorModel::EC_A10020_P2_24:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 50.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-18.0f, 18.0f};
+            ranges.torque = {-300.0f, 300.0f};
+            ranges.current = {-140.0f, 140.0f};
+            ranges.kt = 2.6f;
+            break;
+        case MotorModel::EC_A10020_P2_24_72V:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 50.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-30.0f, 30.0f};
+            ranges.torque = {-300.0f, 300.0f};
+            ranges.current = {-140.0f, 140.0f};
+            ranges.kt = 2.6f;
+            break;
         case MotorModel::EC_A3814_H14:
             ranges.kp = {0.0f, 500.0f};
             ranges.kd = {0.0f, 5.0f};
@@ -424,6 +478,15 @@ MotorPVTRanges GetMotorModelRanges(MotorModel model) {
             ranges.current = {-35.0f, 35.0f};
             ranges.kt = 5.6f;
             break;
+        case MotorModel::EC_A4310_P2_36H_ABC:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 50.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-30.0f, 30.0f};
+            ranges.torque = {-45.0f, 45.0f};
+            ranges.current = {-30.0f, 30.0f};
+            ranges.kt = 1.8f;
+            break;
         case MotorModel::EC_A10320_P2:
             ranges.kp = {0.0f, 500.0f};
             ranges.kd = {0.0f, 50.0f};
@@ -459,6 +522,15 @@ MotorPVTRanges GetMotorModelRanges(MotorModel model) {
             ranges.torque = {-130.0f, 130.0f};
             ranges.current = {-70.0f, 70.0f};
             ranges.kt = 2.0f;
+            break;
+        case MotorModel::EC_A5016_P2_17H:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 50.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-30.0f, 30.0f};
+            ranges.torque = {-36.0f, 36.0f};
+            ranges.current = {-40.0f, 40.0f};
+            ranges.kt = 1.4f;
             break;
         case MotorModel::EC_A5020_P2:
             ranges.kp = {0.0f, 500.0f};
@@ -549,6 +621,33 @@ MotorPVTRanges GetMotorModelRanges(MotorModel model) {
             ranges.torque = {-450.0f, 450.0f};
             ranges.current = {-220.0f, 220.0f};
             ranges.kt = 2.0f;
+            break;
+        case MotorModel::EC_A8116_H32_100:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 50.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-18.5f, 18.5f};
+            ranges.torque = {-500.0f, 500.0f};
+            ranges.current = {-70.0f, 70.0f};
+            ranges.kt = 2.6f;
+            break;
+        case MotorModel::EC_A6416_H25_100_B:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 5.0f};
+            ranges.position = {-12.5f, 12.5f};
+            ranges.speed = {-18.0f, 18.0f};
+            ranges.torque = {-300.0f, 300.0f};
+            ranges.current = {-25.0f, 25.0f};
+            ranges.kt = 10.3f;
+            break;
+        case MotorModel::EC_DEXTEROUS_HAND:
+            ranges.kp = {0.0f, 500.0f};
+            ranges.kd = {0.0f, 5.0f};
+            ranges.position = {-5.0f, 5.0f};
+            ranges.speed = {-20.0f, 20.0f};
+            ranges.torque = {-10.0f, 10.0f};
+            ranges.current = {-2.0f, 2.0f};
+            ranges.kt = 5.0f;
             break;
     }
     return ranges;
@@ -675,6 +774,24 @@ MotorModel StringToMotorModel(const std::string& str) {
     if (str == "EC_A10020_P2_72V") {
         return MotorModel::EC_A10020_P2_72V;
     }
+    if (str == "EC_A10010_P2_16") {
+        return MotorModel::EC_A10010_P2_16;
+    }
+    if (str == "EC_A10015_P2_16") {
+        return MotorModel::EC_A10015_P2_16;
+    }
+    if (str == "EC_A10020_P2_16") {
+        return MotorModel::EC_A10020_P2_16;
+    }
+    if (str == "EC_A10010_P2_24") {
+        return MotorModel::EC_A10010_P2_24;
+    }
+    if (str == "EC_A10020_P2_24") {
+        return MotorModel::EC_A10020_P2_24;
+    }
+    if (str == "EC_A10020_P2_24_72V") {
+        return MotorModel::EC_A10020_P2_24_72V;
+    }
     if (str == "EC_A3814_H14") {
         return MotorModel::EC_A3814_H14;
     }
@@ -693,6 +810,9 @@ MotorModel StringToMotorModel(const std::string& str) {
     if (str == "EC_A6013_H20_72V") {
         return MotorModel::EC_A6013_H20_72V;
     }
+    if (str == "EC_A4310_P2_36H_ABC") {
+        return MotorModel::EC_A4310_P2_36H_ABC;
+    }
     if (str == "EC_A10320_P2") {
         return MotorModel::EC_A10320_P2;
     }
@@ -704,6 +824,9 @@ MotorModel StringToMotorModel(const std::string& str) {
     }
     if (str == "EC_A7520_P2_72V") {
         return MotorModel::EC_A7520_P2_72V;
+    }
+    if (str == "EC_A5016_P2_17H") {
+        return MotorModel::EC_A5016_P2_17H;
     }
     if (str == "EC_A5020_P2") {
         return MotorModel::EC_A5020_P2;
@@ -734,6 +857,15 @@ MotorModel StringToMotorModel(const std::string& str) {
     }
     if (str == "EC_A10825_P2") {
         return MotorModel::EC_A10825_P2;
+    }
+    if (str == "EC_A8116_H32_100") {
+        return MotorModel::EC_A8116_H32_100;
+    }
+    if (str == "EC_A6416_H25_100_B") {
+        return MotorModel::EC_A6416_H25_100_B;
+    }
+    if (str == "EC_DEXTEROUS_HAND") {
+        return MotorModel::EC_DEXTEROUS_HAND;
     }
     throw std::invalid_argument("Unknown motor model: " + str);
 }
@@ -820,6 +952,18 @@ const char* MotorModelToString(MotorModel model) {
             return "EC_A10020_P2";
         case MotorModel::EC_A10020_P2_72V:
             return "EC_A10020_P2_72V";
+        case MotorModel::EC_A10010_P2_16:
+            return "EC_A10010_P2_16";
+        case MotorModel::EC_A10015_P2_16:
+            return "EC_A10015_P2_16";
+        case MotorModel::EC_A10020_P2_16:
+            return "EC_A10020_P2_16";
+        case MotorModel::EC_A10010_P2_24:
+            return "EC_A10010_P2_24";
+        case MotorModel::EC_A10020_P2_24:
+            return "EC_A10020_P2_24";
+        case MotorModel::EC_A10020_P2_24_72V:
+            return "EC_A10020_P2_24_72V";
         case MotorModel::EC_A3814_H14:
             return "EC_A3814_H14";
         case MotorModel::EC_A3814_H14_72V:
@@ -832,6 +976,8 @@ const char* MotorModelToString(MotorModel model) {
             return "EC_A6013_H20";
         case MotorModel::EC_A6013_H20_72V:
             return "EC_A6013_H20_72V";
+        case MotorModel::EC_A4310_P2_36H_ABC:
+            return "EC_A4310_P2_36H_ABC";
         case MotorModel::EC_A10320_P2:
             return "EC_A10320_P2";
         case MotorModel::EC_A10320_P2_72V:
@@ -840,6 +986,8 @@ const char* MotorModelToString(MotorModel model) {
             return "EC_A7520_P2";
         case MotorModel::EC_A7520_P2_72V:
             return "EC_A7520_P2_72V";
+        case MotorModel::EC_A5016_P2_17H:
+            return "EC_A5016_P2_17H";
         case MotorModel::EC_A5020_P2:
             return "EC_A5020_P2";
         case MotorModel::EC_A5025_P2:
@@ -860,6 +1008,12 @@ const char* MotorModelToString(MotorModel model) {
             return "EC_A10820_P2";
         case MotorModel::EC_A10825_P2:
             return "EC_A10825_P2";
+        case MotorModel::EC_A8116_H32_100:
+            return "EC_A8116_H32_100";
+        case MotorModel::EC_A6416_H25_100_B:
+            return "EC_A6416_H25_100_B";
+        case MotorModel::EC_DEXTEROUS_HAND:
+            return "EC_DEXTEROUS_HAND";
     }
     throw std::invalid_argument("Unknown motor model enum");
 }
@@ -907,16 +1061,24 @@ std::vector<const char*> GetAllMotorModelStrings() {
         "EC_A10010_P2_72V",
         "EC_A10020_P2",
         "EC_A10020_P2_72V",
+        "EC_A10010_P2_16",
+        "EC_A10015_P2_16",
+        "EC_A10020_P2_16",
+        "EC_A10010_P2_24",
+        "EC_A10020_P2_24",
+        "EC_A10020_P2_24_72V",
         "EC_A3814_H14",
         "EC_A3814_H14_72V",
         "EC_A5013_H17",
         "EC_A5013_H17_72V",
         "EC_A6013_H20",
         "EC_A6013_H20_72V",
+        "EC_A4310_P2_36H_ABC",
         "EC_A10320_P2",
         "EC_A10320_P2_72V",
         "EC_A7520_P2",
         "EC_A7520_P2_72V",
+        "EC_A5016_P2_17H",
         "EC_A5020_P2",
         "EC_A5025_P2",
         "EC_A7216_P2",
@@ -927,6 +1089,9 @@ std::vector<const char*> GetAllMotorModelStrings() {
         "EC_A9025_P2",
         "EC_A10820_P2",
         "EC_A10825_P2",
+        "EC_A8116_H32_100",
+        "EC_A6416_H25_100_B",
+        "EC_DEXTEROUS_HAND",
     };
     // clang-format on
 }

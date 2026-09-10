@@ -3,18 +3,15 @@ project(EncosUsbSerialDirectPlugin)
 
 set(CMAKE_CXX_STANDARD 17)
 
-if(NOT TARGET serialib)
-    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../external/serialib
-        ${CMAKE_BINARY_DIR}/external/serialib)
-    set_target_properties(serialib PROPERTIES POSITION_INDEPENDENT_CODE ON)
-endif()
-
 add_library(UsbSerialPluginCore STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/usb_serial_adapter.cc
-    ${CMAKE_CURRENT_SOURCE_DIR}/usb_serial_sender.cc
 )
+if(NOT TARGET EncosSerialPort)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../utils/serialPort
+        ${CMAKE_BINARY_DIR}/plugins/utils/serialPort)
+endif()
+target_link_libraries(UsbSerialPluginCore PUBLIC EncosSerialPort)
 target_link_libraries(UsbSerialPluginCore PUBLIC
-    serialib
     EncosMotorDriverBase
 )
 target_include_directories(UsbSerialPluginCore PUBLIC
@@ -37,9 +34,9 @@ if(NOT ENCOS_STATIC_MODE)
     )
 endif()
 
-if(ENCOS_BUILD_TESTS)
+if(ENCOS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     encos_register_plugin_tests(
-        SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/test/usb_serial_sender_test.cc
+        SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/test/usb_serial_adapter_test.cc
         LIBRARIES UsbSerialPluginCore
         INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}
     )

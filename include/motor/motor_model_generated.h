@@ -1,4 +1,4 @@
-// Auto-generated from motor_models.csv. CSV SHA1: 9c5f88a3c8688225cf1c588e6e70d83e3c1ce298
+// Auto-generated from motor_models.csv. CSV SHA1: 76e81b1f3b808e9430446b3a21e3dafc9ef207cb
 #pragma once
 
 #include <string>
@@ -50,16 +50,24 @@ enum class MotorModel {
     EC_A10010_P2_72V,
     EC_A10020_P2,
     EC_A10020_P2_72V,
+    EC_A10010_P2_16,
+    EC_A10015_P2_16,
+    EC_A10020_P2_16,
+    EC_A10010_P2_24,
+    EC_A10020_P2_24,
+    EC_A10020_P2_24_72V,
     EC_A3814_H14,
     EC_A3814_H14_72V,
     EC_A5013_H17,
     EC_A5013_H17_72V,
     EC_A6013_H20,
     EC_A6013_H20_72V,
+    EC_A4310_P2_36H_ABC,
     EC_A10320_P2,
     EC_A10320_P2_72V,
     EC_A7520_P2,
     EC_A7520_P2_72V,
+    EC_A5016_P2_17H,
     EC_A5020_P2,
     EC_A5025_P2,
     EC_A7216_P2,
@@ -70,6 +78,9 @@ enum class MotorModel {
     EC_A9025_P2,
     EC_A10820_P2,
     EC_A10825_P2,
+    EC_A8116_H32_100,
+    EC_A6416_H25_100_B,
+    EC_DEXTEROUS_HAND,
 };
 
 struct MotorPVTRanges;

@@ -42,6 +42,7 @@ git -C "${source_repo}" config -f .gitmodules \
   submodule.external/example.url http://gitea.test/acme/submodule.git
 git -C "${source_repo}" add .
 git -C "${source_repo}" commit -q -m "source snapshot"
+initial_source_sha1=$(git -C "${source_repo}" rev-parse HEAD)
 
 git_config="${test_root}/gitconfig"
 git config -f "${git_config}" url."${submodule_repo}".insteadOf \
@@ -195,7 +196,8 @@ run_release() {
       --gitea-url https://gitea.test \
       --gitea-package-owner packages \
       --debian-distributions jammy,noble \
-      --debian-architectures amd64,arm64
+      --debian-architectures amd64,arm64 \
+      "$@"
 }
 
 run_release
@@ -230,6 +232,7 @@ printf 'cmake_minimum_required(VERSION 3.18)\nproject(encos_driver)\n' \
   >"${source_repo}/CMakeLists.txt"
 git -C "${source_repo}" add .
 git -C "${source_repo}" commit -q -m "develop snapshot"
+develop_sha1=$(git -C "${source_repo}" rev-parse HEAD)
 git -C "${source_repo}" switch -q main
 
 multi_branch_env="${test_root}/multi-branch.env"
@@ -262,6 +265,44 @@ test "$(git -C "${develop_checkout}" log -1 --format=%s)" = "release: 发布v3.2
 printf 'changed snapshot\n' >"${source_repo}/include/public.h"
 git -C "${source_repo}" add .
 git -C "${source_repo}" commit -q -m "changed source snapshot"
+
+: >"${curl_log}"
+PATH="${fake_bin}:${PATH}" GIT_CONFIG_GLOBAL="${git_config}" \
+  bash "${wrapper_path}" \
+    --env-file "${multi_branch_env}" \
+    --main-sha1 "${initial_source_sha1}"
+test ! -s "${curl_log}"
+main_after_pinned_wrapper=$(git --git-dir="${target_bare}" show main:include/public.h)
+test "${main_after_pinned_wrapper}" = "public header"
+test "$(git --git-dir="${target_bare}" show develop:develop.txt)" = "develop snapshot"
+
+run_release \
+  --source-sha1 "${initial_source_sha1}" \
+  --github-branch pinned \
+  --snapshot-only
+pinned_checkout="${test_root}/pinned-checkout"
+git clone -q --branch pinned "${target_bare}" "${pinned_checkout}"
+grep -q '^public header$' "${pinned_checkout}/include/public.h"
+
+set +e
+run_release \
+  --source-sha1 "${develop_sha1}" \
+  --github-branch rejected \
+  --snapshot-only >/dev/null 2>&1
+unrelated_sha1_status=$?
+set -e
+test "${unrelated_sha1_status}" -ne 0
+test -z "$(git --git-dir="${target_bare}" branch --list rejected)"
+
+set +e
+run_release \
+  --source-sha1 ffffffffffffffffffffffffffffffffffffffff \
+  --github-branch missing \
+  --snapshot-only >/dev/null 2>&1
+missing_sha1_status=$?
+set -e
+test "${missing_sha1_status}" -ne 0
+test -z "$(git --git-dir="${target_bare}" branch --list missing)"
 
 : >"${curl_log}"
 set +e

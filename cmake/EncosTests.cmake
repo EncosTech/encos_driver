@@ -125,6 +125,15 @@ function(encos_configure_tests)
 
     include(GoogleTest)
 
+    add_test(
+        NAME EncosPublishGithubReleaseWrapper
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/publish_github_release_wrapper_test.sh
+    )
+    add_test(
+        NAME EncosReleaseToGithub
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_to_github_test.sh
+    )
+
     add_executable(${ENCOS_DRIVER_BASE_TEST_TARGET}
         src/wasm/wasm_runtime.cc
         tests/core/test_adapter.cc

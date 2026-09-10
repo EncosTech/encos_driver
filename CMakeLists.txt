@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(encos_driver VERSION 3.2.1)
+project(encos_driver VERSION 3.2.9)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)

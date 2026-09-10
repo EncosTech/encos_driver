@@ -293,6 +293,191 @@ TEST_F(DriverManagerHotPathTest, RetiringDeviceDoesNotBlockIndependentObjects) {
     EXPECT_TRUE(deletion.get());
 }
 
+std::atomic<unsigned> recipe_battery_destructions{0};
+
+TEST_F(DriverManagerTest, AlternateBatteryRecipeUsesCommonLifecycleAndRealWriter) {
+    auto& manager = EncosDriverManager::Instance();
+    auto& impl = DriverManagerTestAccess::Internals(manager);
+    auto recipe = impl.MakeBatteryRecipe(bus_, 9);
+    const auto protocol_ids = recipe.can_ids;
+    recipe.can_ids = {0x620u, 0x621u, 0x622u, 0x623u};
+    unsigned constructions = 0;
+    unsigned initializations = 0;
+    unsigned deliveries = 0;
+    unsigned cancellations = 0;
+    recipe_battery_destructions.store(0);
+    const auto construct = recipe.construct;
+    recipe.construct = [&] {
+        ++constructions;
+        return construct();
+    };
+    const auto bind = recipe.bind;
+    recipe.bind = [&, bind](void* device) {
+        auto binding = bind(device);
+        auto receive = binding.callback;
+        binding.callback = [&, receive](const MotorPackMsg& message) {
+            auto translated = message;
+            translated.id = protocol_ids.at(message.id - 0x620u);
+            receive(translated);
+        };
+        binding.cancel_waiters = [&] {
+            ++cancellations;
+        };
+        return binding;
+    };
+    recipe.initialize = [&](void* device) {
+        ++initializations;
+        static_cast<Battery*>(device)->ClearFault();
+    };
+    recipe.destroy = [](void* device) noexcept {
+        ++recipe_battery_destructions;
+        delete static_cast<Battery*>(device);
+    };
+    auto* battery = static_cast<Battery*>(impl.CreateDevice(bus_, 9, recipe));
+    ASSERT_NE(battery, nullptr);
+    battery->SetOnStatus([&](const BatteryStatus&) {
+        ++deliveries;
+    });
+    EXPECT_EQ(manager.CreateBattery(bus_, 9), battery);
+    EXPECT_EQ(constructions, 1u);
+    EXPECT_EQ(initializations, 1u);
+    ASSERT_EQ(adapter_->GetSentMessages().size(), 1u);
+    EXPECT_EQ(adapter_->GetSentMessages().front().bus_idx, 3);
+    for (auto id : recipe.can_ids) {
+        MotorPackMsg message{};
+        message.id = id;
+        message.len = 8;
+        EXPECT_TRUE(manager.DispatchReceive(adapter_, 3, message));
+    }
+    EXPECT_EQ(deliveries, 4u);
+    MotorPackMsg old_message{};
+    old_message.id = protocol_ids.front();
+    EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, old_message));
+    EXPECT_TRUE(manager.DestroyBus(bus_));
+    EXPECT_EQ(cancellations, 1u);
+    EXPECT_EQ(recipe_battery_destructions.load(), 1u);
+}
+
+TEST_F(DriverManagerTest, RecipeFailuresDestroyOnceAndReleaseEveryPublishedRoute) {
+    auto& manager = EncosDriverManager::Instance();
+    auto& impl = DriverManagerTestAccess::Internals(manager);
+    for (unsigned failure = 0; failure < 5; ++failure) {
+        auto recipe = impl.MakeBatteryRecipe(bus_, 9);
+        recipe_battery_destructions.store(0);
+        unsigned cancellations = 0;
+        const auto bind = recipe.bind;
+        recipe.bind = [&, bind](void* device) {
+            if (failure == 0) {
+                throw std::runtime_error("binding failed");
+            }
+            auto binding = bind(device);
+            binding.cancel_waiters = [&] {
+                ++cancellations;
+            };
+            return binding;
+        };
+        recipe.destroy = [](void* device) noexcept {
+            ++recipe_battery_destructions;
+            delete static_cast<Battery*>(device);
+        };
+        if (failure == 1 || failure == 2) {
+            impl.route_publish_hook = [failure](std::size_t index) {
+                if (index == (failure == 1 ? 0u : 2u)) {
+                    throw std::bad_alloc();
+                }
+            };
+        } else if (failure == 3) {
+            recipe.initialize = [](void*) {
+                throw std::runtime_error("initialization failed");
+            };
+        }
+        if (failure == 4) {
+            const auto construct = recipe.construct;
+            recipe.construct = [&, construct] {
+                auto* device = construct();
+                impl.operation_registry.Register(device, OperationKind::Battery);
+                return device;
+            };
+        }
+        EXPECT_THROW(impl.CreateDevice(bus_, 9, recipe), std::exception);
+        impl.route_publish_hook = {};
+        EXPECT_EQ(recipe_battery_destructions.load(), 1u);
+        EXPECT_EQ(cancellations, failure == 3 ? 1u : 0u);
+        for (auto id : recipe.can_ids) {
+            MotorPackMsg message{};
+            message.id = id;
+            EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, message));
+        }
+        auto* replacement = manager.CreateBattery(bus_, 9);
+        ASSERT_NE(replacement, nullptr);
+        EXPECT_TRUE(manager.DestroyBattery(replacement));
+    }
+}
+
+TEST_F(DriverManagerTest, FailedActivationPreservesReservedRoutesAndCancellation) {
+    auto& manager = EncosDriverManager::Instance();
+    auto& impl = DriverManagerTestAccess::Internals(manager);
+    auto recipe = impl.MakeBatteryRecipe(bus_, 9);
+    unsigned cancellations = 0;
+    recipe.bind = [&](void*) {
+        return driver_manager_internal::DeviceRoute{{}, [&] {
+                                                        ++cancellations;
+                                                    }};
+    };
+    auto* battery = static_cast<Battery*>(impl.CreateDevice(bus_, 9, recipe));
+    struct ThrowingCopy {
+        unsigned* copies;
+        unsigned* deliveries;
+        ThrowingCopy(unsigned* count, unsigned* received) : copies(count), deliveries(received) {}
+        ThrowingCopy(ThrowingCopy&&) = default;
+        ThrowingCopy(const ThrowingCopy& other)
+            : copies(other.copies), deliveries(other.deliveries) {
+            if (++*copies == 2) {
+                throw std::bad_alloc();
+            }
+        }
+        void operator()(const MotorPackMsg&) const {
+            ++*deliveries;
+        }
+    };
+    unsigned copies = 0;
+    unsigned deliveries = 0;
+    EXPECT_THROW(
+        DriverManagerTestAccess::RegisterReceiveRoutes(
+            manager, battery, adapter_, bus_, recipe.can_ids, ThrowingCopy{&copies, &deliveries}),
+        std::bad_alloc);
+    for (auto id : recipe.can_ids) {
+        MotorPackMsg message{};
+        message.id = id;
+        EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, message));
+        EXPECT_THROW(manager.CreateMotor(bus_, static_cast<int>(id), MotorModel::EC_A4310_P2),
+                     std::runtime_error);
+    }
+    EXPECT_EQ(deliveries, 0u);
+    EXPECT_TRUE(manager.DestroyBattery(battery));
+    EXPECT_EQ(cancellations, 1u);
+    auto* replacement = manager.CreateBattery(bus_, 9);
+    EXPECT_NE(replacement, nullptr);
+}
+
+TEST_F(DriverManagerTest, PartialParentCountingFailureAllowsRecreationAndParentDeletion) {
+    auto& manager = EncosDriverManager::Instance();
+    auto& impl = DriverManagerTestAccess::Internals(manager);
+    impl.child_creation_hook = [&](void* parent) {
+        if (parent == adapter_) {
+            throw std::bad_alloc();
+        }
+    };
+    EXPECT_THROW(manager.CreateBattery(bus_, 9), std::bad_alloc);
+    EXPECT_THROW(manager.CreateBus(adapter_, 4), std::bad_alloc);
+    EXPECT_THROW(manager.CreateGlove(adapter_, 1), std::bad_alloc);
+    impl.child_creation_hook = {};
+    EXPECT_NE(manager.CreateBattery(bus_, 9), nullptr);
+    EXPECT_NE(manager.CreateBus(adapter_, 4), nullptr);
+    EXPECT_NE(manager.CreateGlove(adapter_, 1), nullptr);
+    EXPECT_TRUE(manager.DestroyAdapter(adapter_));
+}
+
 TEST_F(DriverManagerTest, DirectBatteryRouteRejectsExternalCallbackInstallation) {
     auto* battery = EncosDriverManager::Instance().CreateBattery(bus_, 0);
     ASSERT_NE(battery, nullptr);

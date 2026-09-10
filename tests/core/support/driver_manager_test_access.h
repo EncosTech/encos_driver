@@ -4,12 +4,17 @@
 #include <utility>
 #include <vector>
 
+#include "driver_manager_impl.h"
 #include "encos/driver_manager.h"
 
 namespace encos {
 
 class DriverManagerTestAccess {
 public:
+    static EncosDriverManager::Impl& Internals(EncosDriverManager& manager) {
+        return *manager.impl_;
+    }
+
     static void Reset(EncosDriverManager& manager) {
         manager.ResetForTests();
     }
@@ -41,6 +46,11 @@ public:
     static void RunWithSlowPathLocks(EncosDriverManager& manager,
                                      const std::function<void()>& callback) {
         manager.RunWithSlowPathLocksForTests(callback);
+    }
+
+    static std::size_t GetActiveGloveOperationCount(EncosDriverManager& manager, Glove* glove) {
+        return manager.impl_->operation_registry.ActiveOperationCountForTests(glove,
+                                                                              OperationKind::Glove);
     }
 
     static bool RegisterReceiveRoutes(

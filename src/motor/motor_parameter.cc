@@ -25,6 +25,8 @@ constexpr std::size_t ParameterPayloadSize() {
     using RawType = MotorParameterRawType<Param>;
     if constexpr (std::is_same_v<RawType, float> || std::is_same_v<RawType, int>) {
         return 4;
+    } else if constexpr (std::is_same_v<RawType, uint8_t>) {
+        return 1;
     } else if constexpr (std::is_same_v<RawType, uint16_t>) {
         return 2;
     } else if constexpr (std::is_same_v<RawType, Range<uint16_t>> ||
@@ -46,6 +48,8 @@ MotorParameterRawType<Param> DecodeParameterRaw(const MotorPackMsg& pack) {
 
     if constexpr (std::is_same_v<RawType, float>) {
         return read_float_be(payload);
+    } else if constexpr (std::is_same_v<RawType, uint8_t>) {
+        return payload[0];
     } else if constexpr (std::is_same_v<RawType, uint16_t>) {
         return read_u16_be(payload);
     } else if constexpr (std::is_same_v<RawType, int>) {
@@ -77,6 +81,7 @@ void Motor::InitMotorPVTParam() {
     auto tor_range = GetParameter<MotorParameter::PVTTorRange>();
     auto cur_range = GetParameter<MotorParameter::PVTCurRange>();
     auto kt = GetParameter<MotorParameter::Kt>();
+    platform::LockGuard<platform::Mutex> ranges_lock(impl_->feedback_ranges_mutex);
     impl_->ranges.kp = {static_cast<float>(kp_range.min), static_cast<float>(kp_range.max)};
     impl_->ranges.kd = {static_cast<float>(kd_range.min), static_cast<float>(kd_range.max)};
     impl_->ranges.position = {pos_range.min, pos_range.max};
@@ -84,7 +89,6 @@ void Motor::InitMotorPVTParam() {
     impl_->ranges.torque = {tor_range.min, tor_range.max};
     impl_->ranges.current = {cur_range.min, cur_range.max};
     impl_->ranges.kt = kt;
-    impl_->current_range = cur_range.max;
 }
 bool Motor::SetId(uint16_t new_idx, bool wait_for_ack) {
     auto operation = EncosDriverManager::Instance().AcquireDeviceOperation(this);
@@ -337,6 +341,7 @@ bool Motor::SetPVTPosRange(Range<float> pos_range, bool wait_for_ack) {
     }
 
     if (success) {
+        platform::LockGuard<platform::Mutex> ranges_lock(impl_->feedback_ranges_mutex);
         impl_->ranges.position = {static_cast<float>(min_pos) / 100.0f,
                                   static_cast<float>(max_pos) / 100.0f};
     }
@@ -372,6 +377,7 @@ bool Motor::SetPVTSpdRange(Range<float> spd_range, bool wait_for_ack) {
     }
 
     if (success) {
+        platform::LockGuard<platform::Mutex> ranges_lock(impl_->feedback_ranges_mutex);
         impl_->ranges.speed = {static_cast<float>(min_spd) / 100.0f,
                                static_cast<float>(max_spd) / 100.0f};
     }
@@ -442,9 +448,9 @@ bool Motor::SetPVTCurRange(Range<float> cur_range, bool wait_for_ack) {
     }
 
     if (success) {
+        platform::LockGuard<platform::Mutex> ranges_lock(impl_->feedback_ranges_mutex);
         impl_->ranges.current = {static_cast<float>(min_cur) / 10.0f,
                                  static_cast<float>(max_cur) / 10.0f};
-        impl_->current_range = impl_->ranges.current.max;
     }
 
     return success;

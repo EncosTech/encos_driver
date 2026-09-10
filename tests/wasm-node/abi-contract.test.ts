@@ -53,6 +53,8 @@ const exportedFunctions = [
   'encos_motor_set_can_timeout',
   'encos_motor_set_pos',
   'encos_motor_spd_control',
+  'encos_serial_port_closed',
+  'encos_serial_port_receive',
 ] as const
 
 test('C ABI export snapshot preserves the Adapter-only disposal boundary', async () => {

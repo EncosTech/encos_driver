@@ -45,6 +45,7 @@ if(ENCOS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         SOURCES
             ${CMAKE_CURRENT_SOURCE_DIR}/test/can_socket_setup_test.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/test/can_virtual_interface_test.cc
+            ${CMAKE_CURRENT_SOURCE_DIR}/test/can_handle_test.cc
         LIBRARIES
             CanHandle
             CanPlatformSupport

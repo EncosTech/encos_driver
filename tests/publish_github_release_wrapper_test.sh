@@ -22,11 +22,16 @@ DEBIAN_DISTRIBUTIONS=jammy,noble
 DEBIAN_ARCHITECTURES=amd64,arm64
 EOF
 
-dry_run_output=$(bash "${wrapper}" --env-file "${valid_env}" --dry-run)
+main_sha1=0123456789abcdef0123456789abcdef01234567
+dry_run_output=$(bash "${wrapper}" \
+  --env-file "${valid_env}" \
+  --main-sha1 "${main_sha1}" \
+  --dry-run)
 [[ "${dry_run_output}" == *"acme/mirror"* ]]
 [[ "${dry_run_output}" == *"jammy,noble"* ]]
 [[ "${dry_run_output}" == *"main"* ]]
 [[ "${dry_run_output}" == *"develop,feature-x"* ]]
+[[ "${dry_run_output}" == *"${main_sha1}"* ]]
 [[ "${dry_run_output}" != *"secret-gitea-token"* ]]
 [[ "${dry_run_output}" != *"secret-github-token"* ]]
 
@@ -34,6 +39,14 @@ invalid_env="${test_root}/invalid.env"
 printf 'GITEA_USERNAME=test-user\n' >"${invalid_env}"
 if bash "${wrapper}" --env-file "${invalid_env}" --dry-run >/dev/null 2>&1; then
   printf 'wrapper unexpectedly accepted incomplete configuration\n' >&2
+  exit 1
+fi
+
+if bash "${wrapper}" \
+  --env-file "${valid_env}" \
+  --main-sha1 invalid \
+  --dry-run >/dev/null 2>&1; then
+  printf 'wrapper unexpectedly accepted an invalid main SHA1\n' >&2
   exit 1
 fi
 

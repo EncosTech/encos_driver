@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -80,5 +81,9 @@ void PublishMotorStatusLogRecord(const std::shared_ptr<MotorLogSession>& session
 void RethrowMotorLogSessionError(const std::shared_ptr<MotorLogSession>& session);
 bool MotorLogSessionHasError(const std::shared_ptr<MotorLogSession>& session) noexcept;
 void CloseMotorLogSession(const std::shared_ptr<MotorLogSession>& session);
+
+/** @brief 设置关闭通知后的测试钩子；须在关闭前设置，不得抛异常或重入日志会话 API */
+void SetMotorLogSessionCloseHookForTesting(const std::shared_ptr<MotorLogSession>& session,
+                                           std::function<void()> hook);
 
 }  // namespace encos::detail

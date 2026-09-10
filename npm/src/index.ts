@@ -24,4 +24,9 @@ export type {
   RuntimeOptions,
   SpdControlCommand,
   StatusResult,
+  WebSerialBridge,
+  WebSerialOpenOptions,
+  WebSerialPort,
+  WebSerialRequestOptions,
+  WebSerialStatus,
 } from './types.js'

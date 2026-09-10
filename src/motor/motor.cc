@@ -79,7 +79,6 @@ Motor::Motor(Bus* bus, uint16_t motor_idx, MotorModel model, LoggerPtr logger,
     impl_->writer = std::move(writer);
     impl_->logger_ = std::move(logger);
     impl_->ranges = GetMotorModelRanges(model);
-    impl_->current_range = impl_->ranges.current.max;
 }
 
 Motor::Motor(Bus* bus, uint16_t motor_idx, MotorModel model, LoggerPtr logger,
@@ -93,7 +92,6 @@ Motor::Motor(Bus* bus, uint16_t motor_idx, MotorPVTRanges ranges, LoggerPtr logg
     impl_->idx.store(motor_idx, std::memory_order_relaxed);
     impl_->frame_flags.store(SanitizeCanFrameFlags(frame_flags), std::memory_order_relaxed);
     impl_->ranges = ranges;
-    impl_->current_range = ranges.current.max;
     impl_->bus = bus;
     impl_->writer = std::move(writer);
     impl_->logger_ = std::move(logger);
@@ -247,7 +245,7 @@ void Motor::CancelWaiters() noexcept {
     });
 }
 void Motor::OnMessage(const MotorPackMsg& message) {
-    MotorStatus decoded = AutoDecodeFeedback(message, impl_->current_range.load());
+    MotorStatus decoded = AutoDecodeFeedback(message, impl_->GetFeedbackRanges());
     if (decoded.error != MotorError::NoResponse) {
         {
             platform::LockGuard<platform::Mutex> lock(impl_->status_mutex);
@@ -400,6 +398,7 @@ MotorPVTRanges Motor::GetPVTRanges() const {
 void Motor::SetDriverPVTRanges(const MotorPVTRanges& ranges) {
     auto operation = EncosDriverManager::Instance().AcquireDeviceOperation(this);
     platform::LockGuard<platform::RecursiveMutex> lock(impl_->motor_mutex);
+    platform::LockGuard<platform::Mutex> ranges_lock(impl_->feedback_ranges_mutex);
     impl_->ranges.kp = ranges.kp;
     impl_->ranges.kd = ranges.kd;
     impl_->ranges.position = ranges.position;
@@ -411,7 +410,8 @@ void Motor::SetDriverPVTRanges(const MotorPVTRanges& ranges) {
 void Motor::SetCurrentRange(float range) {
     auto operation = EncosDriverManager::Instance().AcquireDeviceOperation(this);
     platform::LockGuard<platform::RecursiveMutex> lock(impl_->motor_mutex);
-    impl_->current_range = range;
+    platform::LockGuard<platform::Mutex> ranges_lock(impl_->feedback_ranges_mutex);
+    impl_->ranges.current = {-range, range};
 }
 
 void Motor::EnableCanFd() {

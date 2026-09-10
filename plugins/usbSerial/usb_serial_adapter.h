@@ -1,17 +1,13 @@
 #pragma once
 
 #include <array>
-#include <atomic>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "adapter/base_adapter.h"
 #include "export.h"
-#include "platform/sync.h"
-#include "serialib.h"
-#include "usb_serial_sender.h"
+#include "serial_port.h"
 
 namespace encos {
 
@@ -49,16 +45,11 @@ protected:
     virtual void Send(const MotorMessage& message) override;
 
 private:
-    std::thread loop_thread_;                 /**< 接收循环线程 */
-    platform::Mutex serial_mutex_;            /**< 串口访问互斥锁 */
-    std::shared_ptr<serialib> serial_port_;   /**< 串口句柄 */
-    std::array<std::byte, 1024> read_buffer_; /**< 读取缓冲区 */
-    std::atomic<uint16_t> read_buf_size_{0};  /**< 缓冲区数据大小 */
-    std::atomic<bool> running_{false};        /**< 接收循环运行标志 */
-    std::unique_ptr<UsbSerialSender> sender_; /**< 同步首发与有界重发调度器 */
-    static constexpr std::size_t kMaxPendingRetries = 256;
-
-    void Loop();
+    std::unique_ptr<SerialPort> serial_port_; /**< 管理平台 I/O 和回调生命周期 */
+    std::array<std::byte, 4096> read_buffer_; /**< 批量读取缓冲区 */
+    uint16_t read_buf_size_{0};               /**< 缓冲区数据大小，仅接收路径访问 */
+    void ReceiveBytes(const std::byte* data, std::size_t size);
+    void ParseBuffer();
 };
 
 }  // namespace encos

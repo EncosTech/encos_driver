@@ -1,15 +1,13 @@
 #pragma once
 
 #include <array>
-#include <atomic>
+#include <cstddef>
 #include <string>
-#include <thread>
 #include <unordered_map>
 
 #include "adapter/base_adapter.h"
 #include "export.h"
-#include "platform/sync.h"
-#include "serialib.h"
+#include "serial_port.h"
 
 namespace encos {
 
@@ -46,14 +44,13 @@ protected:
     virtual void Send(const MotorMessage& message) override;
 
 private:
-    std::thread loop_thread_;                /**< 接收循环线程 */
-    platform::Mutex serial_mutex_;           /**< 串口访问互斥锁 */
-    std::shared_ptr<serialib> serial_port_;  /**< 串口句柄 */
-    std::array<char, 1024> read_buffer_;     /**< 读取缓冲区 */
-    std::atomic<uint16_t> read_buf_size_{0}; /**< 缓冲区数据大小 */
-    std::atomic<bool> loop_stopping_{false}; /**< 接收循环停止标志 */
+    std::unique_ptr<SerialPort> serial_port_; /**< 串口句柄 */
+    std::array<char, 1024> read_buffer_;      /**< 读取缓冲区 */
+    std::size_t read_buf_size_{0};            /**< 缓冲区数据大小 */
+    bool discarding_line_{false};             /**< 丢弃超长帧直到下一行 */
 
-    void Loop();
+    void ReceiveBytes(const std::byte* data, std::size_t size);
+    void ReceiveLine(const std::string& line);
 };
 
 }  // namespace encos

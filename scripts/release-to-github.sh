@@ -14,6 +14,7 @@ Required options:
 
 Optional options:
   --source-ref REF               Source branch or tag (default: main)
+  --source-sha1 SHA1             Exact commit belonging to the source branch
   --github-branch BRANCH         GitHub snapshot branch (default: main)
   --debian-distributions CSV     Debian distributions (default: jammy,noble)
   --debian-architectures CSV     Debian architectures (default: amd64,arm64)
@@ -47,6 +48,7 @@ require_value() {
 
 source_repo=""
 source_ref="main"
+source_sha1=""
 github_repo=""
 github_repo_url=""
 github_branch="main"
@@ -73,6 +75,11 @@ while (($#)); do
     --source-ref)
       require_value "$1" "${2:-}"
       source_ref=$2
+      shift 2
+      ;;
+    --source-sha1)
+      require_value "$1" "${2:-}"
+      source_sha1=$2
       shift 2
       ;;
     --github-repo)
@@ -160,6 +167,9 @@ while (($#)); do
 done
 
 [[ -n "${source_repo}" ]] || die "--source-repo is required"
+if [[ -n "${source_sha1}" && ! "${source_sha1}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  die "--source-sha1 must be a complete 40-character hexadecimal commit SHA1"
+fi
 [[ -n "${github_repo}" ]] || die "--github-repo is required"
 [[ "${github_repo}" == */* ]] || die "--github-repo must use OWNER/REPO format"
 [[ -n "${github_repo_url}" ]] || die "--github-repo-url is required"
@@ -277,10 +287,32 @@ target_dir="${work_dir}/target"
 package_dir="${work_dir}/packages"
 mkdir -p "${package_dir}"
 
-printf 'Cloning source snapshot from %s (%s)\n' "${source_repo}" "${source_ref}"
-git_with_auth "${gitea_url}" "${GITEA_USERNAME}" "${GITEA_TOKEN}" \
-  -c protocol.file.allow=always clone --quiet --depth 1 --branch "${source_ref}" \
-  "${source_repo}" "${source_dir}"
+if [[ -n "${source_sha1}" ]]; then
+  printf 'Cloning source snapshot from %s (%s at %s)\n' \
+    "${source_repo}" "${source_ref}" "${source_sha1}"
+  git_with_auth "${gitea_url}" "${GITEA_USERNAME}" "${GITEA_TOKEN}" \
+    -c protocol.file.allow=always clone --quiet --no-checkout \
+    --single-branch --branch "${source_ref}" "${source_repo}" "${source_dir}"
+
+  if ! git -C "${source_dir}" cat-file -e "${source_sha1}^{commit}" 2>/dev/null; then
+    die "source commit ${source_sha1} does not exist"
+  fi
+  resolved_source_sha1=$(git -C "${source_dir}" rev-parse "${source_sha1}^{commit}")
+  source_branch_ref="refs/remotes/origin/${source_ref}"
+  if ! git -C "${source_dir}" show-ref --verify --quiet "${source_branch_ref}"; then
+    die "--source-sha1 requires --source-ref to name a branch"
+  fi
+  if ! git -C "${source_dir}" merge-base --is-ancestor \
+    "${resolved_source_sha1}" "${source_branch_ref}"; then
+    die "source commit ${source_sha1} does not belong to branch ${source_ref}"
+  fi
+  git -C "${source_dir}" checkout --quiet --detach "${resolved_source_sha1}"
+else
+  printf 'Cloning source snapshot from %s (%s)\n' "${source_repo}" "${source_ref}"
+  git_with_auth "${gitea_url}" "${GITEA_USERNAME}" "${GITEA_TOKEN}" \
+    -c protocol.file.allow=always clone --quiet --depth 1 --branch "${source_ref}" \
+    "${source_repo}" "${source_dir}"
+fi
 
 update_submodules_safely() {
   local repository_dir=$1

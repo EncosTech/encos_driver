@@ -66,7 +66,7 @@ inline float read_float_be(const uint8_t* data) {
 
 template <int FeedbackType>
 std::optional<FeedbackStruct<FeedbackType>> DecodeFeedback(const MotorPackMsg& pack,
-                                                           float current_range) {
+                                                           const MotorPVTRanges& ranges) {
     static_assert(FeedbackType == 1 || FeedbackType == 2 || FeedbackType == 3,
                   "Invalid FeedbackType: must be 1, 2 or 3");
     if (!packet_has_payload(pack, 0, 8))
@@ -84,9 +84,9 @@ std::optional<FeedbackStruct<FeedbackType>> DecodeFeedback(const MotorPackMsg& p
 
         MotorFeedbackMsg1 fb{};
         fb.error = error;
-        fb.position = UintToFloat(pos_int, -12.5f, 12.5f, 16);
-        fb.speed = UintToFloat(spd_int, -18.0f, 18.0f, 12);
-        fb.current = UintToFloat(cur_int, -current_range, current_range, 12);
+        fb.position = UintToFloat(pos_int, ranges.position.min, ranges.position.max, 16);
+        fb.speed = UintToFloat(spd_int, ranges.speed.min, ranges.speed.max, 12);
+        fb.current = UintToFloat(cur_int, ranges.current.min, ranges.current.max, 12);
         fb.motor_temperature = (static_cast<float>(pack.data[6]) - 50.0f) / 2.0f;
         fb.mos_temperature = (static_cast<float>(pack.data[7]) - 50.0f) / 2.0f;
         return fb;
@@ -123,17 +123,18 @@ std::optional<FeedbackStruct<FeedbackType>> DecodeFeedback(const MotorPackMsg& p
     }
 }
 
-inline MotorFeedbackMsg1 AutoDecodeFeedback(const MotorPackMsg& pack, float current_range) {
+inline MotorFeedbackMsg1 AutoDecodeFeedback(const MotorPackMsg& pack,
+                                            const MotorPVTRanges& ranges) {
     uint8_t ack = static_cast<uint8_t>(pack.data[0] >> 5);
     switch (ack) {
         case 1: {
-            auto fb_opt = DecodeFeedback<1>(pack, current_range);
+            auto fb_opt = DecodeFeedback<1>(pack, ranges);
             if (fb_opt)
                 return *fb_opt;
             break;
         }
         case 2: {
-            auto fb_opt = DecodeFeedback<2>(pack, current_range);
+            auto fb_opt = DecodeFeedback<2>(pack, ranges);
             if (fb_opt) {
                 MotorFeedbackMsg2 fb2 = *fb_opt;
                 MotorFeedbackMsg1 fb1{};
@@ -148,7 +149,7 @@ inline MotorFeedbackMsg1 AutoDecodeFeedback(const MotorPackMsg& pack, float curr
             break;
         }
         case 3: {
-            auto fb_opt = DecodeFeedback<3>(pack, current_range);
+            auto fb_opt = DecodeFeedback<3>(pack, ranges);
             if (fb_opt) {
                 MotorFeedbackMsg3 fb3 = *fb_opt;
                 MotorFeedbackMsg1 fb1{};
@@ -197,7 +198,7 @@ inline std::optional<bool> WaitForPacket(const std::function<MotorMessages()>& R
 
 template <int FeedbackType>
 auto WaitForFeedback(const std::function<MotorMessages()>& Read, uint16_t motor_idx,
-                     float current_range, milliseconds timeout = kWaitTimeout)
+                     const MotorPVTRanges& ranges, milliseconds timeout = kWaitTimeout)
     -> std::conditional_t<FeedbackType == 0, bool, std::optional<FeedbackStruct<FeedbackType>>> {
     static_assert(FeedbackType == 0 || FeedbackType == 1 || FeedbackType == 2 || FeedbackType == 3,
                   "Invalid FeedbackType: must be 0, 1, 2 or 3");
@@ -211,7 +212,7 @@ auto WaitForFeedback(const std::function<MotorMessages()>& Read, uint16_t motor_
                 const auto& pack = message.data;
                 if (pack.id != motor_idx)
                     continue;
-                auto fb = DecodeFeedback<FeedbackType>(pack, current_range);
+                auto fb = DecodeFeedback<FeedbackType>(pack, ranges);
                 if (fb)
                     return fb;
             }

@@ -127,6 +127,30 @@ TEST_F(CanIdTests, SetIdMigrationPreparationFailureDoesNotSendFirmwareCommand) {
     EXPECT_EQ(manager.FindMotor(bus, 5), nullptr);
 }
 
+TEST_F(CanIdTests, SetIdDoesNotCopyPreparedHookAfterAcknowledgement) {
+    auto& manager = EncosDriverManager::Instance();
+    bool prepared = false;
+    struct PreparationHook {
+        bool* prepared;
+        explicit PreparationHook(bool* value) : prepared(value) {}
+        PreparationHook(PreparationHook&&) = default;
+        PreparationHook(const PreparationHook& other) : prepared(other.prepared) {
+            if (*prepared) {
+                throw std::bad_alloc();
+            }
+        }
+        void operator()(EncosDriverManager::MigrationStage) const {
+            *prepared = true;
+        }
+    };
+    DriverManagerTestAccess::SetMigrationHook(manager, PreparationHook{&prepared});
+    EXPECT_TRUE(motor->SetId(5, true));
+    DriverManagerTestAccess::SetMigrationHook(manager, {});
+    EXPECT_TRUE(prepared);
+    EXPECT_EQ(manager.FindMotor(bus, 5), motor);
+    EXPECT_EQ(manager.FindMotor(bus, 1), nullptr);
+}
+
 TEST_F(CanIdTests, SetIdTimeout) {
     adapter->SetReplyMode(FakeReplyMode::Manual);
     EXPECT_FALSE(motor->SetId(5, true));

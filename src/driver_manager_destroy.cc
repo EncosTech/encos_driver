@@ -3,13 +3,13 @@
 namespace encos {
 namespace driver_manager_internal {
 
-template <typename T>
-bool DestroyDevice(EncosDriverManager::Impl* impl, T* device, DeviceKind expected) {
+bool DestroyDevice(EncosDriverManager::Impl* impl, void* device, DeviceKind expected) {
     if (device == nullptr) {
         return false;
     }
     DeviceKey key;
     OperationGate* operation_gate = nullptr;
+    DeviceRegistration retired;
     {
         std::scoped_lock lock(impl->object_mutex, impl->route_mutex);
         const auto found = impl->device_keys.find(device);
@@ -22,8 +22,8 @@ bool DestroyDevice(EncosDriverManager::Impl* impl, T* device, DeviceKind expecte
             return false;
         }
         if (callback_context.device != nullptr) {
-            for (const auto& [route_key, route] : impl->routes) {
-                (void) route_key;
+            for (const auto& entry : impl->registrations.at(device).routes) {
+                const auto& route = entry.record;
                 if (route->device != device) {
                     continue;
                 }
@@ -35,34 +35,15 @@ bool DestroyDevice(EncosDriverManager::Impl* impl, T* device, DeviceKind expecte
         }
         impl->deleting.insert(device);
         impl->deleting_device_parents.emplace(device, key.bus);
-        operation_gate = impl->operation_registry.Retire(device, ToOperationKind(expected));
+        operation_gate =
+            impl->operation_registry.Retire(device, impl->registrations.at(device).operation_kind);
         if (operation_gate == nullptr) {
             std::terminate();
         }
+        retired = impl->DetachRegistrationLocked(device);
     }
 
-    EncosDriverManager::CancellationCallback cancel;
-    auto retired = impl->RetireRoutes(device, cancel);
-    if (cancel) {
-        try {
-            cancel();
-        } catch (...) {}
-    }
-    for (const auto& route : retired) {
-        platform::UniqueLock<platform::Mutex> lock(route->mutex);
-        if (route->in_flight != 0) {
-            impl->ObserveWaitForTests();
-        }
-        route->condition.wait(lock, [&route]() {
-            return route->in_flight == 0;
-        });
-    }
-
-    if (operation_gate->HasActiveOperations()) {
-        impl->ObserveWaitForTests();
-    }
-    operation_gate->WaitForDrain();
-    impl->operation_registry.ReclaimRetired(device, ToOperationKind(expected));
+    impl->DrainDevice(device, retired.operation_kind, operation_gate, retired);
 
     impl->InvokeDeletionHook(EncosDriverManager::DeletionStage::BeforeDeviceDestroy);
 
@@ -71,7 +52,7 @@ bool DestroyDevice(EncosDriverManager::Impl* impl, T* device, DeviceKind expecte
         impl->devices.erase(key);
         impl->device_keys.erase(device);
     }
-    delete device;
+    retired.destroy(device);
     {
         platform::LockGuard<platform::Mutex> lock(impl->object_mutex);
         impl->deleting.erase(device);
@@ -157,7 +138,9 @@ bool EncosDriverManager::DestroyGlove(Glove* glove) {
         if (callback_context.device != nullptr) {
             // 回调上下文内销毁必须保证手套全部路由（55 条：50 编码器 + 5 校准）
             // 均无在飞回调：否则销毁总线被拒后 facade 仍会被删除，当前回调栈悬空。
-            for (const auto& [route_key, route] : impl_->routes) {
+            auto& domain = found->second.adapter->impl_->route_domain;
+            platform::LockGuard<platform::Mutex> domain_lock(domain.mutex);
+            for (const auto& [route_key, route] : domain.routes) {
                 (void) route_key;
                 const bool belongs_to_glove =
                     std::find(glove->impl_->buses.begin(), glove->impl_->buses.end(), route->bus) !=
@@ -232,7 +215,6 @@ bool EncosDriverManager::DestroyBusImpl(Bus* bus, bool allow_glove_internal) {
     using driver_manager_internal::BusKey;
     using driver_manager_internal::callback_context;
     using driver_manager_internal::DeviceKind;
-    using driver_manager_internal::ToOperationKind;
 
     if (bus == nullptr) {
         return false;
@@ -253,7 +235,9 @@ bool EncosDriverManager::DestroyBusImpl(Bus* bus, bool allow_glove_internal) {
             return false;
         }
         if (callback_context.device != nullptr) {
-            for (const auto& [route_key, route] : impl_->routes) {
+            auto& domain = found->second.adapter->impl_->route_domain;
+            platform::LockGuard<platform::Mutex> domain_lock(domain.mutex);
+            for (const auto& [route_key, route] : domain.routes) {
                 (void) route_key;
                 if (route->bus != bus) {
                     continue;
@@ -280,7 +264,10 @@ bool EncosDriverManager::DestroyBusImpl(Bus* bus, bool allow_glove_internal) {
             if (device_key.bus != bus) {
                 continue;
             }
-            (void) impl_->operation_registry.Retire(child, ToOperationKind(device_key.kind));
+            const auto registration = impl_->registrations.find(child);
+            if (registration != impl_->registrations.end()) {
+                (void) impl_->operation_registry.Retire(child, registration->second.operation_kind);
+            }
         }
     }
     if (operation_gate->HasActiveOperations()) {
@@ -298,28 +285,7 @@ bool EncosDriverManager::DestroyBusImpl(Bus* bus, bool allow_glove_internal) {
         }
     }
     for (const auto& [child, kind] : children) {
-        switch (kind) {
-            case DeviceKind::Motor:
-                (void) DestroyMotor(static_cast<Motor*>(child));
-                break;
-            case DeviceKind::Battery:
-                (void) DestroyBattery(static_cast<Battery*>(child));
-                break;
-            case DeviceKind::Imu:
-                (void) DestroyImu(static_cast<Imu*>(child));
-                break;
-            case DeviceKind::Pms:
-                (void) DestroyPms(static_cast<Pms*>(child));
-                break;
-            case DeviceKind::GloveEncoder:
-                (void) driver_manager_internal::DestroyDevice<GloveEncoder>(
-                    impl_, static_cast<GloveEncoder*>(child), DeviceKind::GloveEncoder);
-                break;
-            case DeviceKind::GloveCalibrator:
-                (void) driver_manager_internal::DestroyDevice<GloveCalibrator>(
-                    impl_, static_cast<GloveCalibrator*>(child), DeviceKind::GloveCalibrator);
-                break;
-        }
+        (void) driver_manager_internal::DestroyDevice(impl_, child, kind);
     }
     impl_->WaitForBusChildren(bus);
     impl_->InvokeDeletionHook(DeletionStage::BeforeBusDestroy);
@@ -341,7 +307,6 @@ bool EncosDriverManager::DestroyBusImpl(Bus* bus, bool allow_glove_internal) {
 
 bool EncosDriverManager::DestroyAdapter(BaseAdapter* adapter) {
     using driver_manager_internal::callback_context;
-    using driver_manager_internal::ToOperationKind;
 
     if (adapter == nullptr) {
         return false;
@@ -361,7 +326,9 @@ bool EncosDriverManager::DestroyAdapter(BaseAdapter* adapter) {
             return false;
         }
         if (callback_context.device != nullptr || callback_context.raw_receive) {
-            for (const auto& [route_key, route] : impl_->routes) {
+            auto& domain = adapter->impl_->route_domain;
+            platform::LockGuard<platform::Mutex> domain_lock(domain.mutex);
+            for (const auto& [route_key, route] : domain.routes) {
                 (void) route_key;
                 if (route->adapter != adapter) {
                     continue;
@@ -386,7 +353,11 @@ bool EncosDriverManager::DestroyAdapter(BaseAdapter* adapter) {
                 if (device_key.bus != bus) {
                     continue;
                 }
-                (void) impl_->operation_registry.Retire(child, ToOperationKind(device_key.kind));
+                const auto registration = impl_->registrations.find(child);
+                if (registration != impl_->registrations.end()) {
+                    (void) impl_->operation_registry.Retire(child,
+                                                            registration->second.operation_kind);
+                }
             }
         }
         for (const auto& [glove_key, glove] : impl_->gloves) {

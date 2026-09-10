@@ -69,8 +69,8 @@ CanAdapter::CanAdapter(const std::string& interface_name, const std::string& log
 
     can_handle_ = std::make_unique<CanHandle>(socket_fd);
 #endif
-    can_handle_->SetCallback([this](const MotorMessage& msg) {
-        OnMessage(MotorMessages{msg});
+    can_handle_->SetBatchCallback([this](const MotorMessages& messages) {
+        OnMessage(messages);
     });
 
     RequireLoopPriority();

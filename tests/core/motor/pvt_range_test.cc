@@ -155,4 +155,97 @@ TEST_F(PVTRangeTests, ConcurrentRangeReadsObserveCoherentSnapshots) {
 
 #undef EXPECT_RANGE_WRITE_TESTS
 
+TEST_F(PVTRangeTests, FeedbackOneUsesDriverRangesForAllControlModes) {
+    auto ranges = motor->GetPVTRanges();
+    ranges.position = {-3.0f, 7.0f};
+    ranges.speed = {-9.0f, 31.0f};
+    ranges.current = {-7.0f, 23.0f};
+    motor->SetDriverPVTRanges(ranges);
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    adapter->SetDecodedCommandObserver([&](const FakeCommandRecord&) {
+        MotorPackMsg pack{};
+        pack.id = 1;
+        pack.len = 8;
+        pack.data[0] = 0x20;
+        pack.data[1] = 0xFF;
+        pack.data[2] = 0xFF;
+        pack.data[3] = 0xFF;
+        pack.data[4] = 0xF0;
+        adapter->InjectMessage(MotorMessage{0, pack});
+    });
+    const auto check = [](const MotorFeedbackMsg1& feedback) {
+        EXPECT_EQ(feedback.error, MotorError::NoError);
+        EXPECT_FLOAT_EQ(feedback.position, 7.0f);
+        EXPECT_FLOAT_EQ(feedback.speed, 31.0f);
+        EXPECT_FLOAT_EQ(feedback.current, -7.0f);
+    };
+    check(motor->PVTControl<1>(1, 1, 0, 0, 0));
+    check(motor->PosControl<1>(0, 0, 0));
+    check(motor->SpdControl<1>(0, 0));
+    check(motor->CurControl<1>(0));
+    check(motor->TorControl<1>(0));
+    check(motor->Stop<1>(MotorStopMode::FullBrake, 0));
+    adapter->ClearDecodedCommandObserver();
+}
+
+TEST_F(PVTRangeTests, FeedbackOneTracksRangeUpdatesInAsyncStatus) {
+    auto ranges = motor->GetPVTRanges();
+    ranges.position = {-3.0f, 7.0f};
+    ranges.speed = {-9.0f, 31.0f};
+    ranges.current = {-7.0f, 23.0f};
+    motor->SetDriverPVTRanges(ranges);
+    MotorPackMsg pack{};
+    pack.id = 1;
+    pack.len = 8;
+    pack.data[0] = 0x20;
+    adapter->InjectMessage(MotorMessage{0, pack});
+    auto status = motor->GetStatus();
+    ASSERT_TRUE(status);
+    EXPECT_FLOAT_EQ(status->position, -3.0f);
+    EXPECT_FLOAT_EQ(status->speed, -9.0f);
+    EXPECT_FLOAT_EQ(status->current, -7.0f);
+
+    ASSERT_TRUE(motor->SetPVTPosRange({-5.0f, 8.0f}));
+    ASSERT_TRUE(motor->SetPVTSpdRange({-11.0f, 40.0f}));
+    ASSERT_TRUE(motor->SetPVTCurRange({-13.0f, 35.0f}));
+    adapter->InjectMessage(MotorMessage{0, pack});
+    status = motor->GetStatus();
+    ASSERT_TRUE(status);
+    EXPECT_FLOAT_EQ(status->position, -5.0f);
+    EXPECT_FLOAT_EQ(status->speed, -11.0f);
+    EXPECT_FLOAT_EQ(status->current, -13.0f);
+    pack.data[4] = 0x0F;
+    pack.data[5] = 0xFF;
+    adapter->InjectMessage(MotorMessage{0, pack});
+    status = motor->GetStatus();
+    ASSERT_TRUE(status);
+    EXPECT_FLOAT_EQ(status->current, 35.0f);
+}
+
+TEST_F(PVTRangeTests, SetCurrentRangeUpdatesPvtRangeAndFeedbackUpperBound) {
+    motor->SetCurrentRange(27.0f);
+    const auto ranges = motor->GetPVTRanges();
+    EXPECT_FLOAT_EQ(ranges.current.min, -27.0f);
+    EXPECT_FLOAT_EQ(ranges.current.max, 27.0f);
+    MotorPackMsg pack{};
+    pack.id = 1;
+    pack.len = 8;
+    pack.data[0] = 0x20;
+    pack.data[4] = 0x0F;
+    pack.data[5] = 0xFF;
+    adapter->InjectMessage(MotorMessage{0, pack});
+    const auto status = motor->GetStatus();
+    ASSERT_TRUE(status);
+    EXPECT_FLOAT_EQ(status->current, 27.0f);
+}
+
+TEST_F(PVTRangeTests, FakeFeedbackUsesAsymmetricCurrentRange) {
+    ASSERT_TRUE(motor->SetPVTCurRange({-7.0f, 23.0f}));
+    for (const float current : {-7.0f, 5.0f, 23.0f}) {
+        const auto feedback = motor->CurControl<1>(current);
+        EXPECT_EQ(feedback.error, MotorError::NoError);
+        EXPECT_NEAR(feedback.current, current, 0.01f);
+    }
+}
+
 }  // namespace encos

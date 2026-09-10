@@ -106,6 +106,19 @@ bool WaitForRawMessages(const FakeAdapter& adapter, std::size_t expected_count) 
     return adapter.GetRawSentMessages().size() >= expected_count;
 }
 
+bool WaitForActiveGloveOperations(EncosDriverManager& manager, Glove* glove,
+                                  std::size_t expected_count) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (DriverManagerTestAccess::GetActiveGloveOperationCount(manager, glove) >=
+            expected_count) {
+            return true;
+        }
+        std::this_thread::yield();
+    }
+    return DriverManagerTestAccess::GetActiveGloveOperationCount(manager, glove) >= expected_count;
+}
+
 struct StatusEvents {
     std::mutex mutex;
     std::condition_variable condition;
@@ -376,6 +389,59 @@ TEST_F(MotorTestFixture, GloveDoesNotCollectFramesBeforeItsReceiveRoutesActivate
     ASSERT_NE(glove, nullptr);
     EXPECT_FALSE(glove->GetStatus()[0][0].has_value());
     EXPECT_TRUE(manager.DestroyGlove(glove));
+}
+
+TEST_F(MotorTestFixture, PartialGloveActivationRollbackDrainsEncoderBeforeFreeingFacade) {
+    auto& manager = EncosDriverManager::Instance();
+    auto& impl = DriverManagerTestAccess::Internals(manager);
+    std::promise<void> callback_entered;
+    std::promise<void> release_callback;
+    auto release = release_callback.get_future().share();
+    std::promise<void> drain_entered;
+    std::atomic<bool> notified{false};
+    DriverManagerTestAccess::SetWaitHook(manager, [&] {
+        if (!notified.exchange(true)) {
+            drain_entered.set_value();
+        }
+    });
+    std::future<bool> dispatch;
+    impl.glove_activation_hook = [&](std::size_t index) {
+        if (index != 1) {
+            return;
+        }
+        {
+            std::scoped_lock lock(impl.object_mutex, impl.route_mutex);
+            auto* first_bus = impl.buses.at({adapter, 0});
+            auto* encoder =
+                impl.devices.at({first_bus, driver_manager_internal::DeviceKind::GloveEncoder, 0});
+            const auto& route = impl.registrations.at(encoder).routes.front().record;
+            platform::LockGuard<platform::Mutex> route_lock(route->mutex);
+            auto original = route->callback;
+            route->callback = [&, original](const MotorPackMsg& message) {
+                callback_entered.set_value();
+                release.wait();
+                original(message);
+            };
+        }
+        dispatch = std::async(std::launch::async, [&] {
+            return manager.DispatchReceive(adapter, 0, MakeGloveEncoderFrame(0, 0, 123).data);
+        });
+        callback_entered.get_future().wait();
+        throw std::runtime_error("partial glove activation failed");
+    };
+    auto creation = std::async(std::launch::async, [&] {
+        EXPECT_THROW(adapter->GetGlove(0), std::runtime_error);
+    });
+    const auto drain_status = drain_entered.get_future().wait_for(std::chrono::seconds(3));
+    EXPECT_EQ(drain_status, std::future_status::ready);
+    EXPECT_EQ(creation.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+    release_callback.set_value();
+    creation.get();
+    EXPECT_TRUE(dispatch.get());
+    impl.glove_activation_hook = {};
+    DriverManagerTestAccess::SetWaitHook(manager, {});
+    EXPECT_FALSE(manager.DispatchReceive(adapter, 0, MakeGloveEncoderFrame(0, 0, 123).data));
+    EXPECT_NE(adapter->GetGlove(0), nullptr);
 }
 
 TEST_F(MotorTestFixture, GloveCreationRollbackAfterCallbackConnectionReleasesAllDevices) {
@@ -674,10 +740,36 @@ TEST_F(MotorTestFixture, GloveDestructionDrainsQueuedCalibrationCalls) {
         return glove->CalibrateByMask(1, ENCOS_GLOVE_CALI_E(1));
     });
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    ASSERT_TRUE(WaitForActiveGloveOperations(manager, glove, 2));
     EXPECT_TRUE(manager.DestroyGlove(glove));
     EXPECT_EQ(first.get(), GloveCalibrationStatus::Timeout);
     EXPECT_EQ(second.get(), GloveCalibrationStatus::Timeout);
+}
+
+TEST_F(MotorTestFixture, AdapterDestructionDrainsQueuedGloveCalibrationCalls) {
+    auto& manager = EncosDriverManager::Instance();
+    auto* glove = adapter->GetGlove(0);
+    ASSERT_NE(glove, nullptr);
+    adapter->ClearCommandRecords();
+
+    auto first = std::async(std::launch::async, [glove] {
+        return glove->CalibrateByMask(0, ENCOS_GLOVE_CALI_E(0));
+    });
+    ASSERT_TRUE(WaitForRawMessages(*adapter, 1));
+    auto second = std::async(std::launch::async, [glove] {
+        return glove->CalibrateByMask(1, ENCOS_GLOVE_CALI_E(1));
+    });
+
+    ASSERT_TRUE(WaitForActiveGloveOperations(manager, glove, 2));
+    EXPECT_TRUE(manager.DestroyAdapter(adapter));
+    EXPECT_EQ(first.get(), GloveCalibrationStatus::Timeout);
+    EXPECT_EQ(second.get(), GloveCalibrationStatus::Timeout);
+    const std::string replacement_name = "QueuedGloveCalibrationReplacement";
+    adapter = static_cast<FakeAdapter*>(manager.CreateAdapterWithFactory(replacement_name, [&] {
+        return new FakeAdapter(replacement_name);
+    }));
+    bus = nullptr;
+    motor = nullptr;
 }
 
 TEST_F(MotorTestFixture, GloveProtectsInternalBusesAndRejectsDestructionInStatusCallback) {
@@ -699,6 +791,40 @@ TEST_F(MotorTestFixture, GloveProtectsInternalBusesAndRejectsDestructionInStatus
     EXPECT_TRUE(attempted.load());
     EXPECT_FALSE(result.load());
     EXPECT_TRUE(manager.DestroyGlove(glove));
+}
+
+TEST_F(MotorTestFixture, GloveDeletionDrainsEncoderCallbackWithoutAnActiveFacadeOperation) {
+    auto& manager = EncosDriverManager::Instance();
+    auto* glove = adapter->GetGlove(0);
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    glove->SetOnStatus([&](const GloveStatus&) {
+        entered.set_value();
+        released.wait();
+    });
+    auto receive = std::async(std::launch::async, [&] {
+        InjectEncoderWindow(adapter);
+    });
+    EXPECT_EQ(entered.get_future().wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_EQ(DriverManagerTestAccess::GetActiveGloveOperationCount(manager, glove), 0u);
+    std::promise<void> draining;
+    std::atomic<bool> notified{false};
+    DriverManagerTestAccess::SetWaitHook(manager, [&] {
+        if (!notified.exchange(true)) {
+            draining.set_value();
+        }
+    });
+    auto deletion = std::async(std::launch::async, [&] {
+        return manager.DestroyGlove(glove);
+    });
+    EXPECT_EQ(draining.get_future().wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    EXPECT_EQ(deletion.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+    release.set_value();
+    receive.get();
+    EXPECT_TRUE(deletion.get());
+    DriverManagerTestAccess::SetWaitHook(manager, {});
+    EXPECT_NE(adapter->GetGlove(0), nullptr);
 }
 
 TEST_F(MotorTestFixture, GloveStatusCallbackRejectsAdapterDestruction) {

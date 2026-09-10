@@ -146,9 +146,9 @@ std::optional<FakeCommandRecord> DecodeFakeCommand(const MotorMessage& message,
         return record;
     }
 
-    if (pack.len == 3 && pack.data[0] == static_cast<uint8_t>(0x04 << 5)) {
+    if (pack.len == 3 && (pack.data[0] & 0xFC) == 0x74 && pack.data[1] == 0 && pack.data[2] <= 1) {
         FakeBrakePayload payload;
-        payload.enabled = pack.data[1] != 0;
+        payload.enabled = pack.data[2] == 0;
         payload.wait_for_ack = true;
         record.kind = FakeCommandKind::Brake;
         record.payload = payload;

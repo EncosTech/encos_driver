@@ -3,17 +3,16 @@ project(EncosSlcanPlugin)
 
 set(CMAKE_CXX_STANDARD 17)
 
-if(NOT TARGET serialib)
-    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../external/serialib
-        ${CMAKE_BINARY_DIR}/external/serialib)
-    set_target_properties(serialib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(NOT TARGET EncosSerialPort)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../utils/serialPort
+        ${CMAKE_BINARY_DIR}/plugins/utils/serialPort)
 endif()
 
 add_library(SlcanPluginCore STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/slcan_adapter.cc
 )
 target_link_libraries(SlcanPluginCore PUBLIC
-    serialib
+    EncosSerialPort
     EncosMotorDriverBase
 )
 target_include_directories(SlcanPluginCore PUBLIC
@@ -33,5 +32,13 @@ if(NOT ENCOS_STATIC_MODE)
     target_link_libraries(SlcanPlugin PRIVATE SlcanPluginCore)
     target_include_directories(SlcanPlugin PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+endif()
+
+if(ENCOS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    encos_register_plugin_tests(
+        SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/test/slcan_adapter_test.cc
+        LIBRARIES SlcanPluginCore
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../src
     )
 endif()

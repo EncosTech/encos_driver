@@ -213,6 +213,10 @@ BaseAdapter* EncosDriverManager::CreateAdapterWithFactory(const std::string& int
 
 void EncosDriverManager::ResetForTests() {
     DestroyAllManagedObjects();
+    platform::LockGuard<platform::Mutex> lock(impl_->object_mutex);
+    impl_->route_publish_hook = {};
+    impl_->child_creation_hook = {};
+    impl_->glove_activation_hook = {};
 }
 
 void EncosDriverManager::SetCreationHookForTests(CreationHook hook) {

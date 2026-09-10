@@ -179,41 +179,39 @@ bool EncosDriverManager::RegisterReceiveRoutes(void* device, BaseAdapter* adapte
         impl_->deleting.count(adapter) != 0) {
         return false;
     }
-    const auto existing = impl_->device_routes.find(device);
-    if (existing != impl_->device_routes.end()) {
-        if (existing->second.size() != can_ids.size()) {
+    const auto existing = impl_->registrations.find(device);
+    if (existing == impl_->registrations.end() ||
+        existing->second.routes.size() != can_ids.size()) {
+        return false;
+    }
+    auto& domain = adapter->impl_->route_domain;
+    platform::LockGuard<platform::Mutex> domain_lock(domain.mutex);
+    std::vector<ReceiveCallback> prepared_callbacks;
+    prepared_callbacks.reserve(can_ids.size());
+    for (const auto& entry : existing->second.routes) {
+        const auto& key = entry.key;
+        if (key.adapter != adapter ||
+            std::find(can_ids.begin(), can_ids.end(), static_cast<std::uint32_t>(key.unique_id)) ==
+                can_ids.end()) {
             return false;
         }
-        std::vector<ReceiveCallback> prepared_callbacks;
-        prepared_callbacks.reserve(existing->second.size());
-        for (const auto& key : existing->second) {
-            if (key.adapter != adapter ||
-                std::find(can_ids.begin(), can_ids.end(),
-                          static_cast<std::uint32_t>(key.unique_id & 0xFFFFFFFFu)) ==
-                    can_ids.end()) {
-                return false;
-            }
-            const auto route = impl_->routes.find(key);
-            if (route == impl_->routes.end() || route->second->device != device) {
-                return false;
-            }
-            platform::LockGuard<platform::Mutex> route_lock(route->second->mutex);
-            if (route->second->retiring || route->second->callback) {
-                return false;
-            }
-            prepared_callbacks.push_back(callback);
+        const auto route = domain.routes.find(key.unique_id);
+        if (route == domain.routes.end() || route->second != entry.record) {
+            return false;
         }
-        CancellationCallback prepared_cancel = std::move(cancel_waiters);
-        for (std::size_t index = 0; index < existing->second.size(); ++index) {
-            const auto& route = impl_->routes.at(existing->second[index]);
-            platform::LockGuard<platform::Mutex> route_lock(route->mutex);
-            route->callback = std::move(prepared_callbacks[index]);
+        platform::LockGuard<platform::Mutex> route_lock(entry.record->mutex);
+        if (entry.record->retiring || entry.record->callback) {
+            return false;
         }
-        impl_->cancellations.insert_or_assign(device, std::move(prepared_cancel));
-        return true;
+        prepared_callbacks.push_back(callback);
     }
-    return impl_->PublishRoutesLocked(device, adapter, bus, can_ids, std::move(callback),
-                                      std::move(cancel_waiters));
+    for (std::size_t index = 0; index < existing->second.routes.size(); ++index) {
+        const auto& route = existing->second.routes[index].record;
+        platform::LockGuard<platform::Mutex> route_lock(route->mutex);
+        route->callback = std::move(prepared_callbacks[index]);
+    }
+    existing->second.cancel_waiters = std::move(cancel_waiters);
+    return true;
 }
 
 bool EncosDriverManager::DispatchReceive(BaseAdapter* adapter, int raw_bus_idx,
@@ -347,7 +345,9 @@ bool EncosDriverManager::ReserveMotorIndex(Motor* motor, int new_motor_idx) {
         const driver_manager_internal::RouteKey new_route{
             bus_it->second.adapter,
             MakeReceiveUniqueId(bus_it->second.raw_idx, static_cast<std::uint32_t>(new_motor_idx))};
-        if (impl_->routes.find(new_route) != impl_->routes.end()) {
+        auto& domain = bus_it->second.adapter->impl_->route_domain;
+        platform::LockGuard<platform::Mutex> domain_lock(domain.mutex);
+        if (domain.routes.find(new_route.unique_id) != domain.routes.end()) {
             return false;
         }
         const auto device_reservation = impl_->motor_index_reservations.find(new_key);
@@ -362,12 +362,14 @@ bool EncosDriverManager::ReserveMotorIndex(Motor* motor, int new_motor_idx) {
         bool install_callback = false;
         try {
             migration_hook = impl_->migration_hook;
-            const auto motor_routes = impl_->device_routes.find(motor);
-            if (motor_routes == impl_->device_routes.end() || motor_routes->second.size() != 1) {
+            const auto motor_routes = impl_->registrations.find(motor);
+            if (motor_routes == impl_->registrations.end() ||
+                motor_routes->second.routes.size() != 1) {
                 return false;
             }
             const auto target_callback = impl_->status_callbacks.find(new_route);
-            const auto source_callback = impl_->status_callbacks.find(motor_routes->second.front());
+            const auto source_callback =
+                impl_->status_callbacks.find(motor_routes->second.routes.front().key);
             if (target_callback != impl_->status_callbacks.end()) {
                 prepared_callback = target_callback->second;
                 install_callback = true;
@@ -375,9 +377,6 @@ bool EncosDriverManager::ReserveMotorIndex(Motor* motor, int new_motor_idx) {
                 prepared_callback = source_callback->second;
                 install_callback = true;
             }
-            impl_->devices.reserve(impl_->devices.size() + 1);
-            impl_->routes.reserve(impl_->routes.size() + 1);
-            impl_->status_callbacks.reserve(impl_->status_callbacks.size() + 1);
             impl_->motor_index_reservations.emplace(
                 new_key,
                 Impl::MotorIndexReservation{motor, std::move(prepared_callback), install_callback});
@@ -439,11 +438,6 @@ bool EncosDriverManager::MigrateMotorIndex(Motor* motor, int new_motor_idx) {
     bool migration_prechecked = false;
     {
         platform::LockGuard<platform::Mutex> lock(impl_->object_mutex);
-        try {
-            migration_hook = impl_->migration_hook;
-        } catch (...) {
-            return false;
-        }
         const auto reverse = impl_->device_keys.find(motor);
         if (reverse != impl_->device_keys.end()) {
             const driver_manager_internal::DeviceKey new_key{
@@ -451,6 +445,13 @@ bool EncosDriverManager::MigrateMotorIndex(Motor* motor, int new_motor_idx) {
             const auto reservation = impl_->motor_index_reservations.find(new_key);
             migration_prechecked = reservation != impl_->motor_index_reservations.end() &&
                                    reservation->second.motor == motor;
+        }
+        if (!migration_prechecked) {
+            try {
+                migration_hook = impl_->migration_hook;
+            } catch (...) {
+                return false;
+            }
         }
     }
     if (!migration_prechecked && migration_hook) {
@@ -491,21 +492,20 @@ bool EncosDriverManager::MigrateMotorIndex(Motor* motor, int new_motor_idx) {
         bus_key.adapter,
         MakeReceiveUniqueId(bus_key.raw_idx, static_cast<std::uint32_t>(new_motor_idx))};
     const auto route_reservation = impl_->motor_route_reservations.find(new_route);
-    if (impl_->routes.find(new_route) != impl_->routes.end() ||
+    if (domain.routes.find(new_route.unique_id) != domain.routes.end() ||
         (route_reservation != impl_->motor_route_reservations.end() &&
          route_reservation->second != motor)) {
         return false;
     }
-    const auto routes_it = impl_->device_routes.find(motor);
-    if (routes_it == impl_->device_routes.end() || routes_it->second.size() != 1) {
+    const auto routes_it = impl_->registrations.find(motor);
+    if (routes_it == impl_->registrations.end() || routes_it->second.routes.size() != 1) {
         return false;
     }
-    const auto old_route = routes_it->second.front();
-    const auto old_route_it = impl_->routes.find(old_route);
-    if (old_route_it == impl_->routes.end()) {
+    const auto old_route = routes_it->second.routes.front().key;
+    const auto old_route_it = domain.routes.find(old_route.unique_id);
+    if (old_route_it == domain.routes.end()) {
         return false;
     }
-    const auto record = old_route_it->second;
     const auto source_callback = impl_->status_callbacks.find(old_route);
     const auto target_callback = impl_->status_callbacks.find(new_route);
     std::function<void(const MotorStatus&)> callback_to_install;
@@ -528,42 +528,14 @@ bool EncosDriverManager::MigrateMotorIndex(Motor* motor, int new_motor_idx) {
         }
     }
 
-    try {
-        impl_->routes.reserve(impl_->routes.size() + 1);
-        domain.routes.reserve(domain.routes.size() + 1);
-        impl_->devices.reserve(impl_->devices.size() + 1);
-        impl_->status_callbacks.reserve(impl_->status_callbacks.size() + 1);
-        routes_it->second.reserve(1);
-    } catch (...) {
-        return false;
-    }
-    try {
-        if (!impl_->routes.emplace(new_route, record).second) {
-            return false;
-        }
-        try {
-            if (!domain.routes.emplace(new_route.unique_id, record).second) {
-                impl_->routes.erase(new_route);
-                return false;
-            }
-            if (!impl_->devices.emplace(new_key, motor).second) {
-                domain.routes.erase(new_route.unique_id);
-                impl_->routes.erase(new_route);
-                return false;
-            }
-        } catch (...) {
-            domain.routes.erase(new_route.unique_id);
-            impl_->routes.erase(new_route);
-            return false;
-        }
-    } catch (...) {
-        return false;
-    }
-
-    impl_->routes.erase(old_route);
-    domain.routes.erase(old_route.unique_id);
-    impl_->devices.erase(old_key);
-    routes_it->second.front() = new_route;
+    // 复用现有节点重新设键，表大小不增加；ACK 后提交无需分配节点或扩容。
+    auto route_node = domain.routes.extract(old_route_it);
+    auto device_node = impl_->devices.extract(old_key);
+    route_node.key() = new_route.unique_id;
+    device_node.key() = new_key;
+    domain.routes.insert(std::move(route_node));
+    impl_->devices.insert(std::move(device_node));
+    routes_it->second.routes.front().key = new_route;
     reverse->second = new_key;
     if (target_callback != impl_->status_callbacks.end()) {
         impl_->status_callbacks.erase(old_route);

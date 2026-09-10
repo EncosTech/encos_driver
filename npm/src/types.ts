@@ -1,6 +1,46 @@
 export type CFunction = (...args: any[]) => any
 
+export interface WebSerialOpenOptions {
+  baudRate: number
+  dataBits?: 7 | 8
+  stopBits?: 1 | 2
+  parity?: 'none' | 'even' | 'odd'
+  flowControl?: 'none' | 'hardware'
+  bufferSize?: number
+}
+
+/** 浏览器 SerialPort 的结构类型，无需额外安装 Web Serial 类型包。 */
+export interface WebSerialPort {
+  readonly readable: ReadableStream<Uint8Array> | null
+  readonly writable: WritableStream<Uint8Array> | null
+  open(options: WebSerialOpenOptions): Promise<void>
+  close(): Promise<void>
+}
+
+export interface WebSerialRequestOptions {
+  filters?: Array<{ usbVendorId?: number; usbProductId?: number; bluetoothServiceClassId?: number | string }>
+  allowedBluetoothServiceClassIds?: Array<number | string>
+}
+
+export interface WebSerialStatus {
+  open: boolean
+  attached?: boolean
+  queuedBytes?: number
+  error?: string | null
+}
+
+export interface WebSerialBridge {
+  /** 在用户点击事件中请求权限并打开串口，返回 UsbSerial 的 interfaceName。 */
+  requestPort(options?: WebSerialRequestOptions): Promise<string>
+  /** 打开已经获得授权的浏览器串口。 */
+  open(port: WebSerialPort): Promise<string>
+  /** 等待取消读写、释放流锁并关闭串口。 */
+  close(interfaceName: string): Promise<void>
+  status(interfaceName: string): WebSerialStatus
+}
+
 export interface WasmModule {
+  webSerial?: WebSerialBridge
   cwrap(
     ident: string,
     returnType: 'number',

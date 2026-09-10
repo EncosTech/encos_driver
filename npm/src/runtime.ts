@@ -6,6 +6,7 @@ import type {
   CreateAdapterOptions,
   CreateFakeAdapterOptions,
   WasmModule,
+  WebSerialBridge,
 } from './types.js'
 import { AdapterWrapper, FakeAdapterWrapper } from './adapter.js'
 
@@ -22,6 +23,13 @@ export class Runtime {
     this.adapters = new Set()
     this.calls = createRuntimeCalls(module)
     this.host = host
+  }
+
+  get webSerial(): WebSerialBridge {
+    if (!this.module.webSerial) {
+      throw new Error('Web Serial bridge is unavailable in this WASM build')
+    }
+    return this.module.webSerial
   }
 
   createAdapter<T extends string>(

@@ -99,6 +99,11 @@ public:
         }
     }
 
+    void SetCloseHookForTesting(std::function<void()> hook) {
+        platform::LockGuard<platform::Mutex> lock(completion_mutex_);
+        close_hook_ = std::move(hook);
+    }
+
 private:
     friend class MotorLogWorker;
 
@@ -203,6 +208,9 @@ private:
             closed_ = true;
         }
         completion_cv_.notify_all();
+        if (close_hook_) {
+            close_hook_();
+        }
     }
 
     void StoreError(std::exception_ptr error) noexcept {
@@ -223,21 +231,19 @@ private:
     bool closed_ = false;
     std::exception_ptr error_;
     std::atomic<bool> failed_{false};
+    std::function<void()> close_hook_;
 };
 
 namespace {
 
 void MotorLogWorker::Run() noexcept {
     for (;;) {
-        std::vector<std::shared_ptr<MotorLogSessionImpl>> sessions;
-        {
-            platform::UniqueLock<platform::Mutex> lock(mutex_);
-            cv_.wait_for(lock, std::chrono::milliseconds(1), [this]() {
-                return !sessions_.empty();
-            });
-            sessions = sessions_;
-        }
-        for (const auto& session : sessions) {
+        platform::UniqueLock<platform::Mutex> lock(mutex_);
+        cv_.wait_for(lock, std::chrono::milliseconds(1), [this]() {
+            return !sessions_.empty();
+        });
+        // 注销返回前必须结束当前处理，避免后台引用延迟会话析构至静态对象销毁之后。
+        for (const auto& session : sessions_) {
             session->Drain();
         }
     }
@@ -280,6 +286,11 @@ void CloseMotorLogSession(const std::shared_ptr<MotorLogSession>& session) {
         throw;
     }
     Worker().Unregister(implementation);
+}
+
+void SetMotorLogSessionCloseHookForTesting(const std::shared_ptr<MotorLogSession>& session,
+                                           std::function<void()> hook) {
+    std::static_pointer_cast<MotorLogSessionImpl>(session)->SetCloseHookForTesting(std::move(hook));
 }
 
 }  // namespace encos::detail

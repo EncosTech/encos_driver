@@ -41,6 +41,14 @@ if(NOT ENCOS_STATIC_MODE)
 endif()
 set_target_properties(EthercatHandle PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+if(ENCOS_BUILD_TESTS)
+    encos_register_plugin_tests(
+        SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/test/ethercat_recovery_test.cc
+        LIBRARIES EthercatHandle
+        INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+endif()
+
 add_library(EthercatPluginCore STATIC
     ethercat_adapter.cc
 )

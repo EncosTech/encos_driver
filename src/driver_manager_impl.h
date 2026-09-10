@@ -50,24 +50,6 @@ namespace driver_manager_internal {
 
 enum class DeviceKind : std::uint8_t { Motor, Battery, Imu, Pms, GloveEncoder, GloveCalibrator };
 
-inline OperationKind ToOperationKind(DeviceKind kind) {
-    switch (kind) {
-        case DeviceKind::Motor:
-            return OperationKind::Motor;
-        case DeviceKind::Battery:
-            return OperationKind::Battery;
-        case DeviceKind::Imu:
-            return OperationKind::Imu;
-        case DeviceKind::Pms:
-            return OperationKind::Pms;
-        case DeviceKind::GloveEncoder:
-            return OperationKind::GloveEncoder;
-        case DeviceKind::GloveCalibrator:
-            return OperationKind::GloveCalibrator;
-    }
-    std::terminate();
-}
-
 inline uint8_t WithCanFdFlag(uint8_t frame_flags, bool canfd) {
     frame_flags = SanitizeCanFrameFlags(frame_flags);
     if (canfd) {
@@ -141,6 +123,35 @@ struct RouteKeyHash {
         return std::hash<BaseAdapter*>{}(key.adapter) ^
                (std::hash<std::uint64_t>{}(key.unique_id) << 1u);
     }
+};
+
+/** @brief 叶子设备的类型化入口提供能力，生命周期引擎不解释协议。 */
+struct DeviceRoute {
+    EncosDriverManager::ReceiveCallback callback;
+    EncosDriverManager::CancellationCallback cancel_waiters;
+};
+struct DeviceRecipe {
+    DeviceKind kind;
+    OperationKind operation_kind;
+    std::vector<std::uint32_t> can_ids;
+    std::function<void*()> construct;
+    std::function<DeviceRoute(void*)> bind;
+    std::function<void(void*)> initialize;
+    std::function<void(void*)> commit;
+    void (*destroy)(void*) noexcept;
+};
+struct RouteEntry {
+    RouteKey key;
+    std::shared_ptr<RouteRecord> record;
+};
+/** @brief 登记移出管理器后继续持有路由，直至所有回调排空。 */
+struct DeviceRegistration {
+    BaseAdapter* adapter = nullptr;
+    Bus* bus = nullptr;
+    OperationKind operation_kind = OperationKind::Motor;
+    void (*destroy)(void*) noexcept = nullptr;
+    std::vector<RouteEntry> routes;
+    EncosDriverManager::CancellationCallback cancel_waiters;
 };
 
 inline std::int64_t MakeMotorStatusKey(int raw_bus_idx, int motor_idx) {
@@ -260,14 +271,18 @@ struct EncosDriverManager::Impl {
         status_callbacks;
 
     platform::Mutex route_mutex;
-    std::unordered_map<driver_manager_internal::RouteKey, std::shared_ptr<RouteRecord>,
-                       driver_manager_internal::RouteKeyHash>
-        routes;
     std::unordered_map<driver_manager_internal::RouteKey, Motor*,
                        driver_manager_internal::RouteKeyHash>
         motor_route_reservations;
-    std::unordered_map<void*, std::vector<driver_manager_internal::RouteKey>> device_routes;
-    std::unordered_map<void*, CancellationCallback> cancellations;
+    std::unordered_map<void*, driver_manager_internal::DeviceRegistration> registrations;
+    // 测试故障注入：仅用于锁内发布和父级计数的分配失败窗口。
+    std::function<void(std::size_t)> route_publish_hook;
+    std::function<void(void*)> child_creation_hook;
+    std::function<void(std::size_t)> glove_activation_hook;
+
+    ENCOS_BASE_API void* CreateDevice(Bus* bus, int idx,
+                                      const driver_manager_internal::DeviceRecipe& recipe);
+    ENCOS_BASE_API driver_manager_internal::DeviceRecipe MakeBatteryRecipe(Bus* bus, int idx);
     CreationHook creation_hook;
     DeletionHook deletion_hook;
     MigrationHook migration_hook;
@@ -283,6 +298,9 @@ struct EncosDriverManager::Impl {
     }
 
     void BeginChildCreationLocked(void* parent) {
+        if (child_creation_hook) {
+            child_creation_hook(parent);
+        }
         ++child_creations[parent];
     }
 
@@ -410,129 +428,159 @@ struct EncosDriverManager::Impl {
         return adapter->MakeDeviceWriter(bus);
     }
 
-    std::vector<std::uint32_t> RouteIds(driver_manager_internal::DeviceKind kind, int idx) const {
-        using driver_manager_internal::DeviceKind;
-        switch (kind) {
-            case DeviceKind::Motor:
-                return {static_cast<std::uint32_t>(idx)};
-            case DeviceKind::Battery: {
-                const auto ids = protocol::BatteryStatusIds(static_cast<std::uint16_t>(idx));
-                return {ids.begin(), ids.end()};
-            }
-            case DeviceKind::Imu: {
-                const auto ids = protocol::ImuStatusIds(static_cast<std::uint16_t>(idx));
-                return {ids.begin(), ids.end()};
-            }
-            case DeviceKind::Pms:
-                return {protocol::kPmsStatusIds.begin(), protocol::kPmsStatusIds.end()};
-            case DeviceKind::GloveEncoder:
-                // 编码器设备只注册本编码器的角度报告；idx 为全局编码器号 0-49
-                // （手指号×10+编码器号），路由挂在各自帧内总线上，互不冲突。
-                return {protocol::kGloveEncoderBaseId + static_cast<std::uint32_t>(idx)};
-            case DeviceKind::GloveCalibrator:
-                // 虚拟校准设备注册本分区唯一的校准响应路由；idx 为手指号 0-4。
-                return {protocol::kGloveCalibrationId};
-        }
-        return {};
+    /** @brief 各 Motor 构造重载复用相同的接收与取消能力。 */
+    static driver_manager_internal::DeviceRoute BindMotor(Motor* motor) {
+        return {[motor](const MotorPackMsg& message) {
+                    motor->OnMessage(message);
+                },
+                [motor]() {
+                    motor->CancelWaiters();
+                }};
     }
 
+    /** @brief 手套组装激活复用叶子描述发布的键，避免再次解释协议。 */
+    std::vector<std::uint32_t> RegisteredRouteIds(void* device) {
+        platform::LockGuard<platform::Mutex> lock(route_mutex);
+        std::vector<std::uint32_t> ids;
+        for (const auto& entry : registrations.at(device).routes) {
+            ids.push_back(static_cast<std::uint32_t>(entry.key.unique_id));
+        }
+        return ids;
+    }
+
+    /** @brief 调用者持有 manager 两把锁，内部锁序为 domain → RouteRecord。 */
     bool PublishRoutesLocked(void* device, BaseAdapter* adapter, Bus* bus,
-                             const std::vector<std::uint32_t>& can_ids, ReceiveCallback callback,
-                             CancellationCallback cancel_waiters) {
+                             const driver_manager_internal::DeviceRecipe& recipe,
+                             driver_manager_internal::DeviceRoute binding) {
+        using namespace driver_manager_internal;
         auto& domain = adapter->impl_->route_domain;
         platform::LockGuard<platform::Mutex> domain_lock(domain.mutex);
+        DeviceRegistration registration{adapter,        bus, recipe.operation_kind,
+                                        recipe.destroy, {},  std::move(binding.cancel_waiters)};
+        registration.routes.reserve(recipe.can_ids.size());
         const int raw_idx = bus_keys.at(bus).raw_idx;
-        std::vector<driver_manager_internal::RouteKey> keys;
-        keys.reserve(can_ids.size());
-        for (const auto can_id : can_ids) {
-            driver_manager_internal::RouteKey key{
-                adapter, EncosDriverManager::MakeReceiveUniqueId(raw_idx, can_id)};
-            if (routes.find(key) != routes.end() ||
-                motor_route_reservations.find(key) != motor_route_reservations.end()) {
+        for (const auto can_id : recipe.can_ids) {
+            const RouteKey key{adapter, EncosDriverManager::MakeReceiveUniqueId(raw_idx, can_id)};
+            if (domain.routes.count(key.unique_id) != 0 ||
+                motor_route_reservations.count(key) != 0 ||
+                std::any_of(registration.routes.begin(), registration.routes.end(),
+                            [&key](const auto& entry) {
+                                return entry.key == key;
+                            })) {
                 return false;
             }
-            if (std::find(keys.begin(), keys.end(), key) != keys.end()) {
-                return false;
-            }
-            keys.push_back(key);
+            auto record = std::make_shared<RouteRecord>();
+            record->device = device;
+            record->bus = bus;
+            record->adapter = adapter;
+            record->callback = binding.callback;
+            registration.routes.push_back({key, std::move(record)});
         }
-        std::vector<std::shared_ptr<RouteRecord>> records;
-        records.reserve(keys.size());
-        for (std::size_t index = 0; index < keys.size(); ++index) {
-            auto route = std::make_shared<RouteRecord>();
-            route->device = device;
-            route->bus = bus;
-            route->adapter = adapter;
-            route->callback = callback;
-            records.push_back(std::move(route));
+        auto inserted = registrations.emplace(device, std::move(registration));
+        if (!inserted.second) {
+            return false;
         }
-        routes.reserve(routes.size() + keys.size());
-        domain.routes.reserve(domain.routes.size() + keys.size());
-        device_routes.reserve(device_routes.size() + 1);
-        cancellations.reserve(cancellations.size() + 1);
-
         std::size_t published = 0;
         try {
-            for (; published < keys.size(); ++published) {
-                routes.emplace(keys[published], records[published]);
-                try {
-                    if (!domain.routes.emplace(keys[published].unique_id, records[published])
-                             .second) {
-                        routes.erase(keys[published]);
-                        throw std::runtime_error("Adapter route already registered");
-                    }
-                } catch (...) {
-                    routes.erase(keys[published]);
-                    throw;
+            for (const auto& entry : inserted.first->second.routes) {
+                if (route_publish_hook) {
+                    route_publish_hook(published);
                 }
+                domain.routes.emplace(entry.key.unique_id, entry.record);
+                ++published;
             }
-            device_routes.emplace(device, keys);
-            cancellations.emplace(device, std::move(cancel_waiters));
-            return true;
         } catch (...) {
-            for (std::size_t index = 0; index < published; ++index) {
-                routes.erase(keys[index]);
-                domain.routes.erase(keys[index].unique_id);
+            for (std::size_t i = 0; i < published; ++i) {
+                domain.routes.erase(inserted.first->second.routes[i].key.unique_id);
             }
-            device_routes.erase(device);
-            cancellations.erase(device);
+            registrations.erase(inserted.first);
             throw;
         }
+        return true;
     }
 
-    std::vector<std::shared_ptr<RouteRecord>> RetireRoutes(void* device,
-                                                           CancellationCallback& cancel) {
-        std::vector<std::shared_ptr<RouteRecord>> retired;
-        platform::LockGuard<platform::Mutex> lock(route_mutex);
-        const auto keys_it = device_routes.find(device);
-        if (keys_it != device_routes.end()) {
-            retired.reserve(keys_it->second.size());
-            for (const auto& key : keys_it->second) {
-                const auto route_it = routes.find(key);
-                if (route_it == routes.end()) {
-                    continue;
-                }
-                {
-                    platform::LockGuard<platform::Mutex> route_lock(route_it->second->mutex);
-                    route_it->second->retiring = true;
-                }
-                retired.push_back(route_it->second);
-                {
-                    auto& domain = route_it->second->adapter->impl_->route_domain;
-                    platform::LockGuard<platform::Mutex> domain_lock(domain.mutex);
-                    domain.routes.erase(key.unique_id);
-                }
-                routes.erase(route_it);
-            }
-            device_routes.erase(keys_it);
+    /** @brief 锁内摘出登记并封闭接收入口；移动登记不再分配回滚内存。 */
+    driver_manager_internal::DeviceRegistration DetachRegistrationLocked(void* device) {
+        const auto found = registrations.find(device);
+        if (found == registrations.end()) {
+            return {};
         }
-        const auto cancel_it = cancellations.find(device);
-        if (cancel_it != cancellations.end()) {
-            cancel = std::move(cancel_it->second);
-            cancellations.erase(cancel_it);
+        auto retired = std::move(found->second);
+        registrations.erase(found);
+        auto& domain = retired.adapter->impl_->route_domain;
+        platform::LockGuard<platform::Mutex> domain_lock(domain.mutex);
+        for (const auto& entry : retired.routes) {
+            platform::LockGuard<platform::Mutex> route_lock(entry.record->mutex);
+            entry.record->retiring = true;
+            const auto active = domain.routes.find(entry.key.unique_id);
+            if (active != domain.routes.end() && active->second == entry.record) {
+                domain.routes.erase(active);
+            }
         }
         return retired;
     }
+
+    /** @brief 锁外取消等待并排空回调与公开方法，兼容尚未登记的创建失败。 */
+    void DrainDevice(void* device, OperationKind kind, OperationGate* gate,
+                     driver_manager_internal::DeviceRegistration& retired) {
+        if (retired.cancel_waiters) {
+            try {
+                retired.cancel_waiters();
+            } catch (...) {}
+        }
+        for (const auto& entry : retired.routes) {
+            const auto& route = entry.record;
+            platform::UniqueLock<platform::Mutex> lock(route->mutex);
+            if (route->in_flight != 0) {
+                ObserveWaitForTests();
+            }
+            route->condition.wait(lock, [&route]() {
+                return route->in_flight == 0;
+            });
+        }
+        if (gate != nullptr) {
+            if (gate->HasActiveOperations()) {
+                ObserveWaitForTests();
+            }
+            gate->WaitForDrain();
+            operation_registry.ReclaimRetired(device, kind);
+        }
+    }
 };
 
+namespace driver_manager_internal {
+/** @brief 仅绑定类型转换；创建、回滚和释放调度均由非模板引擎执行。 */
+template <typename T, typename Factory, typename Binder, typename Initializer, typename Commit>
+DeviceRecipe MakeDeviceRecipe(DeviceKind kind, OperationKind operation_kind,
+                              std::vector<std::uint32_t> can_ids, Factory factory, Binder binder,
+                              Initializer initializer, Commit commit) {
+    return {kind,
+            operation_kind,
+            std::move(can_ids),
+            [factory = std::move(factory)]() -> void* {
+                return factory();
+            },
+            [binder = std::move(binder)](void* device) {
+                return binder(static_cast<T*>(device));
+            },
+            [initializer = std::move(initializer)](void* device) {
+                initializer(static_cast<T*>(device));
+            },
+            [commit = std::move(commit)](void* device) {
+                commit(static_cast<T*>(device));
+            },
+            [](void* device) noexcept {
+                delete static_cast<T*>(device);
+            }};
+}
+
+template <typename T, typename Factory, typename Binder, typename Initializer, typename Commit>
+T* CreateDeviceWithRoutes(EncosDriverManager::Impl* impl, Bus* bus, DeviceKind kind, int idx,
+                          OperationKind operation_kind, std::vector<std::uint32_t> can_ids,
+                          Factory factory, Binder binder, Initializer initializer, Commit commit) {
+    auto recipe = MakeDeviceRecipe<T>(kind, operation_kind, std::move(can_ids), std::move(factory),
+                                      std::move(binder), std::move(initializer), std::move(commit));
+    return static_cast<T*>(impl->CreateDevice(bus, idx, recipe));
+}
+}  // namespace driver_manager_internal
 }  // namespace encos

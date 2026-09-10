@@ -2,6 +2,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <gtest/gtest.h>
 #include <iterator>
 #include <sstream>
@@ -91,6 +92,32 @@ std::vector<std::vector<std::string>> ParseSimpleCsv(const std::string& csv) {
 }
 
 class MotorLoggingTests : public MotorTestFixture {};
+
+TEST(MotorLogTransportTests, CloseWaitsForWorkerToReleaseSession) {
+    MotorLogDirectory directory;
+    auto session = detail::CreateMotorLogSession((directory.Path() / "close-barrier").string());
+    std::promise<void> worker_paused;
+    std::promise<void> release_worker;
+    auto resume = release_worker.get_future().share();
+    detail::SetMotorLogSessionCloseHookForTesting(session, [&]() {
+        worker_paused.set_value();
+        resume.wait();
+    });
+
+    auto close = std::async(std::launch::async, [&]() {
+        detail::CloseMotorLogSession(session);
+    });
+    const auto paused = worker_paused.get_future().wait_for(std::chrono::seconds(2));
+    EXPECT_EQ(paused, std::future_status::ready);
+    if (paused == std::future_status::ready) {
+        EXPECT_EQ(close.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+    }
+    release_worker.set_value();
+    EXPECT_NO_THROW(close.get());
+    std::weak_ptr<detail::MotorLogSession> lifetime = session;
+    session.reset();
+    EXPECT_TRUE(lifetime.expired());
+}
 
 TEST(MotorLogTransportTests, UsesTriviallyCopyableFixedRecords) {
     static_assert(std::is_trivially_copyable_v<detail::MotorCommandLogRecord>);

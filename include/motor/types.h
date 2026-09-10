@@ -343,7 +343,7 @@ struct MotorParameterTraits<MotorParameter::PosKpKd> {
 
 template <>
 struct MotorParameterTraits<MotorParameter::BrakeStatus> {
-    using RawType = uint16_t;
+    using RawType = uint8_t;
     using RetType = uint16_t;
 };
 

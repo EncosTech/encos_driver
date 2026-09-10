@@ -51,10 +51,9 @@ auto Motor::PVTControl(float kp, float kd, float pos, float spd, float torque)
 
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        const auto current_range = impl_->current_range.load();
         response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     current_range](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<1>(pack, current_range).has_value();
+                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
+            return pack.id == idx && DecodeFeedback<1>(pack, ranges).has_value();
         });
     } else {
         SendMessageLocked(msg);
@@ -65,8 +64,7 @@ auto Motor::PVTControl(float kp, float kd, float pos, float spd, float torque)
     if constexpr (FeedbackType == 0) {
         return;
     } else {
-        auto res =
-            response ? DecodeFeedback<1>(*response, impl_->current_range.load()) : std::nullopt;
+        auto res = response ? DecodeFeedback<1>(*response, impl_->ranges) : std::nullopt;
         if (res) {
             return *res;
         } else {
@@ -118,10 +116,9 @@ auto Motor::PosControl(float position, float speed, float current, int feedback)
     msg.data[7] = static_cast<uint8_t>(((cur_int & 0x3F) << 2) | feedback);
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        const auto current_range = impl_->current_range.load();
         response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     current_range](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, current_range).has_value();
+                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
+            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
         });
     } else {
         SendMessageLocked(msg);
@@ -132,8 +129,7 @@ auto Motor::PosControl(float position, float speed, float current, int feedback)
     if constexpr (FeedbackType == 0) {
         return;
     } else {
-        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->current_range.load())
-                            : std::nullopt;
+        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->ranges) : std::nullopt;
         if (res)
             return *res;
         return FeedbackStruct<FeedbackType>{};
@@ -176,10 +172,9 @@ auto Motor::SpdControl(float speed, float current, int feedback)
 
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        const auto current_range = impl_->current_range.load();
         response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     current_range](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, current_range).has_value();
+                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
+            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
         });
     } else {
         SendMessageLocked(msg);
@@ -190,8 +185,7 @@ auto Motor::SpdControl(float speed, float current, int feedback)
     if constexpr (FeedbackType == 0) {
         return;
     } else {
-        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->current_range.load())
-                            : std::nullopt;
+        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->ranges) : std::nullopt;
         if (res)
             return *res;
         return FeedbackStruct<FeedbackType>{};
@@ -229,10 +223,9 @@ auto Motor::CurControl(float current, int feedback)
 
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        const auto current_range = impl_->current_range.load();
         response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     current_range](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, current_range).has_value();
+                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
+            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
         });
     } else {
         SendMessageLocked(msg);
@@ -243,8 +236,7 @@ auto Motor::CurControl(float current, int feedback)
     if constexpr (FeedbackType == 0) {
         return;
     } else {
-        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->current_range.load())
-                            : std::nullopt;
+        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->ranges) : std::nullopt;
         if (res)
             return *res;
         return FeedbackStruct<FeedbackType>{};
@@ -282,10 +274,9 @@ auto Motor::TorControl(float torque, int feedback)
 
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        const auto current_range = impl_->current_range.load();
         response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     current_range](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, current_range).has_value();
+                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
+            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
         });
     } else {
         SendMessageLocked(msg);
@@ -296,8 +287,7 @@ auto Motor::TorControl(float torque, int feedback)
     if constexpr (FeedbackType == 0) {
         return;
     } else {
-        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->current_range.load())
-                            : std::nullopt;
+        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->ranges) : std::nullopt;
         if (res)
             return *res;
         return FeedbackStruct<FeedbackType>{};
@@ -328,10 +318,9 @@ auto Motor::Stop(MotorStopMode mode, float current, int feedback)
 
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        const auto current_range = impl_->current_range.load();
         response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     current_range](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, current_range).has_value();
+                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
+            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
         });
     } else {
         SendMessageLocked(msg);
@@ -342,8 +331,7 @@ auto Motor::Stop(MotorStopMode mode, float current, int feedback)
     if constexpr (FeedbackType == 0) {
         return;
     } else {
-        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->current_range.load())
-                            : std::nullopt;
+        auto res = response ? DecodeFeedback<FeedbackType>(*response, impl_->ranges) : std::nullopt;
         if (res)
             return *res;
         return FeedbackStruct<FeedbackType>{};
@@ -358,8 +346,9 @@ bool Motor::Brake(bool enabled, bool wait_for_ack) {
     MotorPackMsg msg{};
     msg.id = impl_->idx.load(std::memory_order_relaxed);
     msg.len = 3;
-    msg.data[0] = static_cast<uint8_t>((0x04 << 5));
-    msg.data[1] = static_cast<uint8_t>(enabled ? 1 : 0);
+    msg.data[0] = static_cast<uint8_t>((0x03 << 5) | (0x05 << 2) | 0x01);
+    msg.data[1] = 0;
+    msg.data[2] = static_cast<uint8_t>(enabled ? 0 : 1);
 
     RecordCommand("Brake", std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
                   std::nullopt, std::nullopt, enabled, std::nullopt);
@@ -370,8 +359,8 @@ bool Motor::Brake(bool enabled, bool wait_for_ack) {
     }
 
     const auto ack = SendAndWait(msg, [enabled](const MotorPackMsg& pack) {
-        return packet_has_payload(pack, 0, 2) && pack.data[0] == 0xb2 &&
-               pack.data[1] == static_cast<uint8_t>(enabled ? 1 : 0);
+        return packet_has_payload(pack, 0, 2) && pack.data[0] == 0xc0 &&
+               pack.data[1] == static_cast<uint8_t>(enabled ? 0 : 1);
     });
     return ack.has_value();
 }

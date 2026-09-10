@@ -1,18 +1,12 @@
 #include "driver_manager_impl.h"
+#include "utils/scope_exit.h"
 
 namespace encos {
-namespace driver_manager_internal {
+using namespace driver_manager_internal;
 
-struct DeviceRoute {
-    EncosDriverManager::ReceiveCallback callback;
-    EncosDriverManager::CancellationCallback cancel_waiters;
-};
-
-template <typename T, typename Factory, typename RouteFactory, typename Initializer,
-          typename Publisher>
-T* CreateDeviceWithRoutes(EncosDriverManager::Impl* impl, Bus* bus, DeviceKind kind, int idx,
-                          Factory factory, RouteFactory route_factory, Initializer initializer,
-                          Publisher publisher) {
+void* EncosDriverManager::Impl::CreateDevice(Bus* bus, int idx, const DeviceRecipe& recipe) {
+    auto* impl = this;
+    const auto kind = recipe.kind;
     if (bus == nullptr) {
         throw std::invalid_argument("Bus is null");
     }
@@ -20,53 +14,69 @@ T* CreateDeviceWithRoutes(EncosDriverManager::Impl* impl, Bus* bus, DeviceKind k
     std::shared_ptr<PendingCreation> publication;
     bool leader = false;
     BusKey bus_key;
-    {
-        platform::UniqueLock<platform::Mutex> lock(impl->object_mutex);
-        for (;;) {
-            const auto parent = impl->bus_keys.find(bus);
-            if (parent == impl->bus_keys.end() || impl->deleting.count(bus) != 0 ||
-                impl->resetting_buses.count(bus) != 0 ||
-                impl->deleting.count(parent->second.adapter) != 0) {
-                throw std::invalid_argument("Bus is not registered");
-            }
-            bus_key = parent->second;
-            const auto found = impl->devices.find(key);
-            if (found != impl->devices.end()) {
-                auto* device = found->second;
-                if (impl->deleting.count(device) == 0) {
-                    return static_cast<T*>(device);
-                }
-                impl->ObserveWaitForTests();
-                impl->deletion_condition.wait(lock, [impl, &key, device]() {
-                    const auto current = impl->devices.find(key);
-                    return current == impl->devices.end() || current->second != device ||
-                           impl->deleting.count(device) == 0;
-                });
-                continue;
-            }
-            if (void* result = AwaitOrLead(lock, impl->pending_devices, key, publication, leader)) {
-                if (impl->deleting.count(result) == 0) {
-                    return static_cast<T*>(result);
-                }
-                continue;
-            }
-            if (leader) {
-                impl->BeginChildCreationLocked(bus);
-                impl->BeginChildCreationLocked(bus_key.adapter);
-            }
-            break;
+    bool bus_counted = false;
+    bool adapter_counted = false;
+    auto finish_creation = utils::MakeScopeExit([&]() {
+        if (bus_counted) {
+            impl->EndChildCreation(bus);
         }
-    }
-
-    T* device = nullptr;
+        if (adapter_counted) {
+            impl->EndChildCreation(bus_key.adapter);
+        }
+    });
+    void* device = nullptr;
     OperationGate* operation_gate = nullptr;
     try {
-        device = factory();
+        {
+            platform::UniqueLock<platform::Mutex> lock(impl->object_mutex);
+            for (;;) {
+                const auto parent = impl->bus_keys.find(bus);
+                if (parent == impl->bus_keys.end() || impl->deleting.count(bus) != 0 ||
+                    impl->resetting_buses.count(bus) != 0 ||
+                    impl->deleting.count(parent->second.adapter) != 0) {
+                    throw std::invalid_argument("Bus is not registered");
+                }
+                bus_key = parent->second;
+                const auto found = impl->devices.find(key);
+                if (found != impl->devices.end()) {
+                    auto* device = found->second;
+                    if (impl->deleting.count(device) == 0) {
+                        return device;
+                    }
+                    impl->ObserveWaitForTests();
+                    impl->deletion_condition.wait(lock, [impl, &key, device]() {
+                        const auto current = impl->devices.find(key);
+                        return current == impl->devices.end() || current->second != device ||
+                               impl->deleting.count(device) == 0;
+                    });
+                    continue;
+                }
+                if (void* result =
+                        AwaitOrLead(lock, impl->pending_devices, key, publication, leader)) {
+                    if (impl->deleting.count(result) == 0) {
+                        return result;
+                    }
+                    continue;
+                }
+                if (leader) {
+                    impl->BeginChildCreationLocked(bus);
+                    bus_counted = true;
+                    impl->BeginChildCreationLocked(bus_key.adapter);
+                    adapter_counted = true;
+                }
+                break;
+            }
+        }
+
+        device = recipe.construct();
+        if (device == nullptr) {
+            throw std::runtime_error("Device factory returned null");
+        }
         {
             platform::LockGuard<platform::Mutex> lock(impl->object_mutex);
-            operation_gate = impl->operation_registry.Register(device, ToOperationKind(kind));
+            operation_gate = impl->operation_registry.Register(device, recipe.operation_kind);
         }
-        const DeviceRoute route = route_factory(device);
+        auto route = recipe.bind(device);
         impl->InvokeCreationHook(EncosDriverManager::CreationStage::BeforeDevicePublish);
         {
             std::scoped_lock lock(impl->object_mutex, impl->route_mutex);
@@ -74,14 +84,16 @@ T* CreateDeviceWithRoutes(EncosDriverManager::Impl* impl, Bus* bus, DeviceKind k
                 impl->deleting.count(bus_key.adapter) != 0) {
                 throw std::runtime_error("Device parent is retiring");
             }
-            if (!impl->PublishRoutesLocked(device, bus_key.adapter, bus, impl->RouteIds(kind, idx),
-                                           route.callback, route.cancel_waiters)) {
+            if (!impl->PublishRoutesLocked(device, bus_key.adapter, bus, recipe,
+                                           std::move(route))) {
                 throw std::runtime_error("Receive route already registered");
             }
             impl->initializing_device_keys.emplace(device, key);
         }
         impl->InvokeDeviceInitializerHook(device);
-        initializer(device);
+        if (recipe.initialize) {
+            recipe.initialize(device);
+        }
         impl->InvokeCreationHook(EncosDriverManager::CreationStage::BeforeDeviceCommit);
         {
             platform::LockGuard<platform::Mutex> lock(impl->object_mutex);
@@ -89,7 +101,9 @@ T* CreateDeviceWithRoutes(EncosDriverManager::Impl* impl, Bus* bus, DeviceKind k
                 impl->deleting.count(bus_key.adapter) != 0) {
                 throw std::runtime_error("Device parent is retiring");
             }
-            publisher(device);
+            if (recipe.commit) {
+                recipe.commit(device);
+            }
             try {
                 impl->initializing_device_keys.erase(device);
                 impl->devices.emplace(key, device);
@@ -102,46 +116,37 @@ T* CreateDeviceWithRoutes(EncosDriverManager::Impl* impl, Bus* bus, DeviceKind k
             impl->pending_devices.erase(key);
             CompletePending(publication, device);
         }
-        impl->EndChildCreation(bus);
-        impl->EndChildCreation(bus_key.adapter);
         return device;
     } catch (...) {
+        if (!leader) {
+            throw;
+        }
         if (device != nullptr) {
-            operation_gate = impl->operation_registry.Retire(device, ToOperationKind(kind));
-            EncosDriverManager::CancellationCallback cancel;
-            auto retired = impl->RetireRoutes(device, cancel);
-            if (cancel) {
-                try {
-                    cancel();
-                } catch (...) {}
+            DeviceRegistration retired;
+            {
+                std::scoped_lock lock(impl->object_mutex, impl->route_mutex);
+                operation_gate = impl->operation_registry.Retire(device, recipe.operation_kind);
+                retired = impl->DetachRegistrationLocked(device);
             }
-            for (const auto& route : retired) {
-                platform::UniqueLock<platform::Mutex> lock(route->mutex);
-                route->condition.wait(lock, [&route]() {
-                    return route->in_flight == 0;
-                });
-            }
-            if (operation_gate != nullptr) {
-                operation_gate->WaitForDrain();
-                impl->operation_registry.ReclaimRetired(device, ToOperationKind(kind));
-            }
+            impl->DrainDevice(device, recipe.operation_kind, operation_gate, retired);
         }
         {
             platform::LockGuard<platform::Mutex> lock(impl->object_mutex);
             impl->devices.erase(key);
             impl->device_keys.erase(device);
             impl->initializing_device_keys.erase(device);
+        }
+        if (device != nullptr) {
+            recipe.destroy(device);
+        }
+        {
+            platform::LockGuard<platform::Mutex> lock(impl->object_mutex);
             impl->pending_devices.erase(key);
             CompletePending(publication, nullptr, std::current_exception());
         }
-        delete device;
-        impl->EndChildCreation(bus);
-        impl->EndChildCreation(bus_key.adapter);
         throw;
     }
 }
-
-}  // namespace driver_manager_internal
 
 Bus* EncosDriverManager::CreateBus(BaseAdapter* adapter, int raw_bus_idx) {
     using driver_manager_internal::AwaitOrLead;
@@ -155,44 +160,52 @@ Bus* EncosDriverManager::CreateBus(BaseAdapter* adapter, int raw_bus_idx) {
     const BusKey key{adapter, raw_bus_idx};
     std::shared_ptr<PendingCreation> publication;
     bool leader = false;
-    {
-        platform::UniqueLock<platform::Mutex> lock(impl_->object_mutex);
-        for (;;) {
-            if (impl_->adapter_names.find(adapter) == impl_->adapter_names.end() ||
-                impl_->deleting.count(adapter) != 0) {
-                throw std::invalid_argument("Adapter is not registered");
-            }
-            const auto found = impl_->buses.find(key);
-            if (found != impl_->buses.end()) {
-                auto* bus = found->second;
-                if (impl_->deleting.count(bus) == 0) {
-                    return bus;
-                }
-                impl_->ObserveWaitForTests();
-                impl_->deletion_condition.wait(lock, [this, &key, bus]() {
-                    const auto current = impl_->buses.find(key);
-                    return current == impl_->buses.end() || current->second != bus ||
-                           impl_->deleting.count(bus) == 0;
-                });
-                continue;
-            }
-            if (void* result = AwaitOrLead(lock, impl_->pending_buses, key, publication, leader)) {
-                if (impl_->deleting.count(result) == 0) {
-                    return static_cast<Bus*>(result);
-                }
-                continue;
-            }
-            if (leader) {
-                impl_->BeginChildCreationLocked(adapter);
-            }
-            break;
+    bool parent_counted = false;
+    const auto finish_creation = utils::MakeScopeExit([&]() {
+        if (parent_counted) {
+            impl_->EndChildCreation(adapter);
         }
-    }
-
+    });
     Bus* bus = nullptr;
     OperationGate* operation_gate = nullptr;
     bool domain_registered = false;
     try {
+        {
+            platform::UniqueLock<platform::Mutex> lock(impl_->object_mutex);
+            for (;;) {
+                if (impl_->adapter_names.find(adapter) == impl_->adapter_names.end() ||
+                    impl_->deleting.count(adapter) != 0) {
+                    throw std::invalid_argument("Adapter is not registered");
+                }
+                const auto found = impl_->buses.find(key);
+                if (found != impl_->buses.end()) {
+                    auto* bus = found->second;
+                    if (impl_->deleting.count(bus) == 0) {
+                        return bus;
+                    }
+                    impl_->ObserveWaitForTests();
+                    impl_->deletion_condition.wait(lock, [this, &key, bus]() {
+                        const auto current = impl_->buses.find(key);
+                        return current == impl_->buses.end() || current->second != bus ||
+                               impl_->deleting.count(bus) == 0;
+                    });
+                    continue;
+                }
+                if (void* result =
+                        AwaitOrLead(lock, impl_->pending_buses, key, publication, leader)) {
+                    if (impl_->deleting.count(result) == 0) {
+                        return static_cast<Bus*>(result);
+                    }
+                    continue;
+                }
+                if (leader) {
+                    impl_->BeginChildCreationLocked(adapter);
+                    parent_counted = true;
+                }
+                break;
+            }
+        }
+
         bus = new Bus(adapter, raw_bus_idx, adapter->Logger());
         impl_->InvokeCreationHook(CreationStage::BeforeBusPublish);
         {
@@ -230,9 +243,11 @@ Bus* EncosDriverManager::CreateBus(BaseAdapter* adapter, int raw_bus_idx) {
             impl_->pending_buses.erase(key);
             CompletePending(publication, bus);
         });
-        impl_->EndChildCreation(adapter);
         return bus;
     } catch (...) {
+        if (!leader) {
+            throw;
+        }
         {
             platform::LockGuard<platform::Mutex> lock(impl_->object_mutex);
             impl_->buses.erase(key);
@@ -254,7 +269,6 @@ Bus* EncosDriverManager::CreateBus(BaseAdapter* adapter, int raw_bus_idx) {
             impl_->operation_registry.ReclaimRetired(bus, OperationKind::Bus);
         }
         delete bus;
-        impl_->EndChildCreation(adapter);
         throw;
     }
 }
@@ -270,21 +284,14 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorModel model
     using driver_manager_internal::DeviceKind;
 
     return CreateDeviceWithRoutes<Motor>(
-        impl_, bus, DeviceKind::Motor, motor_idx,
+        impl_, bus, DeviceKind::Motor, motor_idx, OperationKind::Motor,
+        {static_cast<std::uint32_t>(motor_idx)},
         [this, bus, motor_idx, model, frame_flags, canfd]() {
             auto writer = impl_->MakeWriter(bus);
             return new Motor(bus, static_cast<std::uint16_t>(motor_idx), model, bus->impl_->logger_,
                              writer, frame_flags, canfd);
         },
-        [](Motor* motor) {
-            return driver_manager_internal::DeviceRoute{[motor](const MotorPackMsg& message) {
-                                                            motor->OnMessage(message);
-                                                        },
-                                                        [motor]() {
-                                                            motor->CancelWaiters();
-                                                        }};
-        },
-        [](Motor*) {},
+        Impl::BindMotor, [](Motor*) {},
         [this, bus, motor_idx](Motor* motor) {
             ApplyMotorStatusConfigurationLocked(bus, motor_idx, motor);
         });
@@ -301,21 +308,14 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorPVTRanges r
     using driver_manager_internal::DeviceKind;
 
     return CreateDeviceWithRoutes<Motor>(
-        impl_, bus, DeviceKind::Motor, motor_idx,
+        impl_, bus, DeviceKind::Motor, motor_idx, OperationKind::Motor,
+        {static_cast<std::uint32_t>(motor_idx)},
         [this, bus, motor_idx, ranges, frame_flags, canfd]() {
             auto writer = impl_->MakeWriter(bus);
             return new Motor(bus, static_cast<std::uint16_t>(motor_idx), ranges,
                              bus->impl_->logger_, writer, frame_flags, canfd);
         },
-        [](Motor* motor) {
-            return driver_manager_internal::DeviceRoute{[motor](const MotorPackMsg& message) {
-                                                            motor->OnMessage(message);
-                                                        },
-                                                        [motor]() {
-                                                            motor->CancelWaiters();
-                                                        }};
-        },
-        [](Motor*) {},
+        Impl::BindMotor, [](Motor*) {},
         [this, bus, motor_idx](Motor* motor) {
             ApplyMotorStatusConfigurationLocked(bus, motor_idx, motor);
         });
@@ -330,20 +330,14 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, uint8_t frame_fl
     using driver_manager_internal::DeviceKind;
 
     return CreateDeviceWithRoutes<Motor>(
-        impl_, bus, DeviceKind::Motor, motor_idx,
+        impl_, bus, DeviceKind::Motor, motor_idx, OperationKind::Motor,
+        {static_cast<std::uint32_t>(motor_idx)},
         [this, bus, motor_idx, frame_flags, canfd]() {
             auto writer = impl_->MakeWriter(bus);
             return new Motor(bus, static_cast<std::uint16_t>(motor_idx), bus->impl_->logger_,
                              writer, frame_flags, canfd);
         },
-        [](Motor* motor) {
-            return driver_manager_internal::DeviceRoute{[motor](const MotorPackMsg& message) {
-                                                            motor->OnMessage(message);
-                                                        },
-                                                        [motor]() {
-                                                            motor->CancelWaiters();
-                                                        }};
-        },
+        Impl::BindMotor,
         [](Motor* motor) {
             motor->InitMotorPVTParam();
         },
@@ -353,13 +347,19 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, uint8_t frame_fl
 }
 
 Battery* EncosDriverManager::CreateBattery(Bus* bus, int battery_idx) {
+    return static_cast<Battery*>(
+        impl_->CreateDevice(bus, battery_idx, impl_->MakeBatteryRecipe(bus, battery_idx)));
+}
+
+DeviceRecipe EncosDriverManager::Impl::MakeBatteryRecipe(Bus* bus, int battery_idx) {
     using driver_manager_internal::CreateDeviceWithRoutes;
     using driver_manager_internal::DeviceKind;
 
-    return CreateDeviceWithRoutes<Battery>(
-        impl_, bus, DeviceKind::Battery, battery_idx,
+    const auto ids = protocol::BatteryStatusIds(static_cast<std::uint16_t>(battery_idx));
+    return MakeDeviceRecipe<Battery>(
+        DeviceKind::Battery, OperationKind::Battery, {ids.begin(), ids.end()},
         [this, bus, battery_idx]() {
-            auto writer = impl_->MakeWriter(bus);
+            auto writer = MakeWriter(bus);
             return new Battery(bus, static_cast<std::uint16_t>(battery_idx), bus->impl_->logger_,
                                writer);
         },
@@ -376,8 +376,9 @@ Imu* EncosDriverManager::CreateImu(Bus* bus, int imu_idx) {
     using driver_manager_internal::CreateDeviceWithRoutes;
     using driver_manager_internal::DeviceKind;
 
+    const auto ids = protocol::ImuStatusIds(static_cast<std::uint16_t>(imu_idx));
     return CreateDeviceWithRoutes<Imu>(
-        impl_, bus, DeviceKind::Imu, imu_idx,
+        impl_, bus, DeviceKind::Imu, imu_idx, OperationKind::Imu, {ids.begin(), ids.end()},
         [this, bus, imu_idx]() {
             DeviceWriteFunction writer;
             return new Imu(bus, static_cast<std::uint16_t>(imu_idx), bus->impl_->logger_, writer);
@@ -396,7 +397,8 @@ Pms* EncosDriverManager::CreatePms(Bus* bus) {
     using driver_manager_internal::DeviceKind;
 
     return CreateDeviceWithRoutes<Pms>(
-        impl_, bus, DeviceKind::Pms, 0,
+        impl_, bus, DeviceKind::Pms, 0, OperationKind::Pms,
+        {protocol::kPmsStatusIds.begin(), protocol::kPmsStatusIds.end()},
         [this, bus]() {
             auto writer = impl_->MakeWriter(bus);
             return new Pms(bus, bus->impl_->logger_, writer);
@@ -433,6 +435,12 @@ Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {
     }
     std::shared_ptr<PendingCreation> publication;
     bool leader = false;
+    bool parent_counted = false;
+    const auto finish_creation = utils::MakeScopeExit([&]() {
+        if (parent_counted) {
+            impl_->EndChildCreation(adapter);
+        }
+    });
     bool glove_bus_keys_reserved = false;
     std::exception_ptr glove_bus_reservation_error;
     {
@@ -466,8 +474,9 @@ Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {
                 continue;
             }
             if (leader) {
-                impl_->BeginChildCreationLocked(adapter);
                 try {
+                    impl_->BeginChildCreationLocked(adapter);
+                    parent_counted = true;
                     for (const auto& bus_key : glove_bus_keys) {
                         impl_->pending_glove_bus_keys.insert(bus_key);
                     }
@@ -486,7 +495,6 @@ Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {
     }
 
     if (glove_bus_reservation_error != nullptr) {
-        impl_->EndChildCreation(adapter);
         std::rethrow_exception(glove_bus_reservation_error);
     }
 
@@ -507,6 +515,7 @@ Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {
                 const auto global_idx = static_cast<uint8_t>(finger * 10 + encoder);
                 encoders[global_idx] = CreateDeviceWithRoutes<GloveEncoder>(
                     impl_, sub_bus, DeviceKind::GloveEncoder, global_idx,
+                    OperationKind::GloveEncoder, {protocol::kGloveEncoderBaseId + global_idx},
                     [global_idx]() {
                         return new GloveEncoder(global_idx);
                     },
@@ -517,6 +526,7 @@ Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {
             }
             calibrators[finger] = CreateDeviceWithRoutes<GloveCalibrator>(
                 impl_, sub_bus, DeviceKind::GloveCalibrator, static_cast<int>(finger),
+                OperationKind::GloveCalibrator, {protocol::kGloveCalibrationId},
                 [this, sub_bus]() {
                     return new GloveCalibrator(impl_->MakeWriter(sub_bus));
                 },
@@ -543,9 +553,12 @@ Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {
         }
         impl_->InvokeCreationHook(CreationStage::AfterGloveCallbacksConnected);
         for (std::size_t idx = 0; idx < encoders.size(); ++idx) {
+            if (impl_->glove_activation_hook) {
+                impl_->glove_activation_hook(idx);
+            }
             if (!RegisterReceiveRoutes(
                     encoders[idx], adapter, buses[idx / 10u],
-                    impl_->RouteIds(DeviceKind::GloveEncoder, static_cast<int>(idx)),
+                    impl_->RegisteredRouteIds(encoders[idx]),
                     [encoder_device = encoders[idx]](const MotorPackMsg& message) {
                         encoder_device->OnMessage(message);
                     })) {
@@ -555,7 +568,7 @@ Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {
         for (std::size_t finger = 0; finger < calibrators.size(); ++finger) {
             if (!RegisterReceiveRoutes(
                     calibrators[finger], adapter, buses[finger],
-                    impl_->RouteIds(DeviceKind::GloveCalibrator, static_cast<int>(finger)),
+                    impl_->RegisteredRouteIds(calibrators[finger]),
                     [calibrator_device = calibrators[finger]](const MotorPackMsg& message) {
                         calibrator_device->OnMessage(message);
                     })) {
@@ -593,7 +606,6 @@ Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {
             impl_->pending_gloves.erase(glove_key);
             CompletePending(publication, facade);
         }
-        impl_->EndChildCreation(adapter);
         return facade;
     } catch (...) {
         if (facade_operation_gate != nullptr) {
@@ -628,7 +640,6 @@ Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {
             impl_->pending_gloves.erase(glove_key);
             CompletePending(publication, nullptr, std::current_exception());
         }
-        impl_->EndChildCreation(adapter);
         throw;
     }
 }

@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <soem/soem.h>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "ethercat_base_handle.h"
@@ -30,12 +29,17 @@ public:
     EthercatHandle& operator=(const EthercatHandle&) = delete;
     void RequestStop();
     void Stop();
+    /** @brief 仅在运行且已确认 OP 与有效过程数据时返回 true */
+    bool Ok() const;
 
 private:
+    friend class EthercatHandleTestAccess;
+    explicit EthercatHandle(LoggerPtr logger) : EthercatBaseHandle(std::move(logger)) {}
     bool Initialize();
     void CloseContext();
     bool TransitionToOperational();
-    void CheckLoop();
+    void CheckState();
+    void ExchangeOnce();
     void DegradedHandler();
     void LogBadWkc();
     void ResetBadWkcLogState();
@@ -55,13 +59,21 @@ private:
     std::atomic<int> expected_wkc_{0};
     std::atomic<int> wkc_{0};
     uint8_t current_group_{0};
-    std::atomic<int> err_count_{0};
-    std::atomic<int> err_iteration_{0};
-    std::atomic<int> wkc_err_count_{0};
-    std::atomic<int> wkc_err_iteration_{0};
     std::chrono::steady_clock::time_point last_bad_wkc_log_{};
     std::size_t suppressed_bad_wkc_logs_{0};
     bool bad_wkc_log_active_{false};
     std::atomic<bool> context_closed_{true};
-    std::thread check_thread_;
+    /** @brief 将发送入队与主动停止串行化，防止恢复检查撤销停止状态 */
+    platform::Mutex recovery_mutex_;
+    bool slaves_operational_{false};
+    /** @brief SOEM 调用边界；生产使用默认实现，测试可替换为确定性链路模拟 */
+    struct IoOperations {
+        decltype(&ecx_readstate) read_state = ecx_readstate;
+        decltype(&ecx_writestate) write_state = ecx_writestate;
+        decltype(&ecx_statecheck) state_check = ecx_statecheck;
+        decltype(&ecx_reconfig_slave) reconfigure = ecx_reconfig_slave;
+        decltype(&ecx_recover_slave) recover = ecx_recover_slave;
+        decltype(&ecx_send_processdata) send = ecx_send_processdata;
+        decltype(&ecx_receive_processdata) receive = ecx_receive_processdata;
+    } io_;
 };

@@ -46,7 +46,7 @@ std::unordered_map<int, Bus*> EthercatAdapter::GetBuses() {
 }
 
 bool EthercatAdapter::Ok() {
-    return running_.load();
+    return running_.load() && ec_master_ && ec_master_->Ok();
 }
 
 void EthercatAdapter::Send(const MotorMessage& message) {

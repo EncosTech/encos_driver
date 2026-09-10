@@ -66,6 +66,10 @@ public:
         return (state_.load(std::memory_order_acquire) & kActiveMask) != 0;
     }
 
+    std::size_t ActiveOperationCountForTests() const noexcept {
+        return state_.load(std::memory_order_acquire) & kActiveMask;
+    }
+
     void WaitForDrain() {
         platform::UniqueLock<platform::Mutex> lock(wait_mutex_);
         drained_.wait(lock, [this] {
@@ -196,6 +200,18 @@ public:
             }
         }
         return false;
+    }
+
+    std::size_t ActiveOperationCountForTests(void* object, OperationKind kind) noexcept {
+        platform::LockGuard<platform::Mutex> lock(writer_mutex_);
+        for (auto iterator = entries_.rbegin(); iterator != entries_.rend(); ++iterator) {
+            const auto& entry = *iterator;
+            if (entry->object == object && entry->kind == kind &&
+                entry->registered.load(std::memory_order_acquire)) {
+                return entry->gate.ActiveOperationCountForTests();
+            }
+        }
+        return 0;
     }
 
     OperationGate* Retire(void* object, OperationKind kind) noexcept {

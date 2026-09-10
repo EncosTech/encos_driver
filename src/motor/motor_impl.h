@@ -21,7 +21,19 @@ struct Motor::Impl {
     std::atomic<uint16_t> idx{0};
     std::atomic<uint8_t> frame_flags{0};
     MotorPVTRanges ranges{};
-    std::atomic<float> current_range{0.0f};
+    /** 保护接收线程读取的位置、速度、电流范围，不在等待回报时持有。 */
+    platform::Mutex feedback_ranges_mutex;
+
+    /** @brief 获取帧 1 位置、速度、电流解码所需的一致范围快照 */
+    MotorPVTRanges GetFeedbackRanges() {
+        platform::LockGuard<platform::Mutex> lock(feedback_ranges_mutex);
+        MotorPVTRanges snapshot{};
+        snapshot.position = ranges.position;
+        snapshot.speed = ranges.speed;
+        snapshot.current = ranges.current;
+        return snapshot;
+    }
+
     Bus* bus = nullptr;
     std::function<void(const MotorPackMsg&)> writer;
     mutable platform::RecursiveMutex motor_mutex;

@@ -62,28 +62,35 @@ ctest --test-dir build-test --output-on-failure
 | --- | --- | --- |
 | 主库加载机制 | `tests/core/plugin/plugin_test.cc`（动态）或 `plugin_static_test.cc`（静态） | 动态发现/缓存、插件加载，或静态注册与 adapter 类型查询 |
 | Fake | `plugins/fake/test/*.cc`（41） | 模拟运动、自动回包、命令记录、参数策略、帧编码和动态控制接口 |
-| Linux CAN | `plugins/can/test/*.cc`（13） | vcan 接收与 CAN socket 时序/重配置命令 |
+| Linux CAN | `plugins/can/test/*.cc` | vcan 普通 CAN/CAN FD 接收、无需权限的句柄 I/O 回归与 CAN socket 时序/重配置命令 |
 | Linux fd broker | `plugins/utils/fdBroker/test/fd_broker_privilege_test.cc`（6） | 重启参数、身份鉴权和握手超时 |
-| USB Serial | `plugins/usbSerial/test/usb_serial_sender_test.cc`（2） | 重试队列与停止时取消 |
+| USB Serial | `plugins/usbSerial/test/usb_serial_adapter_test.cc`（8） | 伪串口单次发送、分段/合并应答、坏帧恢复、断开、可用字节立即读取及读写取消 |
 | EtherCAT Base | `plugins/utils/ethercatBase/test/ethercat_base_handle_test.cc`（28） | PDO 映射和上限、CAN/CAN FD 打包与解包、帧队列和同步边界 |
+| EtherCAT SOEM 恢复 | `plugins/ethercat/test/ethercat_recovery_test.cc` | 通过可替换 SOEM 调用模拟长时间断线、正常 PDO 发送、SAFE_OP/错误确认、OP 与有效 WKC 门控、主动停止和积压清理，不访问硬件或设置优先级 |
 | Relay | `plugins/relayWs/test/*.cc`（23） | 连接与队列、EMR1 帧、URL/响应解析 |
 
 `tests/core/manager_shutdown_throw_test.cc` 不使用 GoogleTest：它是单独可执行文件，确保管理器析构时能包含清理阶段异常，由 CTest 项 `EncosManagerShutdownContainsCleanupExceptions` 调用。
+
+日志关闭增加 `MotorLogTransportTests.CloseWaitsForWorkerToReleaseSession`：暂停已发出关闭通知的后台线程，验证会话注销仍须等待线程释放引用，防止析构延迟到全局日志设施销毁之后。原 `EncosMotorLogShutdownFlushes` 继续覆盖真实进程退出刷新。
 
 ### 1.4 已注册 GoogleTest 完整清单（构建快照）
 
 下表由当前 `build/*Tests[1]_tests.cmake` 的 `gtest_discover_tests()` 结果整理。每一项均为可直接传给 `ctest -R '^名称$'` 的 CTest 名称；同一测试套件的具体用例合并在一个单元格中。核心/插件归属来自生成该项的测试目标，领域分类可回看 1.2 和 1.3 的源码索引。
 
 <!-- GTEST-REGISTERED-ITEMS-START -->
+
+串口跨平台补充覆盖：`SlcanPtyTest` 的 4 项 PTY 测试验证编码、分段/粘包、退出与断线；`UsbSerialPortTests.ResetsInheritedStopBitsAndSoftwareFlowControl` 验证清除继承的串口配置。`SerialPortCallbackTests` 的 4 项测试验证接收回调、拒绝重启、关闭等待回调退出、断线通知及回调异常。`EncosWebSerialBridge` 运行 9 项 Node 桥接测试；`tests/wasm-node/web-serial.test.ts` 使用真实 WASM 模块和模拟串口验证授权失败、独立写帧、分段反馈、断线、销毁及 runtime 隔离，不代表浏览器真机性能。
+
 | 分类 | 测试套件 | 具体 CTest 项 | 测什么（本套件全部用例） |
 | --- | --- | --- | --- |
 | 插件 GoogleTest | `CanSocketSetupTests` | `CanSocketSetupTests.DownStateRequiresReconfiguration`<br>`CanSocketSetupTests.MissingFdRequiresReconfiguration`<br>`CanSocketSetupTests.ParsesCanFdTimingFields`<br>`CanSocketSetupTests.ParsesClassicCanTimingFields`<br>`CanSocketSetupTests.SetupCommandIncludesTargetTiming`<br>`CanSocketSetupTests.TargetConfigMatchesItself`<br>`CanSocketSetupTests.UpAndDownCommandsAreFormatted`<br>`CanSocketSetupTests.WrongBitrateRequiresReconfiguration`<br>`CanSocketSetupTests.WrongDbitrateRequiresReconfiguration`<br>`CanSocketSetupTests.WrongDsamplePointRequiresReconfiguration`<br>`CanSocketSetupTests.WrongSamplePointRequiresReconfiguration` | 解析 CAN/CAN FD 当前时序，比较目标配置，验证 bitrate、采样点、FD 能力或接口状态变化时会重新配置，并校验 `ip link` 上下线命令。 |
-| 插件 GoogleTest | `CanVirtualInterfaceTests` | `CanVirtualInterfaceTests.CanPluginReceiveOnVcan` | 在 Linux `vcan` 上验证 CAN 插件能建立接口并接收帧；运行依赖系统的虚拟 CAN 能力。 |
+| 插件 GoogleTest | `CanVirtualInterfaceTests` | `CanVirtualInterfaceTests.CanPluginReceiveOnVcan`<br>`CanVirtualInterfaceTests.CanPluginReceiveCanFdOnVcan` | 在 Linux `vcan` 上验证普通 CAN/CAN FD 接收；运行依赖系统的虚拟 CAN 能力，无权限时跳过。 |
+| 插件 GoogleTest | `CanHandleTests` | `StoppedHandleDoesNotSend`<br>`PeerDisconnectStopsLoop`<br>`IdleLoopCanBeStopped`<br>`DrainsBacklogInBoundedBatchesPreservingFdAndExtendedId`<br>`IgnoresInvalidDatagramsAndErrorFrames`<br>`SendDoesNotWaitForBackpressure`<br>`SendsIndependentFramesWithoutWaitingForReplies` | 通过本地报文 socketpair 验证真实句柄的非阻塞收发、批量解码、停止和错误路径，不申请优先级；不能替代 vcan 协议栈或真机性能测试。 |
 | 插件 GoogleTest | `FakeAdapterControlDynamicTest` | `FakeAdapterControlDynamicTest.AutomaticReplyProducesFeedback`<br>`FakeAdapterControlDynamicTest.DisabledRecordingKeepsObserver`<br>`FakeAdapterControlDynamicTest.ManualReplySuppressesFeedback`<br>`FakeAdapterControlDynamicTest.ObserverReceivesDecodedCommand`<br>`FakeAdapterControlDynamicTest.QueryReturnsControlForFakePlugin`<br>`FakeAdapterControlDynamicTest.QueryReturnsNullForNonFakeAdapter` | 验证动态加载的 Fake 插件可查询控制接口；观察者、记录开关、自动回包和手动回包模式行为正确。 |
 | 插件 GoogleTest | `FdBrokerAuthenticationTests` | `FdBrokerAuthenticationTests.ConnectedPeerCannotStallPastHandshakeDeadline`<br>`FdBrokerAuthenticationTests.DirectPhaseRequiresExactChildPidAndRealUid`<br>`FdBrokerAuthenticationTests.EscalatedPhaseRequiresMatchingExecutableIdentity` | 验证 fd broker 的直接/提权两阶段身份校验，以及已连接对端无法无限期拖延握手。 |
 | 插件 GoogleTest | `FdBrokerPrivilegeTests` | `FdBrokerPrivilegeTests.IdentityNumbersRejectInvalidTextWithoutThrowing`<br>`FdBrokerPrivilegeTests.RestartArgumentsPreserveNonceAndExecutableIdentity`<br>`FdBrokerPrivilegeTests.RestartArgumentsRejectIncompleteIdentity` | 验证 broker 重启参数中的 nonce、可执行文件身份和数值解析，并拒绝缺失或非法身份信息。 |
 | 插件 GoogleTest | `PluginTests` | `PluginTests.MakeAdapterLoadsFakePluginExplicitly`<br>`PluginTests.MakeAdapterReusesAdapterByName`<br>`PluginTests.ManagerRollsBackInvalidDynamicFactoryResults`<br>`PluginTests.enum_plugin` | 验证动态插件枚举、Fake 插件显式加载、同名适配器复用，以及无效工厂结果的回滚。 |
-| 插件 GoogleTest | `UsbSerialSenderTests` | `UsbSerialSenderTests.FirstWritesAreNotLimitedByRetryQueueCapacity`<br>`UsbSerialSenderTests.StopCancelsPendingRetries` | 验证 USB-Serial 首次发送不受重试队列容量限制，停止时会取消待重试发送。 |
+| 插件 GoogleTest | `UsbSerialAdapterTests`、`UsbSerialPortTests` | `UsbSerialAdapterTests.SendsOnceWithoutWaitingForInput`<br>`UsbSerialAdapterTests.DecodesFragmentedParameterReply`<br>`UsbSerialAdapterTests.ClosesWhileReceiverWaitsForMoreBytes`<br>`UsbSerialAdapterTests.DecodesCoalescedRepliesAfterCorruptFrame`<br>`UsbSerialAdapterTests.DisconnectMarksAdapterUnavailable`<br>`UsbSerialPortTests.ReturnsAvailableBytesWithoutFillingBuffer`<br>`UsbSerialPortTests.CancelWakesIdleRead`<br>`UsbSerialPortTests.CancelInterruptsWriteBackpressure` | 验证无应答时单次发送、分段及合并应答解析、坏帧恢复、断开检测、立即读取可用字节与读写等待取消。真机 bench/stress 不纳入自动化测试。 |
 | 核心 GoogleTest | `AdapterReceiveLifetimeTests` | `AdapterReceiveLifetimeTests.ExternalAdapterDeletionWaitsForRawCallbackCompletion`<br>`AdapterReceiveLifetimeTests.RawCallbackCannotDeleteOwningAdapterOrAnyOfItsBuses` | 验证原始帧回调期间禁止删除所属 adapter/bus，外部删除会等待回调执行完毕。 |
 | 核心 GoogleTest | `AdapterRoutingTest` | `AdapterRoutingTest.DeliversUnregisteredFramesOutsideLegacyBuffers`<br>`AdapterRoutingTest.DropsUnknownBusWithoutCreatingLegacyTraffic`<br>`AdapterRoutingTest.RawCallbackPreservesMixedBatchAndRoutingContinues`<br>`AdapterRoutingTest.RoutesAreIsolatedByAdapterAndRawBus`<br>`AdapterRoutingTest.SerializesRegisteredCallbackDelivery`<br>`AdapterRoutingTest.SparseNegativeRawBusIndexKeepsRouteIdentity` | 验证注册路由的串行回调、未知总线丢弃、未注册帧旁路旧缓冲区、混合批次保留和 adapter/raw-bus 隔离。 |
 | 核心 GoogleTest | `AdapterSoftSyncTests` | `AdapterSoftSyncTests.CommitDoesNotWaitForPhysicalCompletion`<br>`AdapterSoftSyncTests.CommitSubmitsAllCurrentDevicesAsOneBatch`<br>`AdapterSoftSyncTests.CommitUsesSynchronizedTransportHookOnlyForCommittedBatch`<br>`AdapterSoftSyncTests.ConcurrentCommitsSubmitIndependentBatches`<br>`AdapterSoftSyncTests.DeletingDeviceDiscardsItsQueuedPortSafely`<br>`AdapterSoftSyncTests.EmptyCommitIsHarmless`<br>`AdapterSoftSyncTests.ExplicitModeRetainsAndLeavingModeReleasesBacklog`<br>`AdapterSoftSyncTests.FirstCommitEntersSoftSyncMode`<br>`AdapterSoftSyncTests.MotorBatteryAndPmsUseRegistrationOrderInOneBatch`<br>`AdapterSoftSyncTests.OneDeviceRetainsNewestTenMessagesInFifoOrder`<br>`AdapterSoftSyncTests.ResponseWaitingApiDoesNotImplicitlyCommit`<br>`AdapterSoftSyncTests.SameBatterySerializesConcurrentCommandPublication`<br>`AdapterSoftSyncTests.SamePmsSerializesConcurrentCommandPublication` | 验证 adapter 软同步模式的进入/退出、批量提交顺序、空提交、积压队列、并发提交及等待 API 不会隐式提交。 |

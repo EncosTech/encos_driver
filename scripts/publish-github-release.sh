@@ -5,10 +5,13 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 env_file="${script_dir}/.env"
 dry_run=false
 from_environment=false
+main_sha1_override=""
+main_sha1_overridden=false
 
 usage() {
   cat <<'EOF'
-Usage: publish-github-release.sh [--env-file PATH] [--from-environment] [--dry-run]
+Usage: publish-github-release.sh [--env-file PATH] [--from-environment]
+                                 [--main-sha1 SHA1] [--dry-run]
 
 Without arguments, load scripts/.env and perform the real publication.
 
@@ -16,6 +19,7 @@ Options:
   --env-file PATH  Load another dotenv-compatible shell file
   --from-environment
                    Do not load a file; use the current environment (for CI)
+  --main-sha1 SHA1 Publish this exact commit from the main branch
   --dry-run        Validate and display non-secret configuration without publishing
   --help           Show this help
 EOF
@@ -36,6 +40,12 @@ while (($#)); do
     --dry-run)
       dry_run=true
       shift
+      ;;
+    --main-sha1)
+      [[ -n "${2:-}" ]] || die "--main-sha1 requires a value"
+      main_sha1_override=$2
+      main_sha1_overridden=true
+      shift 2
       ;;
     --from-environment)
       from_environment=true
@@ -63,6 +73,11 @@ fi
 
 MAIN_BRANCH=${MAIN_BRANCH:-${SOURCE_REF:-main}}
 OPTIONAL_BRANCHES=${OPTIONAL_BRANCHES:-}
+if [[ "${main_sha1_overridden}" == true ]]; then
+  MAIN_SHA1=${main_sha1_override}
+else
+  MAIN_SHA1=${MAIN_SHA1:-}
+fi
 
 required_variables=(
   GITEA_USERNAME
@@ -90,11 +105,15 @@ GITHUB_UPLOAD_URL=${GITHUB_UPLOAD_URL:-https://uploads.github.com}
 
 git check-ref-format --branch "${MAIN_BRANCH}" >/dev/null 2>&1 || \
   die "invalid main branch name: ${MAIN_BRANCH}"
+if [[ -n "${MAIN_SHA1}" && ! "${MAIN_SHA1}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  die "--main-sha1 must be a complete 40-character hexadecimal commit SHA1"
+fi
 
 if [[ "${dry_run}" == true ]]; then
   printf 'Configuration is valid. No publication was performed.\n'
   printf '  Source: %s\n' "${SOURCE_REPO}"
   printf '  Main branch: %s\n' "${MAIN_BRANCH}"
+  printf '  Main SHA1: %s\n' "${MAIN_SHA1:-<branch head>}"
   printf '  Optional branches: %s\n' "${OPTIONAL_BRANCHES:-<none>}"
   printf '  GitHub: %s\n' "${GITHUB_RELEASE_REPOSITORY}"
   printf '  Debian distributions: %s\n' "${DEBIAN_DISTRIBUTIONS}"
@@ -132,7 +151,11 @@ cleanup() {
 trap cleanup EXIT
 
 printf 'Processing main branch %s\n' "${MAIN_BRANCH}"
-run_branch "${MAIN_BRANCH}" --version-output-file "${version_file}"
+main_arguments=(--version-output-file "${version_file}")
+if [[ -n "${MAIN_SHA1}" ]]; then
+  main_arguments+=(--source-sha1 "${MAIN_SHA1}")
+fi
+run_branch "${MAIN_BRANCH}" "${main_arguments[@]}"
 main_version=$(<"${version_file}")
 [[ "${main_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
   die "main branch did not provide a valid version"

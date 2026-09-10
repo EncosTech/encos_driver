@@ -222,6 +222,8 @@ auto motor = bus->GetMotor(1, ranges);
 motor->PVTControl<0>(10.0f, 1.0f, 0.5f, 1.0f, 5.0f);
 ```
 
+回报帧 1 的位置（16 位）和速度（12 位）分别按该电机 `PVTRanges.position` 和 `PVTRanges.speed` 的最小、最大值线性解码，单位为 rad 和 rad/s。电流（12 位）按 `PVTRanges.current.min/max` 解码，支持非对称范围。`SetCurrentRange()` 已弃用，兼容调用会将本地电流范围设为 `{-range, range}`，建议改用 `SetDriverPVTRanges()`。同步控制返回值与异步状态使用同一规则；驱动配置的范围应与电机固件一致。
+
 ### 4.3 通过固件自动初始化创建
 
 如果不需要预先了解电机参数，可仅提供电机索引。库会在首次创建时自动向电机固件查询 PVT 范围并完成初始化：
@@ -403,6 +405,10 @@ auto fb = motor->PosControl<0>(3.14f, 10.0f, 5.0f, 1);
 ```
 
 此外，`Brake(bool enabled)` 用于显式启用或释放刹车抱闸，默认**阻塞**等待确认。
+
+`Brake(true)` 表示抱紧，发送 `75 00 00`；`Brake(false)` 表示释放，发送 `75 00 01`。
+按手册 §9.1.4 发送，按 §10.6 接收类型 6 报文；首字节低 5 位为错误码，仅无错误且状态匹配时确认成功。确认包分别为 `C0 00` 和 `C0 01`。不等待确认时，返回成功仅表示发送流程完成，不能确认电机已应用状态。
+`GetParameter<MotorParameter::BrakeStatus>()` 返回协议原始状态：`0` 表示抱紧，`1` 表示释放，公开返回类型仍为 `uint16_t`。
 
 > **重要提示**：`Motor` 对象在创建后会保持独立工作，即使原始的 `Bus` 和 `Adapter` 对象被释放，已获取的 `Motor` 仍然可以正常发送控制指令。但这也意味着你无法通过 `Motor` 反向获取到它所属的 `Bus` 或 `Adapter`。如果你后续仍需要操作总线（如扫描新电机）或访问适配器状态，请在创建电机前保留 `adapter` 和 `bus` 的实例。
 
