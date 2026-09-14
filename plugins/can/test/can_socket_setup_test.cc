@@ -135,3 +135,18 @@ TEST(CanSocketSetupTests, UpAndDownCommandsAreFormatted) {
 }
 
 }  // namespace encos::can
+
+namespace encos::can {
+TEST(CanSocketSetupTests, ParsesGsUsbKernelInterfaceOutput) {
+    const auto config = ParseCanDetails(
+        R"(78: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 72 qdisc pfifo_fast state UNKNOWN mode DEFAULT
+    link/can
+    can <FD> state ERROR-ACTIVE (berr-counter tx 0 rx 0) restart-ms 0
+      bitrate 1000000 sample-point 0.750
+      dbitrate 5000000 dsample-point 0.875
+)");
+    EXPECT_TRUE(config.up);
+    EXPECT_TRUE(config.fd_on);
+    EXPECT_TRUE(IsCanConfigMatchingTarget(config));
+}
+}  // namespace encos::can

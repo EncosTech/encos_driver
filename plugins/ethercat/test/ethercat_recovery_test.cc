@@ -103,6 +103,9 @@ public:
     static bool Operational(EthercatHandle& handle) {
         return handle.in_operational_.load();
     }
+    static int WkcErrorCount(EthercatHandle& handle) {
+        return handle.wkc_error_count_.load();
+    }
     static bool TakeFrame(EthercatHandle& handle) {
         EthercatHandle::OutputFrame frame;
         return handle.PrepareNextFrame(frame, 1);
@@ -137,16 +140,17 @@ TEST(EthercatRecoveryTests, LongOutageKeepsNormalPdoExchangeAndRecoversAutomatic
     }
     simulation.wkc = 0;
     simulation.state = EC_STATE_NONE;
+    EthercatHandleTestAccess::Check(*handle);
     EthercatHandleTestAccess::Exchange(*handle);
     ASSERT_FALSE(handle->Ok());
     for (int i = 0; i < 150; ++i) {
         handle->Send(command);
         EthercatHandleTestAccess::Check(*handle);
         EthercatHandleTestAccess::Exchange(*handle);
-        EXPECT_TRUE(std::any_of(simulation.last_output.begin(), simulation.last_output.end(),
-                                [](uint8_t byte) {
-                                    return byte != 0;
-                                }));
+        EXPECT_FALSE(std::any_of(simulation.last_output.begin(), simulation.last_output.end(),
+                                 [](uint8_t byte) {
+                                     return byte != 0;
+                                 }));
     }
     EXPECT_TRUE(EthercatHandleTestAccess::Running(*handle));
     EXPECT_EQ(simulation.exchanges, 151U);
@@ -163,6 +167,7 @@ TEST(EthercatRecoveryTests, LongOutageKeepsNormalPdoExchangeAndRecoversAutomatic
     EthercatHandleTestAccess::Check(*handle);
     EthercatHandleTestAccess::Exchange(*handle);
     ASSERT_TRUE(handle->Ok());
+    EXPECT_TRUE(EthercatHandleTestAccess::TakeFrame(*handle));
     EXPECT_FALSE(EthercatHandleTestAccess::TakeFrame(*handle));
     EXPECT_EQ(simulation.callbacks, 1U);
     handle->Send(command);
@@ -238,6 +243,31 @@ TEST(EthercatRecoveryTests, ActualLoopContinuesPastOldErrorLimitAndStopsOnReques
     EXPECT_EQ(simulation.callbacks, 0U);
 }
 
+TEST(EthercatRecoveryTests, StartupChecksSlaveStateBeforeCountingBadWkc) {
+    SimulatedLink simulation;
+    auto handle = EthercatHandleTestAccess::Create();
+    EthercatHandleTestAccess::Attach(*handle, simulation);
+    encos::MotorMessage command{};
+    command.data.id = 1;
+    command.data.len = 1;
+    command.data.data[0] = 0xE0;
+    handle->Send(command);
+    simulation.state = EC_STATE_SAFE_OP + EC_STATE_ERROR;
+    simulation.wkc = 0;
+    simulation.stop_after = 60;
+
+    auto loop = std::async(std::launch::async, [&] {
+        handle->Loop(std::chrono::microseconds(100));
+    });
+    ASSERT_EQ(loop.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    loop.get();
+
+    EXPECT_EQ(simulation.requested, EC_STATE_SAFE_OP + EC_STATE_ACK);
+    EXPECT_EQ(EthercatHandleTestAccess::WkcErrorCount(*handle), 0);
+    EXPECT_TRUE(EthercatHandleTestAccess::TakeFrame(*handle));
+    EXPECT_FALSE(handle->Ok());
+}
+
 TEST(EthercatRecoveryTests, RecoveryUsesExistingBacklogPruningInsteadOfSpecialClearing) {
     SimulatedLink simulation;
     auto handle = EthercatHandleTestAccess::Create();
@@ -251,8 +281,42 @@ TEST(EthercatRecoveryTests, RecoveryUsesExistingBacklogPruningInsteadOfSpecialCl
         handle->SendSynchronized({command});
     }
     EthercatHandleTestAccess::Exchange(*handle);
-    EthercatCanFdMsg8 packet{};
-    std::memcpy(&packet, simulation.last_output.data(), sizeof(packet));
-    EXPECT_EQ(packet.motor[0].id, 4U);
+    EXPECT_TRUE(EthercatHandleTestAccess::TakeFrame(*handle));
     EXPECT_FALSE(EthercatHandleTestAccess::TakeFrame(*handle));
+}
+
+TEST(EthercatRecoveryTests, AccumulatesWkcLossesAcrossSuccessfulExchanges) {
+    SimulatedLink simulation;
+    auto handle = EthercatHandleTestAccess::Create();
+    EthercatHandleTestAccess::Attach(*handle, simulation);
+    for (int i = 0; i < 19; ++i) {
+        simulation.wkc = 0;
+        EthercatHandleTestAccess::Exchange(*handle);
+        EXPECT_TRUE(handle->Ok());
+        simulation.wkc = 3;
+        EthercatHandleTestAccess::Exchange(*handle);
+        EXPECT_TRUE(handle->Ok());
+    }
+    EXPECT_EQ(simulation.callbacks, 19U);
+    simulation.wkc = 0;
+    EthercatHandleTestAccess::Exchange(*handle);
+    EXPECT_FALSE(handle->Ok());
+    EXPECT_TRUE(EthercatHandleTestAccess::Running(*handle));
+    simulation.wkc = 3;
+    EthercatHandleTestAccess::Check(*handle);
+    EthercatHandleTestAccess::Exchange(*handle);
+    EXPECT_TRUE(handle->Ok());
+    EXPECT_EQ(simulation.callbacks, 20U);
+}
+TEST(EthercatRecoveryTests, WkcWindowExpiresAfter100Exchanges) {
+    SimulatedLink simulation;
+    auto handle = EthercatHandleTestAccess::Create();
+    EthercatHandleTestAccess::Attach(*handle, simulation);
+    for (int window = 0; window < 3; ++window) {
+        for (int i = 0; i < 100; ++i) {
+            simulation.wkc = i < 19 ? 0 : 3;
+            EthercatHandleTestAccess::Exchange(*handle);
+            EXPECT_TRUE(handle->Ok());
+        }
+    }
 }

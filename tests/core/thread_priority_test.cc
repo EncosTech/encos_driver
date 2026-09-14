@@ -173,6 +173,24 @@ TEST(ThreadPriorityHelperTests, SerializesConcurrentRequests) {
 
 }  // namespace
 }  // namespace encos::utils::detail
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+TEST(ThreadPriorityTests, WindowsMapsPriorityWithoutChangingProcessClass) {
+    const int original = GetThreadPriority(GetCurrentThread());
+    const auto process_class = GetPriorityClass(GetCurrentProcess());
+    EXPECT_FALSE(encos::utils::SetCurrentThreadPriority(0));
+    EXPECT_FALSE(encos::utils::SetCurrentThreadPriority(100));
+    EXPECT_TRUE(encos::utils::SetCurrentThreadPriority(1));
+    EXPECT_EQ(GetThreadPriority(GetCurrentThread()), THREAD_PRIORITY_ABOVE_NORMAL);
+    EXPECT_TRUE(encos::utils::SetCurrentThreadPriority(50));
+    EXPECT_EQ(GetThreadPriority(GetCurrentThread()), THREAD_PRIORITY_HIGHEST);
+    EXPECT_EQ(GetPriorityClass(GetCurrentProcess()), process_class);
+    EXPECT_NE(SetThreadPriority(GetCurrentThread(), original), 0);
+}
+
 #else
 TEST(ThreadPriorityTests, UnsupportedPlatformDoesNotElevate) {
     EXPECT_FALSE(encos::utils::SetCurrentThreadPriority(50));

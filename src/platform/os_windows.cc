@@ -4,10 +4,14 @@
 #define _WIN32_WINNT 0x0501
 #endif
 #define WIN32_LEAN_AND_MEAN
-#include <cstdlib>
-#include <iphlpapi.h>
-#include <windows.h>
+// Winsock must precede Windows/IP Helper headers.
+// clang-format off
 #include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <iphlpapi.h>
+// clang-format on
+#include <cstdlib>
 
 #ifndef GAA_FLAG_SKIP_ANYCAST
 #define GAA_FLAG_SKIP_ANYCAST 0x2
@@ -35,8 +39,9 @@ std::string Utf16ToUtf8(const wchar_t* value) {
     if (size_needed <= 0) {
         return {};
     }
-    std::string result(size_needed - 1, '\0');
+    std::string result(size_needed, '\0');
     WideCharToMultiByte(CP_UTF8, 0, value, -1, &result[0], size_needed, nullptr, nullptr);
+    result.pop_back();
     return result;
 }
 

@@ -767,3 +767,99 @@
 #### Documentation
 
 - 更新使用说明，明确帧 1 的位置、速度、电流解码范围及 `SetCurrentRange()` 迁移方式。
+
+### 3.2.10
+
+#### Fix
+
+- EtherCAT 正常运行阶段累计 WKC 丢包，连续 20 个坏 WKC 后才进入降级恢复流程，避免单个丢包立即退出 OP。
+- 每个坏 WKC 都输出日志，并在达到阈值时记录进入降级模式的原因。
+- 调整 EtherCAT 错误和恢复日志，使从站状态变化更容易定位。
+
+#### Test
+
+- 增加 WKC 阈值、坏包累计和恢复流程回归测试。
+
+### 3.2.11
+
+#### Fix
+
+- 恢复阶段的坏 WKC 不再计入正常 OP 链路的降级阈值，避免从站恢复过程中再次被错误降级。
+- 保持恢复期间的 PDO 交换，待从站状态和有效 WKC 同时确认后恢复 OP 标志。
+
+#### Test
+
+- 增加恢复阶段 WKC 计数和状态确认测试。
+
+### 3.2.12
+
+#### Fix
+
+- EtherCAT 启动和恢复时先确认从站状态，再处理 WKC 异常，避免启动阶段的无效 WKC 被误判为链路丢包。
+- 恢复阶段不消费待发送写队列，恢复到有效 OP PDO 交换后再继续发送上层消息。
+- 修正 SAFE_OP、PREOP 和从站状态读取的恢复判断，避免缓存状态误导恢复流程。
+
+#### Test
+
+- 增加启动状态检查、SAFE_OP/PREOP 恢复、长时间中断、写队列保留和 WKC 窗口测试。
+
+### 3.2.13
+
+#### Fix
+
+- EtherCAT adapter 创建后等待运行循环确认从站处于 OP 且收到有效 PDO WKC，再允许上层创建电机和读取参数。
+- 启动阶段不再使用固定延时作为就绪判断，避免电机参数查询早于 EtherCAT 链路稳定而超时。
+- 保持 EtherCAT 断开后的自动恢复、20 个坏 WKC 降级阈值和逐包错误日志行为。
+
+#### Test
+
+- 补充 EtherCAT 启动与恢复回归测试，并在实机上验证 adapter 启动、从站扫描和电机位置参数读取。
+
+### 3.3.0
+
+#### Breaking Changes
+
+- Linux 与 Windows 的 SOEM 插件统一为 `Ethercat`，移除 `EthercatWindows`。原连接串中的 `EthercatWindows` 和构建插件列表中的 `ethercatWindows` 分别改为 `Ethercat`、`ethercat`；Windows 部署目录需移除旧的 `EthercatWindowsPlugin.dll`。
+
+#### Feature
+
+- 新增 `Ethernet` 适配器，通过 IPv4/UDP 连接以太网转 CAN 网关；Linux 使用 AF_XDP，Windows 使用 Winsock UDP，支持动态和静态构建。
+- 支持按有线网卡枚举接口、自动配置专用网卡地址、发现从站及初始化每个从站的 8 路 CAN。主机地址为 `192.168.100.254/24`，从站索引为 IP 最后一段减 1。
+- Ethernet 支持 EMR1 报文聚合、有界发送队列、心跳续租和 CAN 错误事件日志；支持经典 CAN 和 CAN FD 标志，当前单条记录的数据载荷上限为 8 字节，每个数据报最多 80 条记录。
+- Ethernet 创建时通过 EMM1 确认全部 CAN 通道配置，默认仲裁段 1 Mbps、数据段 5 Mbps；配置失败或超时则终止初始化。
+- 增加 Linux 网络辅助程序 capability 授权和 Windows UAC 网卡配置流程，安装及 DEB 升级时自动配置 Linux 辅助程序权限。
+
+#### Fix
+
+- 修复 Ethernet 辅助进程随 Ctrl+C 提前退出导致 XDP 残留的问题，并对可恢复的 UDP 网络错误保持管理线程运行。
+- 修复 Ethernet 静态构建及 Ubuntu 22.04 的 libxdp 依赖兼容问题。
+- 修复 Windows DLL 导出、依赖链接和插件命名问题；Windows 默认日志改用同步输出，避免退出时异步日志线程池回收阻塞。
+- 修复 SocketCAN 配置子进程的网络管理权限传递，兼容不同 `ip` 输出中的接口 UP 状态和 CAN FD 标志。
+- DEB 启用共享库依赖自动分析，并显式依赖 `libcap2-bin`。
+
+#### Refactoring
+
+- 将 Ethernet 与 RelayWs 共用的 EMR1 编解码移至 `plugins/utils/emr1`，保留原 `relay/relay_frame.h` 转发入口。
+- 统一 EtherCAT 的从站管理、PDO 交换和恢复逻辑，仅在传输层区分 Linux 与 Windows 实现。
+
+#### Test
+
+- 增加 Ethernet 协议、发现、CAN 初始化、UDP 收发与来源过滤、静态模式及 Windows 插件进程退出测试。
+- 增加统一 EtherCAT 插件的发现、恢复及 Windows 加载烟测，并扩展 SocketCAN 配置解析与虚拟接口测试。
+
+#### Documentation
+
+- 补充 Ethernet 的平台依赖、网卡配置、协议限制、权限、静态部署和验证记录，以及 EtherCAT Windows 插件迁移说明。
+- Windows 验证记录覆盖交叉编译及 Wine；不代表 Windows 原生系统或真机通信验证完成。
+
+### 3.3.1
+
+#### Fix
+
+- 调整 WASM/npm 发布 CI 的日志级别。
+
+#### Documentation
+
+- 补齐 3.3.0 版本变更记录，说明 Ethernet 新插件、EtherCAT 跨平台统一、迁移要求及相关修复。
+- 将架构说明 `arch.md`、日志指南 `logging.md` 和版本记录 `changes.md` 加入 CMake 安装及 DEB 包，与 `using_guide.md` 一同安装到 `share/doc/libencosdriver`。
+- 保留随包安装的 8 张 SVG 图，供使用指南、架构说明和日志指南引用。

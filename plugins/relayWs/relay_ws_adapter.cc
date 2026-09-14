@@ -15,9 +15,9 @@
 #include "client/ws_client.h"
 #include "platform/delay.h"
 #include "platform/sync.h"
-#include "relay/relay_frame.h"
 #include "relayWs/relay_bounded_queue.h"
 #include "relayWs/relay_ws_url.h"
+#include "utils/emr1/relay_frame.h"
 #include "utils/thread_priority.h"
 
 #ifdef __EMSCRIPTEN__

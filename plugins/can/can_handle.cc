@@ -145,6 +145,7 @@ void CanHandle::Send(const MotorMessage& message) {
         std::memset(&frame, 0, sizeof(frame));
         frame.can_id = can_id;
         frame.len = msg.len;
+        frame.flags = CANFD_BRS;
         std::memcpy(frame.data, msg.data, msg.len);
         res = send(can_fd_, &frame, CANFD_MTU, MSG_DONTWAIT | MSG_NOSIGNAL);
     } else {

@@ -338,7 +338,7 @@ auto* adapter = encos::MakeAdapter(
 
 ### 2.6 EtherCAT（SOEM，Linux/Windows）
 
-Linux `Ethercat` 和 `EthercatWindows` 的大部分消息语义相同。
+Linux 和 Windows 共用 `Ethercat` 插件的通信循环、状态检查及恢复逻辑。
 
 #### 初始化和 PDO 映射
 
@@ -481,7 +481,7 @@ EncosDriver 同时使用三种错误报告方式：
 | `std::invalid_argument`: `EthercatIGH master ID is out of range: '<value>'.` | 十进制文本不能转换为 `unsigned int` | 使用平台支持范围内的 master ID |
 | `std::runtime_error`: `Failed to Initialize IGH EtherCAT master` | IGH 设备、权限、从站、domain 或 PDO 配置失败 | 查看抛出前的 `ecrt_*`、设备节点和从站日志 |
 
-`EthercatWindows` 的循环优先级设置失败目前只输出 Warn，不会让构造函数抛异常。
+`Ethercat` 的循环线程若设置优先级失败，会记录 Error 并请求停止主站；`Ok()` 返回 false。
 
 ### 3.4 对象创建、所有权和并发异常
 

@@ -9,28 +9,14 @@
 #include "platform/delay.h"
 #include "utils/tracy.h"
 
-#ifdef __linux__
-#include <arpa/inet.h>
-#include <unistd.h>
-#endif
-
-#ifndef ENCOS_STATIC_MODE
-#include "fd_broker_client.h"
-#endif
-
 namespace {
+constexpr int kWkcErrorPeriod = 100;
+constexpr int kWkcErrorMax = 20;
 constexpr int kTimeoutMon = 500;
 }  // namespace
 
-EthercatHandle::EthercatHandle(std::string ifname,
-#ifndef ENCOS_STATIC_MODE
-                               std::string broker_executable,
-#endif
-                               LoggerPtr logger)
+EthercatHandle::EthercatHandle(std::string ifname, LoggerPtr logger)
     : EthercatBaseHandle(std::move(logger)), ifname_(std::move(ifname)) {
-#ifndef ENCOS_STATIC_MODE
-    broker_executable_ = std::move(broker_executable);
-#endif
     try {
         if (!Initialize()) {
             throw std::runtime_error("Failed to Initialize EtherCAT");
@@ -48,77 +34,11 @@ EthercatHandle::~EthercatHandle() {
     Stop();
 }
 
-bool EthercatHandle::SetupPortFromFd(ecx_portt* port, int socket_fd) {
-    if (port == nullptr || socket_fd < 0) {
-        return false;
-    }
-
-#ifdef __linux__
-    pthread_mutexattr_t mutexattr;
-    pthread_mutexattr_init(&mutexattr);
-    pthread_mutexattr_setprotocol(&mutexattr, PTHREAD_PRIO_INHERIT);
-    pthread_mutex_init(&(port->getindex_mutex), &mutexattr);
-    pthread_mutex_init(&(port->tx_mutex), &mutexattr);
-    pthread_mutex_init(&(port->rx_mutex), &mutexattr);
-#endif
-
-    port->sockhandle = socket_fd;
-    port->lastidx = 0;
-    // ECT_RED_NONE is internal to SOEM nicdrv.c; 0 is the non-redundant state.
-    port->redstate = 0;
-    port->stack.sock = &(port->sockhandle);
-    port->stack.txbuf = &(port->txbuf);
-    port->stack.txbuflength = &(port->txbuflength);
-    port->stack.tempbuf = &(port->tempinbuf);
-    port->stack.rxbuf = &(port->rxbuf);
-    port->stack.rxbufstat = &(port->rxbufstat);
-    port->stack.rxsa = &(port->rxsa);
-
-    for (int i = 0; i < EC_MAXBUF; ++i) {
-        port->rxbufstat[i] = EC_BUF_EMPTY;
-        ec_setupheader(&(port->txbuf[i]));
-    }
-    ec_setupheader(&(port->txbuf2));
-
-    return true;
-}
-
-int EthercatHandle::RequestSocketFromBroker() {
-#ifndef __linux__
-    return -1;
-#else
-#ifdef ENCOS_STATIC_MODE
-    return -1;
-#else
-    return encos::fd_broker::FdBrokerClient::RequestFd(broker_executable_, ifname_,
-                                                       "encos_motor_driver", logger_);
-#endif
-#endif
-}
-
 bool EthercatHandle::Initialize() {
-#ifdef ENCOS_STATIC_MODE
-    if (ecx_init(&ctx_, ifname_.c_str()) <= 0) {
-        logger_->error("No slaves found on {}.", ifname_);
+    if (!OpenPort()) {
         return false;
     }
     context_closed_.store(false);
-#else
-    const int raw_socket_fd = RequestSocketFromBroker();
-    if (raw_socket_fd < 0) {
-        logger_->error("Failed to obtain raw socket fd for interface '{}'.", ifname_);
-        return false;
-    }
-
-    ecx_initmbxpool(&ctx_);
-    if (!SetupPortFromFd(&ctx_.port, raw_socket_fd)) {
-        logger_->error("Failed to Initialize SOEM port from broker fd on '{}'.", ifname_);
-        close(raw_socket_fd);
-        return false;
-    }
-    context_closed_.store(false);
-
-#endif
 
     if (ecx_config_init(&ctx_) <= 0) {
         logger_->error("No slaves found on {}.", ifname_);
@@ -187,13 +107,13 @@ bool EthercatHandle::TransitionToOperational() {
         ecx_send_processdata(&ctx_);
         wkc_.store(ecx_receive_processdata(&ctx_, EC_TIMEOUTRET));
         ecx_statecheck(&ctx_, 0, EC_STATE_OPERATIONAL, 50000);
-    } while (retries-- && (ctx_.slavelist[0].state != EC_STATE_OPERATIONAL ||
-                           wkc_.load() < expected_wkc_.load()));
+    } while (retries-- && (ctx_.slavelist[0].state != EC_STATE_OPERATIONAL));
 
-    if (ctx_.slavelist[0].state == EC_STATE_OPERATIONAL && expected_wkc_.load() > 0 &&
-        wkc_.load() >= expected_wkc_.load()) {
+    if (ctx_.slavelist[0].state == EC_STATE_OPERATIONAL) {
         ENCOS_LOG_DEBUG(logger_, "Operational state reached for all slaves.");
-        in_operational_.store(true);
+        // 状态切换完成后仍需由运行循环确认一帧有效 PDO，避免上层初始化请求
+        // 在启动瞬间进入尚未稳定的 SAFE_OP 链路。
+        in_operational_.store(false);
         slaves_operational_ = true;
         return true;
     }
@@ -212,57 +132,35 @@ bool EthercatHandle::TransitionToOperational() {
 }
 
 void EthercatHandle::DegradedHandler() {
-    platform::LockGuard<platform::Mutex> lock(recovery_mutex_);
+    SetSendQueueWarningsSuppressed(true);
     if (in_operational_.exchange(false)) {
         logger_->warn("EtherCAT link degraded; continuing PDO exchange and attempting recovery.");
     }
     slaves_operational_ = false;
 }
 
-void EthercatHandle::ResetBadWkcLogState() {
-    bad_wkc_log_active_ = false;
-    suppressed_bad_wkc_logs_ = 0;
-    last_bad_wkc_log_ = std::chrono::steady_clock::time_point{};
-}
-
 void EthercatHandle::LogBadWkc() {
-    const int bad_wkc = wkc_.load();
-    const auto now = std::chrono::steady_clock::now();
-
-    if (!bad_wkc_log_active_) {
-        logger_->error("Dropped packet (Bad WKC: {})", bad_wkc);
-        last_bad_wkc_log_ = now;
-        suppressed_bad_wkc_logs_ = 0;
-        bad_wkc_log_active_ = true;
-        return;
-    }
-
-    if (now - last_bad_wkc_log_ >= std::chrono::seconds(1)) {
-        if (suppressed_bad_wkc_logs_ == 0) {
-            logger_->error("Dropped packet (Bad WKC: {})", bad_wkc);
-        } else {
-            logger_->error(
-                "Dropped packet (Bad WKC: {}), suppressed {} similar WKC errors in the last {} ms",
-                bad_wkc, suppressed_bad_wkc_logs_,
-                std::chrono::duration_cast<std::chrono::milliseconds>(now - last_bad_wkc_log_)
-                    .count());
-        }
-        last_bad_wkc_log_ = now;
-        suppressed_bad_wkc_logs_ = 0;
-        return;
-    }
-
-    ++suppressed_bad_wkc_logs_;
+    logger_->error("Dropped packet (Bad WKC: {})", wkc_.load());
 }
 
 void EthercatHandle::RequestStop() {
-    platform::LockGuard<platform::Mutex> lock(recovery_mutex_);
     running_.store(false);
     in_operational_.store(false);
 }
 
 bool EthercatHandle::Ok() const {
     return running_.load() && in_operational_.load();
+}
+
+bool EthercatHandle::WaitUntilOperational(std::chrono::milliseconds timeout) const {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (running_.load() && !Ok()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        platform::SleepFor(std::chrono::milliseconds(1));
+    }
+    return Ok();
 }
 
 void EthercatHandle::CloseContext() {
@@ -299,28 +197,37 @@ void EthercatHandle::CheckState() {
             DegradedHandler();
         }
         if (device.state == (EC_STATE_SAFE_OP + EC_STATE_ERROR)) {
+            logger_->error("Slave {} SAFE_OP + ERROR, acking.", slave);
             device.state = EC_STATE_SAFE_OP + EC_STATE_ACK;
             io_.write_state(&ctx_, slave);
         } else if (device.state == EC_STATE_SAFE_OP) {
+            logger_->error("Slave {} SAFE_OP, requesting OPERATIONAL.", slave);
             device.state = EC_STATE_OPERATIONAL;
             io_.write_state(&ctx_, slave);
         } else if (device.state > EC_STATE_NONE) {
             if (io_.reconfigure(&ctx_, slave, kTimeoutMon) >= EC_STATE_PRE_OP) {
                 device.islost = false;
+                logger_->info("Slave {} reconfigured.", slave);
             }
         } else {
             io_.state_check(&ctx_, slave, EC_STATE_OPERATIONAL, EC_TIMEOUTRET);
             if (device.state == EC_STATE_NONE) {
                 device.islost = true;
+                logger_->error("Slave {} lost.", slave);
                 if (io_.recover(&ctx_, slave, kTimeoutMon)) {
                     device.islost = false;
+                    logger_->info("Slave {} recovered.", slave);
                 }
             }
         }
     }
     // 写入 OP 请求并不表示已进入 OP；必须等待下一次实际状态读取确认。
+    const bool was_all_operational = slaves_operational_;
     slaves_operational_ = all_operational;
     ctx_.grouplist[current_group_].docheckstate = !all_operational;
+    if (all_operational && !was_all_operational) {
+        logger_->info("All slaves resumed OPERATIONAL.");
+    }
 }
 
 void EthercatHandle::WriteOutputs(const OutputFrame& packets) {
@@ -357,7 +264,6 @@ MotorMessages EthercatHandle::ReadInputs() {
 }
 
 void EthercatHandle::Send(const MotorMessage& message) {
-    platform::LockGuard<platform::Mutex> lock(recovery_mutex_);
     if (!running_.load()) {
         return;
     }
@@ -371,7 +277,6 @@ void EthercatHandle::Send(const MotorMessage& message) {
 }
 
 void EthercatHandle::Send(const MotorMessages& messages) {
-    platform::LockGuard<platform::Mutex> lock(recovery_mutex_);
     if (!running_.load()) {
         return;
     }
@@ -385,7 +290,6 @@ void EthercatHandle::Send(const MotorMessages& messages) {
 }
 
 void EthercatHandle::SendSynchronized(const MotorMessages& messages) {
-    platform::LockGuard<platform::Mutex> lock(recovery_mutex_);
     if (!running_.load()) {
         return;
     }
@@ -404,21 +308,42 @@ void EthercatHandle::ExchangeOnce() {
     }
     const bool was_operational = in_operational_.load();
     OutputFrame frame;
-    PrepareNextFrame(frame, static_cast<std::size_t>(ctx_.slavecount));
+    if (was_operational) {
+        PrepareNextFrame(frame, static_cast<std::size_t>(ctx_.slavecount));
+    }
     WriteOutputs(frame);
     io_.send(&ctx_);
     wkc_.store(io_.receive(&ctx_, EC_TIMEOUTRET));
-    if (wkc_.load() < expected_wkc_.load() || expected_wkc_.load() <= 0) {
+    const bool bad_wkc = wkc_.load() < expected_wkc_.load() || expected_wkc_.load() <= 0;
+    if (wkc_error_iteration_.load() >= kWkcErrorPeriod) {
+        wkc_error_iteration_.store(0);
+        wkc_error_count_.store(0);
+    }
+    if (bad_wkc) {
+        if (!was_operational) {
+            // 恢复阶段的坏 WKC 不属于正常 OP 链路错误，不能消耗降级阈值。
+            slaves_operational_ = false;
+            return;
+        }
+        wkc_error_count_.fetch_add(1);
         LogBadWkc();
-        DegradedHandler();
+    }
+    wkc_error_iteration_.fetch_add(1);
+    if (bad_wkc) {
+        const bool reached_wkc_threshold = wkc_error_count_.load() >= kWkcErrorMax;
+        if (was_operational && reached_wkc_threshold)
+            logger_->error("EtherCAT WKC error count exceeded threshold; entering degraded mode.");
+        if (reached_wkc_threshold)
+            DegradedHandler();
         return;
     }
-    ResetBadWkcLogState();
     if (!was_operational) {
-        platform::LockGuard<platform::Mutex> lock(recovery_mutex_);
         if (running_.load() && slaves_operational_) {
+            SetSendQueueWarningsSuppressed(false);
             in_operational_.store(true);
-            logger_->info("EtherCAT recovered: all slaves OPERATIONAL with valid WKC.");
+            wkc_error_count_.store(0);
+            wkc_error_iteration_.store(0);
+            logger_->warn("EtherCAT recovered: all slaves OPERATIONAL with valid WKC.");
         }
     }
     if (Ok()) {
@@ -434,17 +359,24 @@ void EthercatHandle::Loop(std::chrono::microseconds period) {
     auto last_overrun_warn = std::chrono::steady_clock::now();
     bool has_warned_overrun = false;
     auto next_state_check = next_wake;
+    bool first_cycle = true;
 
     while (running_.load()) {
         ENCOS_TRACY_ZONE("EtherCAT::Cycle");
         next_wake += period;
+        const bool wkc_invalid = wkc_.load() < expected_wkc_.load() || expected_wkc_.load() <= 0;
 
-        if ((!in_operational_.load() || ctx_.grouplist[current_group_].docheckstate) &&
+        if ((first_cycle || !in_operational_.load() ||
+             ctx_.grouplist[current_group_].docheckstate || wkc_invalid) &&
             std::chrono::steady_clock::now() >= next_state_check) {
             CheckState();
             next_state_check = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
         }
         ExchangeOnce();
+        first_cycle = false;
+        if (wkc_.load() < expected_wkc_.load() || expected_wkc_.load() <= 0) {
+            next_state_check = std::chrono::steady_clock::now();
+        }
 
         const auto now = std::chrono::steady_clock::now();
         if (now <= next_wake) {
@@ -455,9 +387,6 @@ void EthercatHandle::Loop(std::chrono::microseconds period) {
             logger_->warn(
                 "Loop overrun by {} us",
                 std::chrono::duration_cast<std::chrono::microseconds>(now - next_wake).count());
-        }
-        if (now > next_wake) {
-            next_wake = now;
         }
         ENCOS_TRACY_FRAME("EtherCAT");
     }

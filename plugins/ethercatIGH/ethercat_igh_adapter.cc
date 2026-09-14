@@ -23,7 +23,7 @@ std::unordered_map<int, Bus*> EthercatIGHAdapter::GetBuses() {
 }
 
 bool EthercatIGHAdapter::Ok() {
-    // 与 EthercatWindowsAdapter 保持一致：实例存在即认为可用。
+    // 实例存在即认为可用。
     return ec_master_ != nullptr;
 }
 

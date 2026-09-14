@@ -7,12 +7,15 @@
 #include <fstream>
 #include <linux/can.h>
 #include <linux/can/raw.h>
+#include <linux/capability.h>
 #include <memory>
 #include <net/if.h>
 #include <regex>
 #include <string>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
@@ -71,7 +74,27 @@ bool RunCommandWithOutput(const std::vector<std::string>& args, std::string* out
         (void) dup2(pipe_fd[1], STDOUT_FILENO);
         (void) dup2(pipe_fd[1], STDERR_FILENO);
         close(pipe_fd[1]);
-        execvp(argv[0], argv.data());
+        /* File capabilities disappear across exec. Preserve only NET_ADMIN
+         * for the fixed ip executable; never grant an executable from PATH. */
+        if (geteuid() != 0) {
+            struct __user_cap_header_struct header {
+                _LINUX_CAPABILITY_VERSION_3, 0
+            };
+            struct __user_cap_data_struct caps[2]{};
+            if (syscall(SYS_capget, &header, caps) < 0)
+                _exit(126);
+            constexpr uint32_t admin = 1U << CAP_NET_ADMIN;
+            if (caps[0].permitted & admin) {
+                caps[0].inheritable = admin;
+                caps[1].inheritable = 0;
+                if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) < 0)
+                    _exit(126);
+                if (syscall(SYS_capset, &header, caps) < 0 ||
+                    prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0) < 0)
+                    _exit(126);
+            }
+        }
+        execv("/usr/sbin/ip", argv.data());
         _exit(127);
     }
 
@@ -176,6 +199,11 @@ CanInterfaceConfig ParseCanDetails(const std::string& ip_details_output) {
         config.up = match[1].str() == "UP";
     }
 
+    if (!std::regex_search(ip_details_output, state_regex)) {
+        const auto first_line = ip_details_output.substr(0, ip_details_output.find('\n'));
+        config.up = std::regex_search(first_line, std::regex(R"(<[^>]*\bUP\b[^>]*>)"));
+    }
+
     if (std::regex_search(ip_details_output, match, bitrate_regex) && match.size() >= 2) {
         try {
             config.bitrate = std::stoi(match[1].str());
@@ -194,6 +222,11 @@ CanInterfaceConfig ParseCanDetails(const std::string& ip_details_output) {
 
     if (std::regex_search(ip_details_output, match, fd_regex) && match.size() >= 2) {
         config.fd_on = match[1].str() == "on";
+    }
+
+    if (!std::regex_search(ip_details_output, fd_regex)) {
+        config.fd_on =
+            std::regex_search(ip_details_output, std::regex(R"(\bcan\s+<[^>]*\bFD\b[^>]*>)"));
     }
 
     if (std::regex_search(ip_details_output, match, dbitrate_regex) && match.size() >= 2) {

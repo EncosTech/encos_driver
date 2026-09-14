@@ -14,7 +14,7 @@ if(NOT TARGET soem)
     set_target_properties(soem PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
-if(NOT TARGET FdBrokerClient AND NOT ENCOS_STATIC_MODE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT TARGET FdBrokerClient AND NOT ENCOS_STATIC_MODE)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../utils/fdBroker
         ${CMAKE_BINARY_DIR}/plugins/utils/fdBroker)
 endif()
@@ -26,7 +26,7 @@ target_link_libraries(EthercatHandle PUBLIC
     EthercatBaseHandle
     soem
 )
-if(NOT ENCOS_STATIC_MODE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ENCOS_STATIC_MODE)
     target_link_libraries(EthercatHandle PUBLIC FdBrokerClient)
 endif()
 target_include_directories(EthercatHandle PUBLIC
@@ -34,17 +34,25 @@ target_include_directories(EthercatHandle PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../external/SOEM/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
 )
-if(NOT ENCOS_STATIC_MODE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ENCOS_STATIC_MODE)
     target_include_directories(EthercatHandle PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/../utils/fdBroker
     )
 endif()
 set_target_properties(EthercatHandle PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(WIN32)
+    target_sources(EthercatHandle PRIVATE transport/windows/port.cc)
+    target_link_libraries(EthercatHandle PUBLIC iphlpapi)
+else()
+    target_sources(EthercatHandle PRIVATE transport/linux/port.cc)
+endif()
+
 
 if(ENCOS_BUILD_TESTS)
     encos_register_plugin_tests(
         SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/test/ethercat_recovery_test.cc
-        LIBRARIES EthercatHandle
+                ${CMAKE_CURRENT_SOURCE_DIR}/test/ethercat_discovery_test.cc
+        LIBRARIES EthercatHandle FakeAdapterSupport
         INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}
     )
 endif()
@@ -65,9 +73,9 @@ target_include_directories(EthercatPluginCore PRIVATE
 )
 set_target_properties(EthercatPluginCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-if(NOT ENCOS_STATIC_MODE)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ENCOS_STATIC_MODE)
     add_executable(EthercatFdBrokerExecutable
-        fd_broker_executable.cc
+        transport/linux/fd_broker_executable.cc
     )
     target_link_libraries(EthercatFdBrokerExecutable PRIVATE
         EncosMotorDriverBase
@@ -82,16 +90,6 @@ if(NOT ENCOS_STATIC_MODE)
     set_target_properties(EthercatFdBrokerExecutable PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
     )
-
-    add_library(EthercatPlugin SHARED
-        plugin_entry.cc
-    )
-    encos_configure_plugin_library(EthercatPlugin)
-    target_link_libraries(EthercatPlugin PRIVATE EthercatPluginCore)
-    target_include_directories(EthercatPlugin PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-    )
-    add_dependencies(EthercatPlugin EthercatFdBrokerExecutable)
 
     if(ENCOS_ENABLE_INSTALL)
         install(TARGETS EthercatFdBrokerExecutable
@@ -127,4 +125,45 @@ if(NOT ENCOS_STATIC_MODE)
             endif()
         ")
     endif()
+endif()
+
+if(NOT ENCOS_STATIC_MODE)
+    add_library(EthercatPlugin SHARED
+        plugin_entry.cc
+    )
+    encos_configure_plugin_library(EthercatPlugin)
+    target_link_libraries(EthercatPlugin PRIVATE EthercatPluginCore)
+    target_include_directories(EthercatPlugin PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    if(TARGET EthercatFdBrokerExecutable)
+        add_dependencies(EthercatPlugin EthercatFdBrokerExecutable)
+    endif()
+endif()
+
+option(ENCOS_ETHERCAT_BUILD_TESTS "Build standalone SOEM recovery tests" OFF)
+if(ENCOS_ETHERCAT_BUILD_TESTS)
+    enable_testing()
+    find_package(GTest REQUIRED)
+    add_executable(EthercatTests
+        test/ethercat_recovery_test.cc
+        ../utils/ethercatBase/test/ethercat_base_handle_test.cc)
+    target_include_directories(EthercatTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+    target_link_libraries(EthercatTests PRIVATE EthercatHandle GTest::gtest_main)
+    set_target_properties(EthercatTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    add_test(NAME EthercatTests COMMAND EthercatTests)
+    set_tests_properties(EthercatTests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" TIMEOUT 30)
+endif()
+
+if(WIN32 AND ENCOS_ETHERCAT_BUILD_TESTS AND NOT ENCOS_STATIC_MODE)
+    add_executable(EthercatPluginSmoke test/ethercat_plugin_smoke.cc)
+    target_link_libraries(EthercatPluginSmoke PRIVATE EncosMotorDriver)
+    set_target_properties(EthercatPluginSmoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    add_test(NAME EthercatPluginSmoke COMMAND EthercatPluginSmoke)
+    set_tests_properties(EthercatPluginSmoke PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        ENVIRONMENT "ENCOS_PLUGIN_PATH=$<TARGET_FILE_DIR:EthercatPlugin>"
+        TIMEOUT 15)
 endif()

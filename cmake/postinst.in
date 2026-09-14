@@ -9,6 +9,7 @@ case "$1" in
         SCRIPT_DIR="@CPACK_PACKAGING_INSTALL_PREFIX@/@ENCOS_PLUGIN_INSTALL_LIBDIR@"
         SETCAP_SCRIPT1="${SCRIPT_DIR}/set_ethercat_capabilities.sh"
         SETCAP_SCRIPT2="${SCRIPT_DIR}/set_socketcan_capabilities.sh"
+        ETHERNET_CAP_SCRIPT="${SCRIPT_DIR}/set_ethernet_capabilities.sh"
         PRIORITY_CAP_SCRIPT="${SCRIPT_DIR}/set_thread_priority_capability.sh"
         
         if [ -f "${SETCAP_SCRIPT1}" ]; then
@@ -22,6 +23,12 @@ case "$1" in
         else
             echo "Warning: Capability setting script not found at ${SETCAP_SCRIPT2}" >&2
             echo "Please manually run: sudo setcap cap_net_raw,cap_net_admin+ep @CPACK_PACKAGING_INSTALL_PREFIX@/@ENCOS_PLUGIN_INSTALL_LIBDIR@/CanExecutable" >&2
+        fi
+        if [ -f "${ETHERNET_CAP_SCRIPT}" ]; then
+            "${ETHERNET_CAP_SCRIPT}" "@CPACK_PACKAGING_INSTALL_PREFIX@" || true
+        else
+            echo "Warning: Capability setting script not found at ${ETHERNET_CAP_SCRIPT}" >&2
+            echo "Please manually run: sudo setcap cap_net_raw,cap_net_admin,cap_bpf+ep @CPACK_PACKAGING_INSTALL_PREFIX@/@ENCOS_PLUGIN_INSTALL_LIBDIR@/EthernetXdpBrokerExecutable" >&2
         fi
         if [ -f "${PRIORITY_CAP_SCRIPT}" ]; then
             "${PRIORITY_CAP_SCRIPT}" "@CPACK_PACKAGING_INSTALL_PREFIX@" || true

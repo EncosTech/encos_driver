@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "motor/types.h"
-#include "relay/relay_frame.h"
+#include "utils/emr1/relay_frame.h"
 
 namespace encos {
 

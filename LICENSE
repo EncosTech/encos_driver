@@ -50,7 +50,6 @@ The following components of this package are licensed under the GNU General
 Public License v3.0:
 
 - EtherCAT Plugin (plugins/ethercat/)
-- EthercatWindows Plugin (plugins/ethercatWindows/)
 
 These components are free software: you can redistribute them and/or modify
 them under the terms of the GNU General Public License as published by the

@@ -5,18 +5,12 @@
 #include "bus/bus.h"
 #include "platform/delay.h"
 #include "utils/thread_priority.h"
-#ifndef ENCOS_STATIC_MODE
-#include <filesystem>
-
-#include "platform/os.h"
-#endif
 
 namespace encos {
-#ifndef ENCOS_STATIC_MODE
-namespace fs = std::filesystem;
-#endif
 
 namespace {
+
+constexpr auto kStartupReadyTimeout = std::chrono::seconds(2);
 
 void RequireLoopPriority() {
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
@@ -70,18 +64,7 @@ void EthercatAdapter::SendSynchronized(const MotorMessages& messages) {
 EthercatAdapter::EthercatAdapter(const std::string& interface_name, const std::string& logger_name,
                                  encos::LogLevel log_level)
     : BaseAdapter(interface_name, logger_name, log_level) {
-#ifdef ENCOS_STATIC_MODE
     ec_master_ = std::make_shared<EthercatHandle>(interface_name, Logger());
-#else
-    auto plugin_dir = platform::PluginDir();
-#if defined(_WIN32)
-    fs::path broker_path = plugin_dir / "EthercatFdBrokerExecutable.exe";
-#else
-    fs::path broker_path = plugin_dir / "EthercatFdBrokerExecutable";
-#endif
-
-    ec_master_ = std::make_shared<EthercatHandle>(interface_name, broker_path.string(), Logger());
-#endif
     ec_master_->SetReceiveCallback([this](const MotorMessages& messages) {
         this->OnMessage(messages);
     });
@@ -89,12 +72,16 @@ EthercatAdapter::EthercatAdapter(const std::string& interface_name, const std::s
     RequireLoopPriority();
     running_.store(true);
     loop_thread_ = std::thread(&EthercatAdapter::Loop, this);
-    platform::SleepFor(std::chrono::milliseconds(100));
+    if (!ec_master_->WaitUntilOperational(kStartupReadyTimeout)) {
+        Stop();
+        throw std::runtime_error("EtherCAT startup did not reach operational state");
+    }
 }
 
 void EthercatAdapter::Loop() {
     if (!utils::SetCurrentThreadPriority(50)) {
-        Logger()->error("Failed to set EtherCAT loop thread priority after authorization");
+        Logger()->error("Failed to set EtherCAT loop thread priority");
+        ec_master_->RequestStop();
         return;
     }
     if (ec_master_) {

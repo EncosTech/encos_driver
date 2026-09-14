@@ -67,7 +67,12 @@ Logger::Logger(std::string name, LogLevel level) : impl_(std::make_unique<Impl>(
     }
     auto logger = spdlog::get(impl_->name);
     if (!logger) {
+#ifdef _WIN32
+        // A DLL must not join the async logging pool while Windows holds the loader lock.
+        logger = spdlog::stdout_color_mt(impl_->name);
+#else
         logger = spdlog::stdout_color_mt<spdlog::async_factory>(impl_->name);
+#endif
     }
     logger->set_level(ToSpdlogLevel(level));
     impl_->backend = std::move(logger);

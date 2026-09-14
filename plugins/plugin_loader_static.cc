@@ -8,6 +8,7 @@
 
 #include "adapter/base_adapter.h"
 #include "encos/driver_manager.h"
+#include "encos/encos_driver.h"
 #include "encos_static_plugin_registry.generated.h"
 #include "platform/os.h"
 #include "platform/sync.h"
@@ -70,7 +71,7 @@ std::vector<std::string> GetAvailableAdapterTypes() {
 
 std::vector<std::string> GetAvailableInterface(const std::string& adapter_type) {
     std::vector<std::string> interfaces;
-    if (adapter_type == "Ethercat") {
+    if (adapter_type == "Ethercat" || adapter_type == "Ethernet") {
         interfaces = platform::GetWiredInterfaceNames();
     }
     if (adapter_type == "EthercatIGH") {

@@ -18,7 +18,7 @@ constexpr int ExpectedMotorScanPositionQueries() {
 
 }  // namespace
 
-TEST(EthercatWindowsDiscoveryTests, SeededMotorsDriveDiscoveryFlags) {
+TEST(EthercatDiscoveryTests, SeededMotorsDriveDiscoveryFlags) {
     auto adapter = MakeManagedAdapter<FakeAdapter>("fake-discovery");
     adapter->SeedMotor(0, 1, MotorModel::EC_A4310_P2, FakeSeedOptions{0});
     adapter->SeedMotor(0, 2, MotorModel::EC_A4310_P2, FakeSeedOptions{kCanFrameFlagEff});

@@ -13,7 +13,7 @@ namespace encos {
 /**
  * @brief IGH 主站的直连 adapter（不依赖外部 executable 进程）。
  *
- * 职责与 EthercatWindowsAdapter 一致：
+ * 职责包括：
  * 1) 接管 handle 生命周期；
  * 2) 在 BaseAdapter 与 handle 之间转发收发消息；
  * 3) 基于 handle 的 bus 拓扑创建 Bus 对象。

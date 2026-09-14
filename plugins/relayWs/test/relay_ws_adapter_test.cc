@@ -20,8 +20,8 @@
 #include "driver_manager_test_access.h"
 #include "managed_adapter_test.h"
 #include "motor/motor.h"
-#include "relay/relay_frame.h"
 #include "relayWs/relay_bounded_queue.h"
+#include "utils/emr1/relay_frame.h"
 #include "wait_observer.h"
 
 namespace encos {

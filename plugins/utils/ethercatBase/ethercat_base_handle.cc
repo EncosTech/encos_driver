@@ -487,9 +487,15 @@ void EthercatBaseHandle::FlushPendingMessagesLocked(std::size_t slave_count) {
         send_frames_.clear();
         send_frames_.push_back(std::move(newest_frame));
         queued_frame_count_ = 1U;
-        logger_->warn("EtherCAT Send Queue high load: discarded {} pending EC frames",
-                      discarded_frame_count);
+        if (!send_queue_warnings_suppressed_) {
+            logger_->warn("EtherCAT Send Queue high load: discarded {} pending EC frames",
+                          discarded_frame_count);
+        }
     }
+}
+
+void EthercatBaseHandle::SetSendQueueWarningsSuppressed(bool suppressed) {
+    send_queue_warnings_suppressed_ = suppressed;
 }
 
 void EthercatBaseHandle::AppendPendingMessagesLocked(const MotorMessages& messages,

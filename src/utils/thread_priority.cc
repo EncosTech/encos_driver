@@ -312,6 +312,20 @@ bool SetCurrentThreadPriority(int priority) {
 
 }  // namespace encos::utils
 
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+namespace encos::utils {
+bool SetCurrentThreadPriority(int priority) {
+    if (priority < 1 || priority > 99)
+        return false;
+    return SetThreadPriority(GetCurrentThread(), priority < 50 ? THREAD_PRIORITY_ABOVE_NORMAL
+                                                               : THREAD_PRIORITY_HIGHEST) != 0;
+}
+}  // namespace encos::utils
+
 #else
 
 namespace encos::utils {

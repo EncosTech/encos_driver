@@ -166,6 +166,8 @@ public:
     std::vector<int> GetBusSizes() const;
 
 protected:
+    /** @brief 降级期间抑制发送队列高水位日志，仍保留队列裁剪。 */
+    void SetSendQueueWarningsSuppressed(bool suppressed);
     /**
      * @brief 从站 I/O 报文格式类型
      */
@@ -313,4 +315,5 @@ private:
     std::unordered_map<int, std::size_t> bus_generations_;
     /** @brief 已打包但尚未发送的 EtherCAT 帧数量 */
     std::size_t queued_frame_count_{0};
+    bool send_queue_warnings_suppressed_{false};
 };

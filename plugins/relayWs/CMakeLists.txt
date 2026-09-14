@@ -45,7 +45,6 @@ if(ENCOS_BUILD_TESTS AND NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscript
     encos_register_plugin_tests(
         SOURCES
             ${CMAKE_CURRENT_SOURCE_DIR}/test/relay_ws_adapter_test.cc
-            ${CMAKE_CURRENT_SOURCE_DIR}/test/relay_ws_protocol_test.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/test/relay_ws_url_test.cc
         LIBRARIES
             RelayWsAdapterSupport

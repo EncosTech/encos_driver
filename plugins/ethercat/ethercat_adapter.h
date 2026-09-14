@@ -13,10 +13,9 @@
 namespace encos {
 
 /**
- * @brief EtherCAT 适配器（守护进程模式）
+ * @brief 跨平台 SOEM EtherCAT 适配器
  *
- * 通过外部守护进程实现 EtherCAT 通信，适用于需要独立进程管理的场景。
- * 守护进程通过 ZMQ 与适配器通信。
+ * Linux 动态构建通过 broker 获取原始套接字，Windows 使用 SOEM 抓包后端。
  */
 class EthercatAdapter : public BaseAdapter {
 public:

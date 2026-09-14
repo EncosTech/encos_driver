@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(encos_driver VERSION 3.2.9)
+project(encos_driver VERSION 3.3.1)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
@@ -215,7 +215,7 @@ if(ENCOS_BUILD_DOCS)
     )
 endif()
 
-if(ENCOS_ENABLE_SPDLOG AND NOT TARGET spdlog)
+if(ENCOS_ENABLE_SPDLOG AND NOT TARGET spdlog AND NOT TARGET spdlog::spdlog)
     find_package(spdlog REQUIRED)
 endif()
 if(ENCOS_ENABLE_SPDLOG AND NOT TARGET fmt::fmt)
@@ -321,8 +321,6 @@ if(ENCOS_STATIC_MODE)
     set(_encos_base_library_type STATIC)
 endif()
 
-set(ENCOS_RELAY_SOURCES src/relay/relay_frame.cc)
-
 add_library(${ENCOS_DRIVER_BASE_TARGET} ${_encos_base_library_type}
     ${ENCOS_LOG_BACKEND_SOURCES}
     ${ENCOS_PLATFORM_OS_SOURCE}
@@ -350,8 +348,9 @@ add_library(${ENCOS_DRIVER_BASE_TARGET} ${_encos_base_library_type}
     src/imu/imu.cc
     src/pms/pms.cc
     ${MOTOR_MODEL_GENERATED_SOURCE}
-    ${ENCOS_RELAY_SOURCES}
 )
+
+add_subdirectory(plugins/utils/emr1)
 
 if(ENCOS_ENABLE_TRACY)
     target_sources(${ENCOS_DRIVER_BASE_TARGET} PRIVATE
@@ -394,7 +393,11 @@ target_compile_definitions(${ENCOS_DRIVER_BASE_TARGET} PRIVATE
     ENCOS_PLUGIN_INSTALL_PATH="${CMAKE_INSTALL_PREFIX}/${ENCOS_PLUGIN_INSTALL_LIBDIR}"
 )
 if(ENCOS_ENABLE_SPDLOG)
-    target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PUBLIC spdlog fmt::fmt)
+    if(TARGET spdlog::spdlog)
+        target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PUBLIC spdlog::spdlog fmt::fmt)
+    else()
+        target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PUBLIC spdlog fmt::fmt)
+    endif()
 endif()
 if(ENCOS_ZSTD_TARGET)
     target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PRIVATE ${ENCOS_ZSTD_TARGET})
@@ -463,7 +466,8 @@ if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
 endif()
 
 if(WIN32)
-    target_link_libraries(${ENCOS_DRIVER_TARGET} PRIVATE ucrt iphlpapi)
+    target_link_libraries(${ENCOS_DRIVER_TARGET} PRIVATE ucrt)
+    target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PRIVATE ucrt iphlpapi)
 endif()
 
 set_target_properties(${ENCOS_DRIVER_TARGET} PROPERTIES
@@ -616,7 +620,11 @@ if(ENCOS_ENABLE_INSTALL)
             endif()
         ")
     endif()
-    install(FILES docs/using_guide.md
+    install(FILES
+        docs/using_guide.md
+        docs/arch.md
+        docs/logging.md
+        docs/changes.md
         DESTINATION share/doc/libencosdriver
     )
     install(DIRECTORY docs/diagrams/
@@ -694,11 +702,15 @@ if(ENCOS_ENABLE_INSTALL)
     set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
     if(ENCOS_ENABLE_SPDLOG)
         set(CPACK_DEBIAN_PACKAGE_DEPENDS
-            "libcap-dev, libzstd-dev, libspdlog-dev, libfmt-dev, libstdc++6, libc6")
+            "libcap-dev, libcap2-bin, libzstd-dev, libspdlog-dev, libfmt-dev, libstdc++6, libc6")
     else()
         set(CPACK_DEBIAN_PACKAGE_DEPENDS
-            "libcap-dev, libzstd-dev, libstdc++6, libc6")
+            "libcap-dev, libcap2-bin, libzstd-dev, libstdc++6, libc6")
     endif()
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS
+        "${CMAKE_BINARY_DIR}"
+        "${CMAKE_BINARY_DIR}/plugins")
     set(CPACK_DEBIAN_PACKAGE_SUGGESTS "libcap2-bin")
     set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://encos.cn")
 

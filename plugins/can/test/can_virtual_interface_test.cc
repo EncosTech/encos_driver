@@ -11,6 +11,7 @@
 #include <linux/can/raw.h>
 #include <mutex>
 #include <net/if.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <thread>
@@ -139,6 +140,34 @@ TEST(CanVirtualInterfaceTests, CanPluginReceiveOnVcan) {
 
 TEST(CanVirtualInterfaceTests, CanPluginReceiveCanFdOnVcan) {
     CheckVcanReceive(true);
+}
+
+TEST(CanVirtualInterfaceTests, CanFdSendUsesConfiguredDataBitrate) {
+    const std::string ifname = "vcan0";
+    if (!EnsureVcanInterface(ifname)) {
+        GTEST_SKIP() << "vcan setup failed (need iproute2 and sufficient permissions).";
+    }
+    const int rx_fd = OpenCanSocket(ifname);
+    ASSERT_GE(rx_fd, 0);
+    encos::CanHandle sender(ifname);
+    encos::MotorMessage message{};
+    message.data.id = 0x321;
+    message.data.frame_flags = encos::kCanFrameFlagFdMask;
+    message.data.len = 2;
+    message.data.data[0] = 0x12;
+    message.data.data[1] = 0x34;
+    sender.Send(message);
+    pollfd descriptor{rx_fd, POLLIN, 0};
+    const int ready = poll(&descriptor, 1, 1000);
+    canfd_frame frame{};
+    const auto bytes = recv(rx_fd, &frame, sizeof(frame), MSG_DONTWAIT);
+    close(rx_fd);
+    ASSERT_EQ(ready, 1);
+    ASSERT_EQ(bytes, CANFD_MTU);
+    EXPECT_EQ(frame.can_id, message.data.id);
+    EXPECT_EQ(frame.len, message.data.len);
+    EXPECT_EQ(std::memcmp(frame.data, message.data.data, message.data.len), 0);
+    EXPECT_NE(frame.flags & CANFD_BRS, 0);
 }
 
 #else

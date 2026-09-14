@@ -65,9 +65,8 @@ if (!encos::DeleteAdapter(adapter)) {
 
 当前可用的适配器类型包括：
 
-- **Ethercat** — EtherCAT 协议适配器
+- **Ethercat** — Linux/Windows SOEM EtherCAT 适配器；Windows 支持网卡友好名称或 SOEM/pcap 设备名。
 - **EthercatIGH** — IGH 主站 EtherCAT 适配器
-- **EthercatWindows** — Windows 平台 EtherCAT 适配器
 - **Can** — Linux SocketCAN 适配器
 - **UsbSerial** — USB 串口适配器（建议仅用于临时调试）
 - **Slcan** — slcan 虚拟 CAN 设备适配器（如 Canable 等）

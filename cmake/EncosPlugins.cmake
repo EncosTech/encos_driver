@@ -15,6 +15,9 @@
 function(encos_configure_plugin_library target)
     target_compile_definitions(${target} PRIVATE ENCOS_PLUGIN_EXPORTS)
     set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    if(WIN32)
+        set_target_properties(${target} PROPERTIES PREFIX "")
+    endif()
 endfunction()
 
 # 校验动态插件目标是 SHARED_LIBRARY 或 MODULE_LIBRARY

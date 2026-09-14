@@ -151,12 +151,17 @@ cmake --build build-static -j
 - `GetAvailableAdapterTypes()` 返回编译进主库的适配器。
 - 不支持安装和 DEB 打包。
 - 使用 `Can` 或 `Ethercat` 时，需要给最终可执行文件设置网络权限。
+- `Ethernet` 静态模式也由最终进程持有网络资源；Linux 额外需要 `cap_bpf`，
+  BPF 对象嵌入库中，不需要部署 broker 或插件目录。Windows 配置网卡需要管理员权限。
 
 示例：
 
 ```bash
 sudo setcap cap_net_raw,cap_net_admin+ep ./your_app
 ```
+
+使用 Linux 静态 Ethernet 时，上述网络权限集合应为
+`cap_net_raw,cap_net_admin,cap_bpf+ep`；实时调度、锁页权限仍按下文合并设置。
 
 `SetCurrentThreadPriority()` 在设置 `SCHED_FIFO` 优先级后会调用 `mlockall()` 锁定当前
 进程的全部当前与未来内存页，因此调用该函数的进程必须具备 `CAP_IPC_LOCK` 能力（或
@@ -306,7 +311,7 @@ Emscripten 下的规则：
 - `ENCOS_STATIC_MODE` 默认 `ON`，且不能设为 `OFF`。
 - `ENCOS_ENABLE_SPDLOG` 默认 `OFF`。
 - `ENCOS_BUILD_TESTS` 必须为 `OFF`。
-- `Can`、`Ethercat`、`EthercatIGH`、`EthercatWindows`、`UsbSerial`、`Slcan` 都不可用。
+- `Can`、`Ethercat`、`EthercatIGH`、`UsbSerial`、`Slcan` 都不可用。
 - `RelayWs` 在 Emscripten 下可以作为静态插件启用；它通过浏览器 WebSocket API 或 Node 测试环境中的 Emscripten WebSocket shim 建连。`/start` HTTP 请求由 TypeScript 运行时异步完成，再传入 C++ 的 `encos_create_adapter`。
 - 构建系统会添加 Asyncify 链接选项，以支持 `emscripten_sleep`。
 - WASM wrapper 入口中的会等待电机响应的 API 使用 Promise；不要把 Emscripten `SleepFor` 改成同步 busy wait，否则会阻塞真实适配器的事件循环和回调模型。
