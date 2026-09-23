@@ -243,14 +243,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!ec_master_send_packet(&master, &config, slot, &packet)) {
+    if (!ec_validate_target(&master.layout, config.slaveId, config.busId, slot)) {
         ec_master_close(&master);
         return 1;
     }
 
     struct timespec next_cycle;
     clock_gettime(CLOCK_MONOTONIC, &next_cycle);
+    bool packet_sent = false;
     for (int i = 0; i < kDemoCycleCount; ++i) {
+        if (!packet_sent && master.operational) {
+            packet_sent = ec_master_send_packet(&master, &config, slot, &packet);
+        }
         (void) ec_master_cycle(&master);
         demo_wait_until_next_cycle(&next_cycle, kDemoCyclePeriodUs);
     }

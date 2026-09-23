@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 enum {
     EC_CLASSIC_CAN_2_BUS_SIZE = 86,
@@ -261,11 +262,11 @@ bool ec_master_open(EcMaster* master, const char* ifname) {
     ecx_writestate(&master->ctx, 0);
 
     int retries = 40;
-    while (retries-- > 0 && master->ctx.slavelist[0].state != EC_STATE_OPERATIONAL) {
+    do {
         ecx_send_processdata(&master->ctx);
         ecx_receive_processdata(&master->ctx, EC_TIMEOUTRET);
         ecx_statecheck(&master->ctx, 0, EC_STATE_OPERATIONAL, 50000);
-    }
+    } while (--retries > 0 && master->ctx.slavelist[0].state != EC_STATE_OPERATIONAL);
 
     if (master->ctx.slavelist[0].state != EC_STATE_OPERATIONAL) {
         fprintf(stderr, "Not all slaves reached OPERATIONAL state.\n");
@@ -275,6 +276,8 @@ bool ec_master_open(EcMaster* master, const char* ifname) {
 
     master->expected_wkc =
         (master->ctx.grouplist[0].outputsWKC * 2) + master->ctx.grouplist[0].inputsWKC;
+    master->operational = false;
+    master->slaves_operational = true;
     master->initialized = true;
     return true;
 }
@@ -287,6 +290,7 @@ void ec_master_close(EcMaster* master) {
     if (master != NULL && master->initialized) {
         ecx_close(&master->ctx);
         master->initialized = false;
+        master->operational = false;
     }
 }
 
@@ -301,6 +305,9 @@ void ec_master_close(EcMaster* master) {
 bool ec_master_send_packet(EcMaster* master, const MotorConfig* config, uint16_t slot,
                            const MotorPackMsg* packet) {
     if (master == NULL || config == NULL || packet == NULL || !master->initialized) {
+        return false;
+    }
+    if (!master->operational) {
         return false;
     }
     if (!ec_validate_target(&master->layout, config->slaveId, config->busId, slot)) {
@@ -320,6 +327,87 @@ bool ec_master_send_packet(EcMaster* master, const MotorConfig* config, uint16_t
                                  slot, packet);
 }
 
+static void clear_outputs(EcMaster* master) {
+    for (int slave = 1; slave <= master->ctx.slavecount; ++slave) {
+        ec_slavet* device = &master->ctx.slavelist[slave];
+        if (device->outputs != NULL) {
+            memset(device->outputs, 0, device->Obytes);
+        }
+    }
+}
+
+static void check_states(EcMaster* master) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    const uint64_t now_ns = (uint64_t) now.tv_sec * 1000000000ULL + (uint64_t) now.tv_nsec;
+    if (now_ns < master->next_state_check_ns && master->last_wkc >= master->expected_wkc &&
+        master->expected_wkc > 0) {
+        return;
+    }
+    master->next_state_check_ns = now_ns + 50000000ULL;
+    const int state = ecx_readstate(&master->ctx);
+    bool all_operational = state > EC_STATE_NONE && master->ctx.slavecount > 0;
+    for (int slave = 1; slave <= master->ctx.slavecount; ++slave) {
+        ec_slavet* device = &master->ctx.slavelist[slave];
+        if (device->state == EC_STATE_OPERATIONAL) {
+            device->islost = false;
+            continue;
+        }
+        all_operational = false;
+        if (device->state == (EC_STATE_SAFE_OP + EC_STATE_ERROR)) {
+            device->state = EC_STATE_SAFE_OP + EC_STATE_ACK;
+            ecx_writestate(&master->ctx, (uint16_t) slave);
+        } else if (device->state == EC_STATE_SAFE_OP) {
+            device->state = EC_STATE_OPERATIONAL;
+            ecx_writestate(&master->ctx, (uint16_t) slave);
+        } else if (device->state > EC_STATE_NONE) {
+            if (ecx_reconfig_slave(&master->ctx, (uint16_t) slave, 500) >= EC_STATE_PRE_OP) {
+                device->islost = false;
+            }
+        } else {
+            ecx_statecheck(&master->ctx, (uint16_t) slave, EC_STATE_OPERATIONAL, EC_TIMEOUTRET);
+            if (device->state == EC_STATE_NONE) {
+                device->islost = true;
+                if (ecx_recover_slave(&master->ctx, (uint16_t) slave, 500)) {
+                    device->islost = false;
+                }
+            }
+        }
+    }
+    master->slaves_operational = all_operational;
+    master->ctx.grouplist[0].docheckstate = !all_operational;
+}
+
+static void update_link(EcMaster* master, bool all_operational, bool valid_wkc) {
+    const bool was_operational = master->operational;
+    if (!all_operational) {
+        master->operational = false;
+    }
+    if (master->wkc_error_iteration >= 100) {
+        master->wkc_error_count = 0;
+        master->wkc_error_iteration = 0;
+    }
+    if (was_operational) {
+        ++master->wkc_error_iteration;
+        if (!valid_wkc) {
+            ++master->wkc_error_count;
+            fprintf(stderr, "Bad WKC during normal operation.\n");
+            if (master->wkc_error_count >= 20) {
+                master->operational = false;
+            }
+        }
+    } else if (all_operational && valid_wkc) {
+        master->operational = true;
+        master->wkc_error_count = 0;
+        master->wkc_error_iteration = 0;
+        fprintf(stderr, "EtherCAT recovered: all slaves OPERATIONAL with valid WKC.\n");
+    }
+    if (was_operational && !master->operational) {
+        fprintf(stderr, "EtherCAT link degraded; continuing empty PDO exchange and recovery.\n");
+        memset(master->external_devices, 0, sizeof(master->external_devices));
+    }
+}
+
 /**
  * @brief 执行一次 EtherCAT 周期循环（发送、接收、读取回包）
  * @param[in,out] master 主站句柄
@@ -330,10 +418,21 @@ bool ec_master_cycle(EcMaster* master) {
         return false;
     }
 
+    check_states(master);
+    if (!master->operational || !master->slaves_operational) {
+        clear_outputs(master);
+    }
     ecx_send_processdata(&master->ctx);
     master->last_wkc = ecx_receive_processdata(&master->ctx, EC_TIMEOUTRET);
-    if (master->last_wkc < master->expected_wkc) {
-        fprintf(stderr, "Bad WKC: got %d expected %d\n", master->last_wkc, master->expected_wkc);
+    clear_outputs(master);
+    const bool valid_wkc = master->expected_wkc > 0 && master->last_wkc >= master->expected_wkc;
+    update_link(master, master->slaves_operational, valid_wkc);
+    if (!valid_wkc) {
+        master->slaves_operational = false;
+        master->next_state_check_ns = 0;
+    }
+    if (!master->operational || !valid_wkc) {
+        return false;
     }
 
     for (size_t slave = 0; slave < master->layout.slave_count; ++slave) {
