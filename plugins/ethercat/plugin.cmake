@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 function(encos_ethercat_check out_available out_reason)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT WIN32)
         set(${out_available} FALSE PARENT_SCOPE)

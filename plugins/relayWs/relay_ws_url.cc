@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "relayWs/relay_ws_url.h"
 
 #include <cstdlib>

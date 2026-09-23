@@ -1,4 +1,7 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
+import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -12,6 +15,7 @@ if (!versionMatch) throw new Error('failed to resolve project version from CMake
 const stagingRoot = resolve(root, 'staging')
 rmSync(stagingRoot, { recursive: true, force: true })
 mkdirSync(stagingRoot, { recursive: true })
+copyFileSync(resolve(repoRoot, 'LICENSE'), resolve(stagingRoot, 'LICENSE'))
 const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 packageJson.version = versionMatch[1]
 writeFileSync(resolve(stagingRoot, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`)

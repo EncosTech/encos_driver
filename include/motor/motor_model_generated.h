@@ -1,4 +1,7 @@
 // Auto-generated from motor_models.csv. CSV SHA1: 76e81b1f3b808e9430446b3a21e3dafc9ef207cb
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <string>

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -359,7 +362,7 @@ bool Motor::Brake(bool enabled, bool wait_for_ack) {
     }
 
     const auto ack = SendAndWait(msg, [enabled](const MotorPackMsg& pack) {
-        return packet_has_payload(pack, 0, 2) && pack.data[0] == 0xc0 &&
+        return pack.len == 2 && (pack.data[0] == 0xc0 || pack.data[0] == 0xa0) &&
                pack.data[1] == static_cast<uint8_t>(enabled ? 0 : 1);
     });
     return ack.has_value();

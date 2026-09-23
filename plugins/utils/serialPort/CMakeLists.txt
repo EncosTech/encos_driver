@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 add_library(EncosSerialPort STATIC)
 if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     target_sources(EncosSerialPort PRIVATE serial_port.emscripten.cc)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include "can_socket_setup_internal.h"

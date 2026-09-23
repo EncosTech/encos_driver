@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 function(encos_relay_ws_check out_available out_reason)
     if(NOT ENCOS_ENABLE_RELAY)
         set(${out_available} FALSE PARENT_SCOPE)

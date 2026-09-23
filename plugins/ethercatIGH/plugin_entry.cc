@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "ethercat_igh_adapter.h"
 
 extern "C" encos::BaseAdapter* MakeAdapter(const char* interface_name, const char* logger_name,

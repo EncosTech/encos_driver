@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 function(encos_define_bool_option option_name default_value description)
     if(DEFINED ${option_name})
         set(_option_value "${${option_name}}")

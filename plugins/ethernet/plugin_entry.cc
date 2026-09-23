@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "ethernet_adapter.h"
 #include "export.h"
 #include "platform/os.h"

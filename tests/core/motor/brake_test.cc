@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <gtest/gtest.h>
 
 #include "test_fixtures.h"
@@ -80,16 +83,18 @@ TEST_F(BrakeTests, CommandsUseSection914AndMechanicalBrakeSemantics) {
 
 TEST_F(BrakeTests, AcceptsManualTwoByteAcknowledgements) {
     adapter->SetReplyMode(FakeReplyMode::Manual);
-    for (const bool enabled : {true, false}) {
-        adapter->SetDecodedCommandObserver([&, enabled](const FakeCommandRecord&) {
-            MotorPackMsg ack{};
-            ack.id = 1;
-            ack.len = 2;
-            ack.data[0] = 0xC0;
-            ack.data[1] = enabled ? 0 : 1;
-            adapter->InjectMessage(MotorMessage{0, ack});
-        });
-        EXPECT_TRUE(motor->Brake(enabled));
+    for (const uint8_t header : {0xA0, 0xC0}) {
+        for (const bool enabled : {true, false}) {
+            adapter->SetDecodedCommandObserver([&, enabled, header](const FakeCommandRecord&) {
+                MotorPackMsg ack{};
+                ack.id = 1;
+                ack.len = 2;
+                ack.data[0] = header;
+                ack.data[1] = enabled ? 0 : 1;
+                adapter->InjectMessage(MotorMessage{0, ack});
+            });
+            EXPECT_TRUE(motor->Brake(enabled));
+        }
     }
     adapter->ClearDecodedCommandObserver();
 }
@@ -106,6 +111,24 @@ TEST_F(BrakeTests, RejectsMismatchedTruncatedAndOtherPathAcknowledgements) {
             adapter->InjectMessage(MotorMessage{0, ack});
         });
         EXPECT_FALSE(motor->Brake(true));
+    }
+    adapter->ClearDecodedCommandObserver();
+}
+
+TEST_F(BrakeTests, RejectsLegacyWrongStateErrorsAndLongReplies) {
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    for (const uint8_t header : {0xA0, 0xC0}) {
+        for (int scenario = 0; scenario < 5; ++scenario) {
+            adapter->SetDecodedCommandObserver([&, header, scenario](const FakeCommandRecord&) {
+                MotorPackMsg ack{};
+                ack.id = 1;
+                ack.len = scenario == 0 ? 1 : (scenario >= 3 ? 3 : 2);
+                ack.data[0] = scenario == 2 ? header | 6 : header;
+                ack.data[1] = scenario == 1 ? 1 : (scenario == 4 ? 0x25 : 0);
+                adapter->InjectMessage(MotorMessage{0, ack});
+            });
+            EXPECT_FALSE(motor->Brake(true));
+        }
     }
     adapter->ClearDecodedCommandObserver();
 }

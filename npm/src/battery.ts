@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import { assertOk } from './native.js'
 import type { BusWrapper } from './bus.js'
 import type { BatteryPassiveCommands, BatteryStatusResult } from './types.js'

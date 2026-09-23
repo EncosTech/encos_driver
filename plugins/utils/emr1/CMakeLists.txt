@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 # Keep the existing Base DLL exports while owning the shared codec in plugins/utils.
 target_sources(${ENCOS_DRIVER_BASE_TARGET} PRIVATE relay_frame.cc)
 target_include_directories(${ENCOS_DRIVER_BASE_TARGET} PUBLIC

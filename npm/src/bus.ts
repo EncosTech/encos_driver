@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import { allocU32, assertOk, getU32 } from './native.js'
 import type { AdapterWrapper } from './adapter.js'
 import { BatteryWrapper } from './battery.js'

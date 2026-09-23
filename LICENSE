@@ -1,92 +1,65 @@
 EncosDriver License Information
-=====================================
+===============================
 
-This package contains both open-source and proprietary components. Different parts 
-of the software are subject to different license terms as described below.
+PROJECT CODE
+------------
 
-================================================================================
-THIRD-PARTY OPEN-SOURCE COMPONENTS
-================================================================================
+Except for the Ethercat plugin and third-party components listed below,
+EncosDriver-owned code is licensed under the MIT License (SPDX: MIT).
+The complete MIT terms are reproduced below.
 
-This package includes the following third-party open-source libraries:
+The Ethercat plugin retains its GPL-3.0-or-later license. It is located at
+plugins/adapter/ethercat/ in v4 and plugins/ethercat/ in v3. The complete
+GNU GPL v3 text is in COPYING. This exception does not apply to the WASM/npm
+package, which does not include the Ethercat plugin.
 
-1. SOEM (Simple Open EtherCAT Master)
-   - Copyright (C) 2005-2025 Speciaal Machinefabriek Ketels v.o.f.
-   - Copyright (C) 2005-2025 Arthur Ketels
-   - Copyright (C) 2009-2025 RT-Labs AB, Sweden
-   - Upstream license: Dual-licensed (GPLv3 or commercial license)
-   - Distributed in this package under: GNU General Public License v3.0 (GPLv3)
-   - Location: external/SOEM/
-   - Full license: external/SOEM/LICENSE.md
+MIT License
 
-2. Boost.Preprocessor
-   - Copyright (C) 2001-2003 Housemarque Oy
-   - Copyright (C) 2001-2011 Paul Mensonides
-   - Copyright (C) 2002 David Abrahams
-   - Copyright (C) 2011-2013 Edward Diener
-   - License: Boost Software License 1.0
-   - Location: external/boost_preprocessor/
-   - License notices: source headers under
-     external/boost_preprocessor/include/boost/preprocessor/
+Copyright (c) 2026 Encos
 
-3. dylib
-   - Copyright (c) 2025 Martin Olivier
-   - License: MIT License
-   - Location: external/dylib/
-   - Full license: external/dylib/LICENSE
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-4. IgH EtherCAT Master
-   - License: GNU Lesser General Public License v2.1 (LGPL v2.1) — userspace library
-     GNU General Public License v2.0 (GPLv2) — kernel modules
-   - Usage in this package: runtime dependency of the EthercatIGH plugin
-   - Note: this library is expected to be provided by the target system;
-     the EthercatIGH plugin itself is a proprietary component.
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
 
-================================================================================
-OPEN-SOURCE COMPONENTS (GPLv3)
-================================================================================
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 
-The following components of this package are licensed under the GNU General 
-Public License v3.0:
+THIRD-PARTY COMPONENTS
+----------------------
 
-- EtherCAT Plugin (plugins/ethercat/)
+Third-party files, submodules, and dependencies retain their original
+copyrights and licenses. They are not relicensed by the MIT grant above. Refer to the license files and notices in each
+component's source tree:
 
-These components are free software: you can redistribute them and/or modify
-them under the terms of the GNU General Public License as published by the
-Free Software Foundation, either version 3 of the License, or (at your option)
-any later version.
+- SOEM: external/SOEM/LICENSE.md.
+  Dual-licensed under GPL v3 or a commercial license; this project uses the
+  GPL v3 alternative.
 
-These components are distributed in the hope that they will be useful, but
-WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
-details.
+- Boost.Preprocessor: license notices in the source headers under
+  external/boost_preprocessor/include/boost/preprocessor/.
+  Boost Software License 1.0.
 
-You should have received a copy of the GNU General Public License along with
-this program. If not, see <https://www.gnu.org/licenses/>.
+- dylib: external/dylib/LICENSE.
+  MIT License.
 
-================================================================================
-PROPRIETARY COMPONENTS
-================================================================================
+- IXWebSocket: external/IXWebSocket/LICENSE.txt.
+  BSD 3-Clause License. Its bundled dependencies retain their own licenses.
 
-The following components are proprietary and closed-source:
+- IgH EtherCAT Master: a system dependency of the EthercatIGH plugin.
+  The userspace library uses LGPL v2.1 and the kernel modules use GPL v2.0.
+  Refer to the license files supplied with the upstream version in use.
 
-- EncosDriver core library
-- EncosDriverBase library
-- EthercatIGH Plugin (plugins/ethercatIGH/)
-- All other source files not explicitly mentioned above
-
-Copyright (c) 2026 Encos. All rights reserved.
-
-These proprietary components are provided "AS IS" without warranty of any kind,
-either express or implied, including but not limited to the warranties of 
-merchantability, fitness for a particular purpose, and non-infringement.
-
-Redistribution, modification, or any other use of the proprietary components
-requires explicit written permission from Encos.
-
-For licensing inquiries, please contact: zuoqingyu@encos.cn
-
-================================================================================
-
-For complete license texts of third-party components, please refer to the 
-individual LICENSE files in their respective directories under external/.
+Dependencies provided by the system or build environment, including spdlog,
+fmt, zstd, libcap, GoogleTest, and JavaScript dependencies, also retain their
+respective upstream licenses.

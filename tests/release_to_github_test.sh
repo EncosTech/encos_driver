@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -40,6 +43,14 @@ git -C "${source_repo}" -c protocol.file.allow=always submodule add -q \
   "${submodule_repo}" external/example
 git -C "${source_repo}" config -f .gitmodules \
   submodule.external/example.url http://gitea.test/acme/submodule.git
+for internal_root in "${source_repo}" "${source_repo}/include"; do
+  printf 'agent rules\n' >"${internal_root}/AGENTS.md"
+  printf 'claude rules\n' >"${internal_root}/CLAUDE.md"
+  for private_dir in .claude .codex .agents .cursor .gemini .opencode; do
+    mkdir -p "${internal_root}/${private_dir}"
+    printf 'private configuration\n' >"${internal_root}/${private_dir}/config.txt"
+  done
+done
 git -C "${source_repo}" add .
 git -C "${source_repo}" commit -q -m "source snapshot"
 initial_source_sha1=$(git -C "${source_repo}" rev-parse HEAD)
@@ -55,6 +66,12 @@ printf 'stale\n' >"${target_seed}/stale.txt"
 mkdir -p "${target_seed}/.gitea" "${target_seed}/openspec"
 printf 'stale workflow\n' >"${target_seed}/.gitea/stale.yml"
 printf 'stale spec\n' >"${target_seed}/openspec/stale.md"
+printf 'stale agent rules\n' >"${target_seed}/AGENTS.md"
+printf 'stale claude rules\n' >"${target_seed}/CLAUDE.md"
+for private_dir in .claude .codex .agents .cursor .gemini .opencode; do
+  mkdir -p "${target_seed}/${private_dir}"
+  printf 'stale configuration\n' >"${target_seed}/${private_dir}/stale.txt"
+done
 git -C "${target_seed}" add .
 git -C "${target_seed}" commit -q -m "seed"
 git clone -q --bare "${target_seed}" "${target_bare}"
@@ -211,6 +228,13 @@ test ! -e "${mirror_checkout}/.gitmodules"
 test ! -e "${mirror_checkout}/.gitea"
 test ! -e "${mirror_checkout}/openspec"
 test ! -e "${mirror_checkout}/stale.txt"
+for internal_root in "${mirror_checkout}" "${mirror_checkout}/include"; do
+  test ! -e "${internal_root}/AGENTS.md"
+  test ! -e "${internal_root}/CLAUDE.md"
+  for private_dir in .claude .codex .agents .cursor .gemini .opencode; do
+    test ! -e "${internal_root}/${private_dir}"
+  done
+done
 test ! -e "${mirror_checkout}/external/example/.git"
 test ! -e "${mirror_checkout}/external/example/vendor/leaf/.git"
 test "$(git -C "${mirror_checkout}" log -1 --format=%s)" = "release: 发布v3.2.0"

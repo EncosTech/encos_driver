@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 # EncosPlugins.cmake
 #
 # 提供 EncosMotorDriver 插件注册、发现与注册代码生成的 CMake API。
@@ -343,7 +346,10 @@ function(encos_generate_plugin_registry output_dir)
     endif()
 
     set(_static_registry_content
-"#pragma once
+"// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
+#pragma once
 
 #include <array>
 #include <string>
@@ -383,7 +389,10 @@ $<JOIN:$<TARGET_PROPERTY:EncosMotorDriver,ENCOS_STATIC_DEFINITIONS>,\,\n>
     file(GENERATE OUTPUT "${_static_registry_header}" CONTENT "${_static_registry_content}")
 
     set(_hidden_types_content
-"#pragma once
+"// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
+#pragma once
 
 #include <array>
 #include <string_view>

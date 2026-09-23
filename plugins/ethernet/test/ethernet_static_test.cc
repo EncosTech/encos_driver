@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <algorithm>
 #include <bpf/libbpf.h>
 #include <gtest/gtest.h>

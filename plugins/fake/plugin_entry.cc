@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "plugins/export.h"
 #include "plugins/fake/fake_adapter.h"
 

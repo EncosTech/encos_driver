@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 function(encos_fake_check out_available out_reason)
     set(${out_available} TRUE PARENT_SCOPE)
     set(${out_reason} "" PARENT_SCOPE)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "plugins/export.h"
 #include "relayWs/relay_ws_adapter.h"
 

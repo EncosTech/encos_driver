@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import type { CFunction, WasmModule } from './types.js'
 
 export class EncosWasmError extends Error {

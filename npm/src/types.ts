@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 export type CFunction = (...args: any[]) => any
 
 export interface WebSerialOpenOptions {

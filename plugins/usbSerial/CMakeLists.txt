@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.18)
 project(EncosUsbSerialDirectPlugin)
 

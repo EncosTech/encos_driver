@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include <algorithm>
 #include <stdexcept>
 #include <string>

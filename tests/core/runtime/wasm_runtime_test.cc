@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "wasm/wasm_runtime.h"
 
 #include <cstdlib>

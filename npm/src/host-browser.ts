@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import type { WasmModule, WasmModuleFactory } from './types.js'
 import type { RuntimeHost } from './host.js'
 

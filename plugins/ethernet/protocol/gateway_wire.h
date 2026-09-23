@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #ifndef GATEWAY_WIRE_H
 #define GATEWAY_WIRE_H
 #include <stdbool.h>

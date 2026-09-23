@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "utils/fdBroker/file_capabilities.h"
 #ifdef __linux__
 #include <arpa/inet.h>

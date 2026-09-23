@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 // Emscripten --pre-js: this bridge belongs to one module instance, not the page globally.
 (() => {
     const ports = new Map();

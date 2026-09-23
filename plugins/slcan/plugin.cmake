@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 function(encos_slcan_check out_available out_reason)
     if(WIN32)
         set(${out_available} FALSE PARENT_SCOPE)

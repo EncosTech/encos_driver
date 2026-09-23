@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "ethernet/transport/linux/xdp.h"
 
 #include <arpa/inet.h>

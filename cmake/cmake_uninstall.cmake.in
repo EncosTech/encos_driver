@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 set(_install_manifest "@CMAKE_INSTALL_PREFIX@/install_manifest.txt")
 if(NOT EXISTS "${_install_manifest}")
   # fallback to manifest located next to this script (common when running from build dir)

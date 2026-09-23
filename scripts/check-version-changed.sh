@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 set -euo pipefail
 
 # 判断主 CMakeLists.txt 中的项目版本号是否发生变化。

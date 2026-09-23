@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 export const LogLevel = Object.freeze({
   Trace: 0,
   Debug: 1,

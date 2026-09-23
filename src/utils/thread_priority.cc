@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "utils/thread_priority.h"
 
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)

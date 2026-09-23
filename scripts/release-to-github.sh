@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 set -euo pipefail
 
 usage() {
@@ -449,6 +452,14 @@ rsync -a --delete --delete-excluded \
   --exclude='.gitmodules' \
   --exclude='/.gitea/' \
   --exclude='/openspec/' \
+  --exclude='AGENTS.md' \
+  --exclude='CLAUDE.md' \
+  --exclude='.claude' \
+  --exclude='.codex' \
+  --exclude='.agents' \
+  --exclude='.cursor' \
+  --exclude='.gemini' \
+  --exclude='.opencode' \
   "${source_dir}/" "${target_dir}/"
 
 git -C "${target_dir}" add --all

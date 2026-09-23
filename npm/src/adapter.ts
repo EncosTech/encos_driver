@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import { allocU32, assertOk, getI32, getU32 } from './native.js'
 import type { BusKey } from './types.js'
 import type { Runtime } from './runtime.js'

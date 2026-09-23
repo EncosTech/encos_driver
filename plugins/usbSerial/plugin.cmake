@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 function(encos_usb_serial_check out_available out_reason)
     if(NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR EMSCRIPTEN OR
             CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))

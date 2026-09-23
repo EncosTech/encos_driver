@@ -278,3 +278,7 @@ sudo setcap cap_net_raw,cap_net_admin,cap_sys_nice,cap_ipc_lock+ep <Executable>
 ```
 动态 CAN/EtherCAT 插件通过 fd broker 获取已配置的套接字；线程优先级 helper 不使用
 setuid，也不能修改调用进程之外的线程。
+
+## 许可证
+
+除 Ethercat 插件外，EncosDriver 自有代码采用 [MIT 许可证](LICENSE)；Ethercat 插件保留 `GPL-3.0-or-later`，完整 GPL v3 条款见 [COPYING](COPYING)。第三方组件保留各自的许可证，具体位置见 [LICENSE](LICENSE)。

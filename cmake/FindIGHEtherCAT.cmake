@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 find_path(IGHEtherCAT_INCLUDE_DIR
     NAMES ecrt.h
     PATHS /usr/local/include /usr/include

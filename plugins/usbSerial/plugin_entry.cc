@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "usb_serial_adapter.h"
 
 extern "C" encos::BaseAdapter* MakeAdapter(const char* interface_name, const char* logger_name,

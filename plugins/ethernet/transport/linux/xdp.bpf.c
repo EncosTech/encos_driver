@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 /* clang-format off */
 #include <linux/bpf.h>
 #include <linux/if_ether.h>

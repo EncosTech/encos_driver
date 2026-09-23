@@ -1,5 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.18)
-project(encos_driver VERSION 3.3.1)
+project(encos_driver VERSION 3.3.2)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
@@ -621,6 +624,8 @@ if(ENCOS_ENABLE_INSTALL)
         ")
     endif()
     install(FILES
+        LICENSE
+        COPYING
         docs/using_guide.md
         docs/arch.md
         docs/logging.md

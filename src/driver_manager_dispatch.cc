@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "driver_manager_impl.h"
 #include "utils/scope_exit.h"
 

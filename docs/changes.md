@@ -863,3 +863,20 @@
 - 补齐 3.3.0 版本变更记录，说明 Ethernet 新插件、EtherCAT 跨平台统一、迁移要求及相关修复。
 - 将架构说明 `arch.md`、日志指南 `logging.md` 和版本记录 `changes.md` 加入 CMake 安装及 DEB 包，与 `using_guide.md` 一同安装到 `share/doc/libencosdriver`。
 - 保留随包安装的 8 张 SVG 图，供使用指南、架构说明和日志指南引用。
+
+### 3.3.2
+
+#### Feature
+
+- 除 Ethercat 插件外，项目自有代码采用 MIT 许可证；代码文件头增加 SPDX 说明，Ethercat 插件继续使用 GPL v3，第三方依赖保留其许可。
+- 安装包随附 MIT 许可说明与 Ethercat 插件的 GPL 完整文本，npm 包使用 MIT 许可；第三方许可指向源码中的原文件；生成器保留代码许可证头，`AGENTS.md` 规定后续维护要求。
+
+#### Fix
+
+- 回移植 `8589429e1197fb1a949fd3673264c4f4a2e97401`：兼容旧电机两字节 A0/C0 抱闸确认，仅接受状态匹配且无错误的两字节回包，拒绝截断、错误状态及较长报文。
+- GitHub 发布快照递归排除 `AGENTS.md`、`CLAUDE.md` 和 `.claude`、`.codex`、`.agents`、`.cursor`、`.gemini`、`.opencode`，同时删除目标快照已有的对应文件。
+
+#### Test
+
+- 补充 A0/C0 抱闸确认及错误、状态不匹配、长报文的回归测试。
+- 发布脚本测试覆盖根目录和子目录的代理配置排除，以及目标快照旧配置清理。

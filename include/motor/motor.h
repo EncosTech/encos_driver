@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <chrono>
@@ -310,7 +313,7 @@ public:
         MotorStopMode mode, float current, int feedback = FeedbackType);
 
     /**
-     * @brief 按协议 §9.1.4 启用或禁用刹车抱闸，使用类型 6 状态回报
+     * @brief 按协议 §9.1.4 启用或禁用刹车抱闸，兼容两字节 A0/C0 状态回报
      * @param enabled true 抱紧（协议状态 0），false 释放（协议状态 1）
      * @param wait_for_ack 如果为 true，等待确认包
      * @return 等待确认时，收到无错误且状态匹配的确认包返回 true；不等待时，发送流程完成返回 true

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 # Encos 原生运行期测试。
 #
 # 本文件在插件发现前被 include，以便已启用插件通过

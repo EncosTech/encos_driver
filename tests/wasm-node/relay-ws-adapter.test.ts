@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import { afterEach, expect, test, vi } from 'vitest'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'

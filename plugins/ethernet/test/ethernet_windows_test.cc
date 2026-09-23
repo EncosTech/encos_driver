@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "ethernet/protocol/gateway_payload.h"
 #ifdef _WIN32
 // clang-format off

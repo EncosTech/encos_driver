@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <emscripten/websocket.h>
 #include <mutex>
 #include <vector>

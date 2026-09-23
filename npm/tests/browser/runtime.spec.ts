@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import { expect, test } from '@playwright/test'
 
 test('browser keeps Asyncify responsive and Adapter disposal invalidates children', async ({

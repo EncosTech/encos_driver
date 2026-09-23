@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 set(device_files
     "src/battery/battery.cc"
     "src/battery/battery_impl.h"

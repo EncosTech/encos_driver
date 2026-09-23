@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 

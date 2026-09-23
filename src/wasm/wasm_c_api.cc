@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <cstddef>
 #include <cstdint>
 #include <emscripten/emscripten.h>

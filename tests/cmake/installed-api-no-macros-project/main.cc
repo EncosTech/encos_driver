@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <encos/encos_driver.h>
 
 #if defined(MakeAdapter) || defined(UnloadAdapterByInterfaceName) || defined(DeleteAdapter) ||    \

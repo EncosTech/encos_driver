@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 function(encos_ethercat_igh_check out_available out_reason)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(${out_available} FALSE PARENT_SCOPE)

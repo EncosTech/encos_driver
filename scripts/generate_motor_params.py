@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 """Generate MotorModel enum and parameter lookup from CSV."""
 
 import argparse
@@ -9,7 +12,11 @@ import sys
 
 
 def generated_banner(csv_sha1):
-    return f"// Auto-generated from motor_models.csv. CSV SHA1: {csv_sha1}"
+    return (
+        f"// Auto-generated from motor_models.csv. CSV SHA1: {csv_sha1}\n"
+        "// SPDX-FileCopyrightText: 2026 Encos\n"
+        "// SPDX-License-Identifier: MIT\n"
+    )
 
 
 def generate_header(models, csv_sha1):

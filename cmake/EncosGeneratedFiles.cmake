@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 function(encos_verify_generated_csv_sha1 csv_file)
     set(_generated_files ${ARGN})
     if(NOT EXISTS "${csv_file}")

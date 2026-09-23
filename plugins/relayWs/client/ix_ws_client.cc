@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <condition_variable>
 #include <deque>
 #include <ixwebsocket/IXWebSocket.h>

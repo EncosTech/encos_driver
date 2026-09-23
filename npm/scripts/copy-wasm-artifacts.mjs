@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,3 +21,5 @@ for (const name of artifacts) {
   mkdirSync(dirname(target), { recursive: true })
   copyFileSync(source, target)
 }
+
+copyFileSync(resolve(root, '..', 'LICENSE'), resolve(distDir, 'LICENSE'))

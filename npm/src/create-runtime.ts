@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 import { createDefaultHost } from './host.js'
 import type { RuntimeOptions } from './types.js'
 import { Runtime } from './runtime.js'
