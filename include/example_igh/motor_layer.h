@@ -85,8 +85,8 @@ typedef enum {
 
 /** @brief 电机刹车模式 */
 typedef enum {
-    MOTOR_STOP_FULL_BRAKE = 2,       /**< 变阻尼刹车 */
-    MOTOR_STOP_DYNAMIC_BRAKE = 3,    /**< 能耗制动刹车 */
+    MOTOR_STOP_FULL_BRAKE = 2,         /**< 变阻尼刹车 */
+    MOTOR_STOP_DYNAMIC_BRAKE = 3,      /**< 能耗制动刹车 */
     MOTOR_STOP_REGENERATIVE_BRAKE = 4, /**< 再生制动刹车 */
 } MotorStopMode;
 
@@ -99,29 +99,29 @@ typedef enum {
 
 /** @brief 电机参数枚举，用于 get-parameter 指令 */
 typedef enum {
-    MOTOR_PARAM_POSITION = 1,         /**< 位置 */
-    MOTOR_PARAM_SPEED = 2,            /**< 速度 */
-    MOTOR_PARAM_CURRENT = 3,          /**< 电流 */
-    MOTOR_PARAM_POWER = 4,            /**< 功率 */
-    MOTOR_PARAM_ACCELERATION = 5,     /**< 加速度 */
-    MOTOR_PARAM_FLUX_KP_GAIN = 6,     /**< 磁通 Kp */
-    MOTOR_PARAM_FLUX_KI_GAIN = 7,     /**< 磁通 Ki */
-    MOTOR_PARAM_FB_KP_GAIN = 8,       /**< 反馈 Kp */
-    MOTOR_PARAM_PD_GAIN = 9,          /**< PD 增益 */
-    MOTOR_PARAM_KT = 22,              /**< 转矩常数 */
-    MOTOR_PARAM_PVT_KP_RANGE = 23,    /**< PVT Kp 范围 */
-    MOTOR_PARAM_PVT_KD_RANGE = 24,    /**< PVT Kd 范围 */
-    MOTOR_PARAM_PVT_POS_RANGE = 25,   /**< PVT 位置范围 */
-    MOTOR_PARAM_PVT_SPD_RANGE = 26,   /**< PVT 速度范围 */
-    MOTOR_PARAM_PVT_TOR_RANGE = 27,   /**< PVT 转矩范围 */
-    MOTOR_PARAM_PVT_CUR_RANGE = 28,   /**< PVT 电流范围 */
-    MOTOR_PARAM_UUID = 29,            /**< UUID */
-    MOTOR_PARAM_VERSION = 30,         /**< 固件版本 */
-    MOTOR_PARAM_CAN_TIMEOUT = 31,     /**< CAN 超时时间 */
-    MOTOR_PARAM_CUR_KP_KI = 32,       /**< 电流环 PI */
-    MOTOR_PARAM_SPD_KP_KI = 33,       /**< 速度环 PI */
-    MOTOR_PARAM_POS_KP_KD = 34,       /**< 位置环 PD */
-    MOTOR_PARAM_BRAKE_STATUS = 37,    /**< 抱闸状态 */
+    MOTOR_PARAM_POSITION = 1,       /**< 位置 */
+    MOTOR_PARAM_SPEED = 2,          /**< 速度 */
+    MOTOR_PARAM_CURRENT = 3,        /**< 电流 */
+    MOTOR_PARAM_POWER = 4,          /**< 功率 */
+    MOTOR_PARAM_ACCELERATION = 5,   /**< 加速度 */
+    MOTOR_PARAM_FLUX_KP_GAIN = 6,   /**< 磁通 Kp */
+    MOTOR_PARAM_FLUX_KI_GAIN = 7,   /**< 磁通 Ki */
+    MOTOR_PARAM_FB_KP_GAIN = 8,     /**< 反馈 Kp */
+    MOTOR_PARAM_PD_GAIN = 9,        /**< PD 增益 */
+    MOTOR_PARAM_KT = 22,            /**< 转矩常数 */
+    MOTOR_PARAM_PVT_KP_RANGE = 23,  /**< PVT Kp 范围 */
+    MOTOR_PARAM_PVT_KD_RANGE = 24,  /**< PVT Kd 范围 */
+    MOTOR_PARAM_PVT_POS_RANGE = 25, /**< PVT 位置范围 */
+    MOTOR_PARAM_PVT_SPD_RANGE = 26, /**< PVT 速度范围 */
+    MOTOR_PARAM_PVT_TOR_RANGE = 27, /**< PVT 转矩范围 */
+    MOTOR_PARAM_PVT_CUR_RANGE = 28, /**< PVT 电流范围 */
+    MOTOR_PARAM_UUID = 29,          /**< UUID */
+    MOTOR_PARAM_VERSION = 30,       /**< 固件版本 */
+    MOTOR_PARAM_CAN_TIMEOUT = 31,   /**< CAN 超时时间 */
+    MOTOR_PARAM_CUR_KP_KI = 32,     /**< 电流环 PI */
+    MOTOR_PARAM_SPD_KP_KI = 33,     /**< 速度环 PI */
+    MOTOR_PARAM_POS_KP_KD = 34,     /**< 位置环 PD */
+    MOTOR_PARAM_BRAKE_STATUS = 37,  /**< 抱闸状态 */
 } MotorParameter;
 
 /** @brief 浮点数范围 */
@@ -149,11 +149,11 @@ typedef struct {
 
 /** @brief 电机配置 */
 typedef struct {
-    uint16_t slaveId;  /**< 从站编号 */
-    uint16_t busId;    /**< 总线编号 */
-    uint16_t motorId;  /**< 电机编号 */
-    uint8_t flag;      /**< CAN 帧标志 */
-    MotorModel model;  /**< 电机型号 */
+    uint16_t slaveId; /**< 从站编号 */
+    uint16_t busId;   /**< 总线编号 */
+    uint16_t motorId; /**< 电机编号 */
+    uint8_t flag;     /**< CAN 帧标志 */
+    MotorModel model; /**< 电机型号 */
 } MotorConfig;
 
 #pragma pack(push, 1)
@@ -168,11 +168,11 @@ typedef struct {
 
 /** @brief CAN 帧标志位 */
 enum {
-    MOTOR_CAN_FLAG_EFF = 0x01,                         /**< 扩展帧标志 */
-    MOTOR_CAN_FLAG_FD_BIT1 = 0x02,                     /**< CAN FD 标志位1 */
-    MOTOR_CAN_FLAG_FD_BIT2 = 0x04,                     /**< CAN FD 标志位2 */
-    MOTOR_CAN_FLAG_RTR = 0x08,                         /**< 远程帧标志 */
-    MOTOR_CAN_FLAG_MASK = 0x0F,                        /**< 标志位掩码 */
+    MOTOR_CAN_FLAG_EFF = 0x01,     /**< 扩展帧标志 */
+    MOTOR_CAN_FLAG_FD_BIT1 = 0x02, /**< CAN FD 标志位1 */
+    MOTOR_CAN_FLAG_FD_BIT2 = 0x04, /**< CAN FD 标志位2 */
+    MOTOR_CAN_FLAG_RTR = 0x08,     /**< 远程帧标志 */
+    MOTOR_CAN_FLAG_MASK = 0x0F,    /**< 标志位掩码 */
     MOTOR_CAN_FLAG_FD_MASK = MOTOR_CAN_FLAG_FD_BIT1 | MOTOR_CAN_FLAG_FD_BIT2, /**< CAN FD 掩码 */
 };
 

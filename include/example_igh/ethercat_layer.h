@@ -14,11 +14,11 @@ extern "C" {
 
 /** @brief EtherCAT 从站 PDO 格式 */
 typedef enum {
-    EC_SLAVE_FORMAT_NONE = 0,          /*!< 未知/不支持 */
-    EC_SLAVE_FORMAT_CLASSIC_CAN_2_BUS,          /*!< Classic CAN，2 路总线 */
-    EC_SLAVE_FORMAT_CAN_FD_3_BUS,               /*!< CAN FD，3 路总线 */
-    EC_SLAVE_FORMAT_CAN_FD_8_BUS,               /*!< CAN FD，8 路总线 */
-    EC_SLAVE_FORMAT_CAN_FD_8_BUS_10_SLOTS,      /*!< CAN FD，8 路总线，每路 10 槽位 */
+    EC_SLAVE_FORMAT_NONE = 0,              /*!< 未知/不支持 */
+    EC_SLAVE_FORMAT_CLASSIC_CAN_2_BUS,     /*!< Classic CAN，2 路总线 */
+    EC_SLAVE_FORMAT_CAN_FD_3_BUS,          /*!< CAN FD，3 路总线 */
+    EC_SLAVE_FORMAT_CAN_FD_8_BUS,          /*!< CAN FD，8 路总线 */
+    EC_SLAVE_FORMAT_CAN_FD_8_BUS_10_SLOTS, /*!< CAN FD，8 路总线，每路 10 槽位 */
 } EcSlaveFormat;
 
 /** @brief 单个从站的 PDO 布局信息 */
@@ -57,6 +57,7 @@ typedef struct {
 /** @brief IgH EtherCAT 主站句柄 */
 typedef struct {
     ec_master_t* master;                         /*!< IgH 主站指针 */
+    ec_slave_config_t* slave_configs[16];        /**< 已配置的受支持从站 */
     ec_domain_t* domain;                         /*!< IgH 域指针 */
     uint8_t* domain_pd;                          /*!< 域过程数据指针 */
     ec_master_state_t master_state;              /*!< 主站状态 */
@@ -68,7 +69,10 @@ typedef struct {
     uint32_t product_codes[16];                  /*!< 产品代码 */
     unsigned int master_index;                   /*!< 主站索引 */
     unsigned int last_working_counter;           /*!< 上次工作计数器 */
-    bool initialized;                            /*!< 是否已初始化 */
+    bool operational;                 /**< 全部已配置从站已进入 OP 且 WKC 有效 */
+    unsigned int wkc_error_count;     /**< 当前 100 周期窗口内的坏 WKC 次数 */
+    unsigned int wkc_error_iteration; /**< 当前错误统计窗口的周期数 */
+    bool initialized;                 /*!< 是否已初始化 */
 } EcMaster;
 
 /**
@@ -143,7 +147,7 @@ void ec_master_close(EcMaster* master);
  * @param[in] config 电机配置
  * @param[in] slot 槽位编号
  * @param[in] packet 要发送的报文
- * @return 成功返回 true，失败返回 false
+ * @return 已就绪且写入成功返回 true，未就绪或参数无效返回 false
  */
 bool ec_master_send_packet(EcMaster* master, const MotorConfig* config, uint16_t slot,
                            const MotorPackMsg* packet);
@@ -151,7 +155,8 @@ bool ec_master_send_packet(EcMaster* master, const MotorConfig* config, uint16_t
 /**
  * @brief 执行一次 EtherCAT 周期循环（接收、处理、发送）
  * @param[in,out] master 主站句柄
- * @return 工作计数器完整返回 true，否则返回 false
+ * @return 全部已配置从站为 OP 且本周期 WKC 有效返回 true，恢复期间返回 false
+ * @note 断联后应继续调用本函数以驱动自动恢复；恢复期间丢弃新命令并交换空 PDO
  */
 bool ec_master_cycle(EcMaster* master);
 

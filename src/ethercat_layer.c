@@ -524,6 +524,7 @@ static bool configure_domain_entries(EcMaster* master) {
             break;
         }
 
+        master->slave_configs[slave] = slave_config;
         if (layout->format == EC_SLAVE_FORMAT_CLASSIC_CAN_2_BUS) {
             ok = configure_classic_slave(master, slave_config, regs, &reg_count, slave,
                                          EC_CLASSIC_CAN_2_BUS_SLOTS);
@@ -619,6 +620,7 @@ void ec_master_close(EcMaster* master) {
     master->domain = NULL;
     master->domain_pd = NULL;
     master->initialized = false;
+    master->operational = false;
 }
 
 /**
@@ -664,6 +666,9 @@ static void read_packet_from_domain(const EcMaster* master, const EcMotorOffsets
 bool ec_master_send_packet(EcMaster* master, const MotorConfig* config, uint16_t slot,
                            const MotorPackMsg* packet) {
     if (master == NULL || config == NULL || packet == NULL || !master->initialized) {
+        return false;
+    }
+    if (!master->operational) {
         return false;
     }
     if (!ec_validate_target(&master->layout, config->slaveId, config->busId, slot)) {
@@ -740,6 +745,36 @@ static void check_states(EcMaster* master) {
     master->master_state = master_state;
 }
 
+static void update_link(EcMaster* master, bool all_operational, bool valid_wkc) {
+    const bool was_operational = master->operational;
+    if (!all_operational) {
+        master->operational = false;
+    }
+    if (master->wkc_error_iteration >= 100) {
+        master->wkc_error_count = 0;
+        master->wkc_error_iteration = 0;
+    }
+    if (was_operational) {
+        ++master->wkc_error_iteration;
+        if (!valid_wkc) {
+            ++master->wkc_error_count;
+            fprintf(stderr, "Bad WKC during normal operation.\n");
+            if (master->wkc_error_count >= 20) {
+                master->operational = false;
+            }
+        }
+    } else if (all_operational && valid_wkc) {
+        master->operational = true;
+        master->wkc_error_count = 0;
+        master->wkc_error_iteration = 0;
+        fprintf(stderr, "EtherCAT recovered: all slaves OPERATIONAL with valid WKC.\n");
+    }
+    if (was_operational && !master->operational) {
+        fprintf(stderr, "EtherCAT link degraded; continuing empty PDO exchange and recovery.\n");
+        memset(master->external_devices, 0, sizeof(master->external_devices));
+    }
+}
+
 /**
  * @brief 执行一次 EtherCAT 周期循环（接收、处理、发送）
  * @param[in,out] master 主站句柄
@@ -753,6 +788,36 @@ bool ec_master_cycle(EcMaster* master) {
     ecrt_master_receive(master->master);
     ecrt_domain_process(master->domain);
     check_states(master);
+    bool all_operational = master->master_state.link_up &&
+                           master->master_state.slaves_responding == master->layout.slave_count;
+    bool has_configured_slave = false;
+    for (size_t slave = 0; slave < master->layout.slave_count; ++slave) {
+        if (master->layout.slaves[slave].format == EC_SLAVE_FORMAT_NONE) {
+            continue;
+        }
+        has_configured_slave = true;
+        ec_slave_config_state_t state = {0};
+        if (master->slave_configs[slave] != NULL) {
+            ecrt_slave_config_state(master->slave_configs[slave], &state);
+        }
+        if (!state.online || !state.operational || state.al_state != 8) {
+            all_operational = false;
+        }
+    }
+    all_operational = all_operational && has_configured_slave;
+    const bool valid_wkc =
+        master->domain_state.wc_state == EC_WC_COMPLETE && master->domain_state.working_counter > 0;
+    const bool was_operational = master->operational;
+    update_link(master, all_operational, valid_wkc);
+    if (!was_operational || !master->operational) {
+        clear_outputs(master);
+    }
+    if (!master->operational || !valid_wkc) {
+        ecrt_domain_queue(master->domain);
+        ecrt_master_send(master->master);
+        clear_outputs(master);
+        return false;
+    }
 
     for (size_t slave = 0; slave < master->layout.slave_count; ++slave) {
         const EcSlavePdoLayout* layout = &master->layout.slaves[slave];

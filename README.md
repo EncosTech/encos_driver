@@ -97,3 +97,21 @@ demo 在发送选定报文后，会以 1 ms 周期运行 5000 次收发循环。
 bash scripts/run_clang_format.sh --check
 bash scripts/run_clang_tidy.sh build
 ```
+
+## 断联自动恢复
+
+`ec_master_cycle()` 在断联后仍须持续调用。沿用 main 的恢复策略：正常运行的每
+100 周期统计窗口累计 20 次坏 WKC 后降级；检测到从站离开 OP 时立即降级。
+恢复期间发送空 PDO，丢弃新业务报文、不解析无效输入，并清除缓存外设状态。
+只有实际观察到全部已配置从站 OP 且 WKC 有效后，`master.operational` 才恢复为 true。
+`ec_master_cycle()` 返回 false 表示本周期没有有效业务数据，不表示应关闭主站。
+`ec_master_send_packet()` 在未就绪期间返回 false，调用者可在恢复后提交新命令。
+
+IgH 保持主站激活并持续 receive/process/queue/send，由内核主站状态机自动重新
+配置从站。就绪判定同时检查链路、从站数量、全部已配置从站 OP 和完整且非零的域 WKC。
+
+示例保持原有 5000 周期运行时长，首次就绪后发送一次命令。已发送的命令不会在
+重连后自动重放；应用需要持续控制时，应在就绪后提交新的业务命令。
+新增 recovery 测试使用模拟主站接口，不需要硬件；真实网线拔插恢复仍需上机验证。
+
+IgH 的 OP 检查逐个读取已配置从站的状态，未支持的从站不参与 OP 判定，以兼容混接拓扑。
