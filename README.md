@@ -17,6 +17,18 @@ EtherCAT 网关发送 Encos 电机 CAN 报文。
 pkg-config --cflags --libs libethercat
 ```
 
+### 8 路 EC 转 CAN 的 IgH 配置要求
+
+使用 8 路（8bus）版本的 EC 转 CAN 时，需要将 **IgH EtherCAT Master 源码**中
+`master/globals.h` 的 `EC_MAX_SII_SIZE` 修改为 `16384`，才能正常工作：
+
+```c
+#define EC_MAX_SII_SIZE 16384
+```
+
+修改后须重新编译、安装 IgH 主站及内核模块，并停止后重新启动 IgH 服务，
+确保加载的是修改后的模块。仅重新编译本示例不会改变该限制。
+
 ## 构建
 
 ```bash
@@ -52,8 +64,8 @@ EtherCAT 层根据从站输出 PDO 字节数识别网关类型：
 - `86` 字节：classic CAN，2 路 bus，每路 3 个槽位
 - `336` 字节：CAN FD，3 路 bus，每路 8 个槽位
 - `896` 字节：CAN FD，8 路 bus，每路 8 个槽位
+- `1120` 字节：CAN FD，8 路 bus，每路 10 个槽位
 
-本示例有意不实现 `340` 字节 8 路 classic CAN 格式。
 
 ## Demo 用法
 
