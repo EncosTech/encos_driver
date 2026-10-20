@@ -44,6 +44,7 @@ EtherCAT 层根据从站输出 PDO 字节数识别网关类型：
 - `86` 字节：classic CAN，2 路 bus，每路 3 个槽位
 - `336` 字节：CAN FD，3 路 bus，每路 8 个槽位
 - `896` 字节：CAN FD，8 路 bus，每路 8 个槽位
+- `1120` 字节：CAN FD，8 路 bus，每路 10 个槽位
 
 ## Demo 用法
 
