@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -180,6 +183,20 @@ static void print_imu_status(const ExternalImuStatus* imu, uint16_t imu_index) {
  * @return 成功返回 0，参数错误返回 2，运行时错误返回 1
  */
 int main(int argc, char** argv) {
+    // 默认关闭：仅在 EC 转 CAN 型号及固件支持 CAN 时序 SDO 时改为 true。
+    const bool enableAdapterConfig = false;
+    // 请按自己的 EC 转 CAN、接线和设备参数修改下表；不是所有型号或旧版固件都支持。
+    const EcAdapterConfig adapterConfigs[] = {
+        {.slave_id = 0,
+         .bus_id = 0,
+         .bitrate = 1000000,
+         .dbitrate = 5000000,
+         .sample_point = 0.75,
+         .dsample_point = 0.875},
+    };
+    const size_t adapterConfigCount =
+        enableAdapterConfig ? sizeof(adapterConfigs) / sizeof(adapterConfigs[0]) : 0;
+    const EcAdapterConfig* activeAdapterConfigs = enableAdapterConfig ? adapterConfigs : NULL;
     if (argc >= 5 && strcmp(argv[2], "imu-monitor") == 0) {
         const uint16_t slave_id = parse_u16(argv[3]);
         const uint16_t bus_id = parse_u16(argv[4]);
@@ -189,7 +206,8 @@ int main(int argc, char** argv) {
             return 2;
         }
         EcMaster master = {0};
-        if (!ec_master_open(&master, argv[1])) {
+        if (!ec_master_open_with_configs(&master, argv[1], activeAdapterConfigs,
+                                         adapterConfigCount)) {
             return 1;
         }
         if (slave_id >= master.layout.slave_count ||
@@ -198,11 +216,14 @@ int main(int argc, char** argv) {
             print_usage(argv[0]);
             return 2;
         }
+        bool communication_ready = false;
         ExternalImuStatus previous = {0};
         struct timespec next_cycle;
         clock_gettime(CLOCK_MONOTONIC, &next_cycle);
         for (int i = 0; i < kDemoCycleCount; ++i) {
-            (void) ec_master_cycle(&master);
+            if (ec_master_cycle(&master)) {
+                communication_ready = true;
+            }
             const ExternalImuStatus* current =
                 &master.external_devices[slave_id][bus_id].imus[imu_index];
             if (memcmp(&previous, current, sizeof(previous)) != 0) {
@@ -212,6 +233,18 @@ int main(int argc, char** argv) {
             demo_wait_until_next_cycle(&next_cycle, kDemoCyclePeriodUs);
         }
         ec_master_close(&master);
+        if (!communication_ready) {
+            if (enableAdapterConfig) {
+                fprintf(stderr,
+                        "CAN timing SDO may have been rejected. Check the EC-to-CAN model "
+                        "and firmware version; if too old or unsupported, set "
+                        "enableAdapterConfig = false in examples/main.c and rebuild.\n");
+            }
+            fprintf(
+                stderr,
+                "No valid EtherCAT communication; check EtherCAT state and master diagnostics.\n");
+            return 1;
+        }
         return 0;
     }
     if (argc < 8) {
@@ -240,7 +273,8 @@ int main(int argc, char** argv) {
            config.busId, slot, config.motorId, config.flag, packet.len);
 
     EcMaster master;
-    if (!ec_master_open(&master, master_index)) {
+    if (!ec_master_open_with_configs(&master, master_index, activeAdapterConfigs,
+                                     adapterConfigCount)) {
         return 1;
     }
 
@@ -261,5 +295,15 @@ int main(int argc, char** argv) {
     }
 
     ec_master_close(&master);
+    if (!packet_sent) {
+        if (enableAdapterConfig) {
+            fprintf(stderr,
+                    "CAN timing SDO may have been rejected. Check the EC-to-CAN model "
+                    "and firmware version; if too old or unsupported, set "
+                    "enableAdapterConfig = false in examples/main.c and rebuild.\n");
+        }
+        fprintf(stderr, "Motor command not sent; check EtherCAT state and master diagnostics.\n");
+        return 1;
+    }
     return 0;
 }

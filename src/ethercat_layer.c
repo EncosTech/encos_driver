@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "example_igh/ethercat_layer.h"
 
 #include <stdio.h>
@@ -549,6 +552,11 @@ static bool configure_domain_entries(EcMaster* master) {
  * @return 成功返回 true，失败返回 false
  */
 bool ec_master_open(EcMaster* master, const char* master_index_text) {
+    return ec_master_open_with_configs(master, master_index_text, NULL, 0);
+}
+
+bool ec_master_open_with_configs(EcMaster* master, const char* master_index_text,
+                                 const EcAdapterConfig* configs, size_t count) {
     if (master == NULL || master_index_text == NULL) {
         return false;
     }
@@ -584,6 +592,11 @@ bool ec_master_open(EcMaster* master, const char* master_index_text) {
     }
 
     if (!configure_domain_entries(master)) {
+        ec_master_close(master);
+        return false;
+    }
+
+    if (!ec_master_configure_adapters(master, configs, count)) {
         ec_master_close(master);
         return false;
     }

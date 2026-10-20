@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.14)
 project(example_igh C)
 
@@ -23,6 +26,7 @@ if(NOT IGH_ECRT_INCLUDE_DIR OR NOT IGH_ECAT_LIBRARY)
 endif()
 
 add_library(example_igh_core STATIC
+    src/adapter_config.c
     src/demo_timing.c
     src/external_device.c
     src/ethercat_layer.c
@@ -69,3 +73,22 @@ add_custom_target(tidy
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     VERBATIM
 )
+
+if(BUILD_TESTING)
+    add_executable(example_igh_adapter_config_tests tests/test_adapter_config.c)
+    target_link_libraries(example_igh_adapter_config_tests PRIVATE example_igh_core)
+    target_link_options(example_igh_adapter_config_tests PRIVATE "-Wl,--wrap=ecrt_slave_config_sdo32")
+    target_link_options(example_igh_adapter_config_tests PRIVATE "-Wl,--wrap=ecrt_slave_config_sdo8")
+    add_test(NAME example_igh_adapter_config_tests COMMAND example_igh_adapter_config_tests)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(example_igh_demo_startup_tests tests/test_demo_startup.c)
+    target_link_libraries(example_igh_demo_startup_tests PRIVATE example_igh_core)
+    target_link_options(example_igh_demo_startup_tests PRIVATE "-Wl,--wrap=ec_master_open_with_configs")
+    target_link_options(example_igh_demo_startup_tests PRIVATE "-Wl,--wrap=ec_master_cycle")
+    target_link_options(example_igh_demo_startup_tests PRIVATE "-Wl,--wrap=ec_master_send_packet")
+    target_link_options(example_igh_demo_startup_tests PRIVATE "-Wl,--wrap=ec_master_close")
+    target_link_options(example_igh_demo_startup_tests PRIVATE "-Wl,--wrap=demo_wait_until_next_cycle")
+    add_test(NAME example_igh_demo_startup_tests COMMAND example_igh_demo_startup_tests)
+endif()
