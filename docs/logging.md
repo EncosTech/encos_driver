@@ -57,16 +57,16 @@ logs/joint_1_status_1787971200.csv.zstd
 
 ### 1.3 架构设计
 
-电机控制和状态接收路径不能承担压缩与文件 I/O。日志链路因此分为三层：
+健康日志会话的控制和状态接收路径只发布定长记录，CSV 序列化、压缩与写入交给后台。会话启停和故障恢复会同步等待后台或创建文件，不能视为实时无阻塞操作。日志链路分为三层：
 
 ![电机数据日志架构](diagrams/motor_data_logging_architecture.svg)
 
 关键设计取舍：
 
-- **生产路径不做文件 I/O**：命令记录和状态记录先进入两个相互独立的单生产者/单消费者 `Port`。
-- **有界内存**：两个 Port 的逻辑容量均为 1024 条。消费者落后超过容量时，旧记录会被覆盖，读取端从仍保留的最旧记录继续；控制线程不会为了日志等待磁盘。
+- **健康会话发布不做文件 I/O**：命令记录和状态记录先进入两个相互独立的单生产者/单消费者 `Port`。
+- **Port 容量有界**：两个 Port 的逻辑容量均为 1024 条。消费者落后超过容量时，旧记录会被覆盖，读取端从仍保留的最旧记录继续；健康会话发布不会等待磁盘。后台压缩任务队列没有容量上限，因此两个 Port 有界不代表整条日志链路内存有界。
 - **批量压缩**：CSV 数据累计到 1 MiB 后提交给进程级写线程。每批数据独立压成一个 Zstd frame，并顺序追加到文件；标准 `zstd -d` 能连续解压这些 frame。
-- **关闭时完整排空**：显式关闭先禁止新记录，再等待命令和状态 Port 清空，最后刷新两个写入器。
+- **健康会话关闭时完整排空**：显式关闭先禁止新记录，再等待命令和状态 Port 清空，最后刷新两个写入器。已失败会话可能丢失剩余记录；前一个刷新抛异常时也可能跳过后一个显式刷新，写入器析构仍会各自尝试排空。
 - **故障隔离**：每个电机拥有独立日志会话；一个电机的日志恢复不会重建其他电机的文件。
 
 ### 1.4 时间戳和数值格式
@@ -121,7 +121,7 @@ timestamp_ns,type,kp,kd,position,speed,current,torque,stop_mode,brake_enabled,fe
 | `Stop` | — | — | — | — | 有 | — | 有 | — | `0`～`3` |
 | `Brake` | — | — | — | — | — | — | — | 有 | — |
 
-注意：日志保存的是驱动实际编码使用的值，而不总是调用方原始实参。PVT 参数会先限制到电机型号允许范围；位置控制的速度和电流也会限制到协议范围并换回 SI 单位后记录。`SetAcceleration()`、参数读写、CAN ID 设置等管理命令不写入命令日志。
+注意：日志保存的是驱动实际编码使用的值，而不总是调用方原始实参。PVT 参数会先限制到电机型号允许范围；位置控制的速度和电流也会限制到协议范围并换回 SI 单位后记录。参数读写、CAN ID 设置等管理命令不写入命令日志。
 
 ### 1.6 状态日志格式
 
@@ -141,7 +141,7 @@ timestamp_ns,error,position,speed,current,motor_temperature,mos_temperature
 | `motor_temperature` | °C | 已解码且经过过滤的电机温度 |
 | `mos_temperature` | °C | 已解码且经过过滤的 MOS 温度 |
 
-`error` 映射：
+`error` 保存驱动归一化后的 `MotorError` 枚举值，不是固件报文中的原始故障码。新旧固件的原始码映射不同，CSV 使用以下统一映射：
 
 | 值 | 枚举 | 含义/建议 |
 | ---: | --- | --- |
@@ -154,6 +154,10 @@ timestamp_ns,error,position,speed,current,motor_temperature,mos_temperature
 | 6 | `BrakeVoltageHigh` | 制动电压过高；检查制动回路和母线电压 |
 | 7 | `DriverError` | 驱动器内部错误；结合驱动器手册和上电复位结果定位 |
 | 8 | `OverTemperatureWarning` | 过温预警；降低负载并检查温升趋势 |
+| 9 | `OutputEncoderError` | 输出编码器故障；检查输出编码器与连接 |
+| 10 | `FetOverTemperature` | FET 过温；降低负载并检查散热 |
+| 11 | `OverSpeed` | 超速；检查速度指令与反馈 |
+| 12 | `TemperatureWarning` | 新版固件温度警告；检查负载和温升 |
 | 255 | `NoResponse` | API 的无响应状态；无响应帧不会写入状态日志 |
 
 只有成功解码且错误值不是 `NoResponse` 的状态才进入 `HandleStatus()`，因此日志文件中通常不会出现 `255`。状态日志记录的是过滤后的值，适合复盘应用实际看到的状态；若要分析总线原始字节，应另外抓取 CAN/EtherCAT 报文。
@@ -215,7 +219,9 @@ Motor <id> status logging failed; rebuilding log session
 Failed to rebuild motor log session: <原因>
 ```
 
-驱动会关闭旧的命令/状态写入器，并以同一 `base_name` **成对重建**，最多连续尝试 3 次；成功写入 10 条命令记录后恢复重试预算。重建产生带时间戳的新文件，分析时需要把同一电机的多个分段按时间排序后合并。全部尝试失败后会清除会话，`IsLogged()` 返回 `false`，但电机控制和用户状态回调继续运行。
+驱动会关闭旧的命令/状态写入器，并以同一 `base_name` **成对重建**。初始预算为 3 次重建尝试，每次尝试（包括创建失败）消耗一次。命令记录每成功发布到 Port 10 条，就把预算恢复为 3 次并将计数归零；这不代表已落盘。状态记录不增加计数，故障及会话启停也不会清零该计数，因此这 10 条不要求连续或属于同一会话。命令路径发现错误后会重试触发恢复的命令记录；状态路径会恢复会话，但不会补写触发恢复的状态记录。
+
+重建产生带时间戳的新文件，分析时需要把同一电机的多个分段按时间排序后合并。剩余尝试全部创建失败后会清除会话，`IsLogged()` 返回 `false`。最后一次尝试若创建成功，即使预算为零也会继续记录，直至下一次检测到错误才关闭。错误不会作为日志异常逃出控制 API，也不会阻止用户状态回调，但恢复在发现错误的控制或接收线程同步执行，会等待旧会话关闭并创建文件，可能延长该次调用或接收处理。
 
 常见原因及处理：
 
@@ -286,7 +292,6 @@ auto* adapter = encos::MakeAdapter(
 | `Bus <bus>: External device detected, skipping motor scan` | Warn | Bus 已注册外部设备，或探测到非扫描应答流量 | 停止其他节点主动发送后重试；不要在 Battery/PMS/IMU 与电机扫描冲突时强制扫描 |
 | `Motor response waiter threw an exception` | Error | 内部应答检查或写入回调抛异常 | 若使用测试钩子或扩展代码，检查回调；观察对应同步请求是否超时 |
 | `Motor status callback threw an exception` | Error | 用户通过 `SetOnStatus()` 设置的回调抛异常 | 在回调内部捕获异常；保持回调短小且非阻塞 |
-| `Motor <id> GotoLimit/GotoZero ...` | Info/Error | 找限位或回零成功、通信失败、超时或零位写入失败 | 先排通信，再检查限位方向、速度/电流阈值、机械行程和超时；成功信息包含最终位置 |
 | `SetPluginPath() is ignored in static mode ...` | Warn | 静态模式调用 `SetPluginPath()` | 删除无效配置；静态模式的 Adapter 已编入主库 |
 | `LogWriter: <文件错误>` | Error | 写入器析构时只能报告、不能抛出的后台错误 | 按 1.8 节检查目录、磁盘和文件系统 |
 
@@ -360,21 +365,21 @@ Debug 级别还会输出 I/O map 上界、SAFE_OP 等待、每个从站映射出
 
 | 可搜索的消息格式 | 级别 | 出现条件 | 处理建议 |
 | --- | --- | --- | --- |
-| `Dropped packet (Bad WKC: <n>)` | Error | 实际 WKC 不等于期望值 | 检查从站掉线、帧丢失、周期超时、拓扑变化；结合期望 WKC 和从站状态定位 |
-| `WKC error count too high.` / `EtherCAT connection degraded.` | Error | 坏 WKC 连续积累到降级阈值 | 立即停止依赖实时反馈的控制，检查链路和周期负载；等待恢复日志或重建 Adapter |
-| `EtherCAT degraded. Stopping processing.` | Error | 链路进入不可继续处理状态 | 将控制系统切到安全态，修复物理/配置问题后重新初始化 |
-| `Slave ... SAFE_OP + ERROR, acking.` | Error | 从站处于 SAFE_OP+ERROR，恢复线程正在确认错误 | 查看相邻状态码；确认后仍反复出现说明根因未消除 |
+| `Dropped packet (Bad WKC: <n>)` | Error | 实际 WKC 低于期望值，或期望值无效 | 检查从站掉线、帧丢失、周期超时、拓扑变化；结合期望 WKC 和从站状态定位 |
+| `EtherCAT WKC error count exceeded threshold; entering degraded mode.` | Error | 正常 OP 统计窗口内坏 WKC 累计达到降级阈值 | 立即停止依赖实时反馈的控制，检查链路和周期负载；等待恢复日志或重建 Adapter |
+| `EtherCAT link degraded; continuing PDO exchange and attempting recovery.` | Warn | 链路进入降级状态，循环继续交换 PDO 并尝试恢复，暂不消费业务发送队列 | 检查链路与从站状态；恢复前不要假定排队命令已执行 |
+| `Slave ... SAFE_OP + ERROR, acking.` | Error | 从站处于 SAFE_OP+ERROR，循环线程正在确认错误 | 查看相邻状态码；确认后仍反复出现说明根因未消除 |
 | `Slave ... SAFE_OP, requesting OPERATIONAL.` | Error | 从站退回 SAFE_OP，驱动尝试回 OP | 检查同步/看门狗和周期抖动 |
 | `Slave ... lost.` | Error | 从站不再响应 | 检查供电、网线、连接器和上游从站；不要继续假定输出已执行 |
-| `Slave ... reconfigured/recovered/found.` | Info | 自动恢复步骤成功 | 继续观察 `All slaves resumed OPERATIONAL.`；评估故障期间命令是否需重新下发 |
+| `Slave ... reconfigured/recovered.` | Info | 自动恢复步骤成功 | 继续观察 `EtherCAT recovered: all slaves OPERATIONAL with valid WKC.`；评估故障期间命令是否需重新下发 |
 | `All slaves resumed OPERATIONAL.` | Info | 全部从站恢复 OP | 通信恢复，但应用应自行确认设备状态和控制连续性 |
-| `EtherCAT not operational; dropping Send/skipping exchange` | Error | 非 OP 状态下收到发送或周期交换请求 | 命令已丢弃；等待恢复后由应用决定是否重新下发 |
+| `EtherCAT recovered: all slaves OPERATIONAL with valid WKC.` | Warn | 从站状态和有效 PDO WKC 均已确认，恢复业务发送队列消费 | 检查设备状态并评估故障期间积压命令；排队仍受合并与高负载裁剪规则约束 |
 | `No slaves available for Send` | Error | 当前没有可发送从站 | 检查初始化是否成功和 Adapter 生命周期 |
 | `Ignoring message for invalid slave/unsupported format/bus ...` | Warn | 上层路由目标越界或从站布局不支持 | 检查 `bus_idx` 编码、从站映射和消息来源 |
 | `Failed to Pack message for slave ... bus ...` | Warn | 报文无法放入 EtherCAT 输出槽 | 检查长度、格式、Bus 号和当前 PDO 容量 |
 | `EtherCAT Send Queue high load: discarded <n> pending EC frames` | Warn | 发送生产速度长期高于周期消费速度 | 降低发令频率、使用软同步批次、检查实时线程调度和 EtherCAT 周期；被丢弃命令不会自动补发 |
 | `Loop overrun by <n> us` | Warn | EtherCAT 周期循环错过计划唤醒时刻；最多约每秒报告一次 | 检查 CPU 负载、实时优先级、阻塞调用和周期设置；持续超时通常会伴随 WKC/队列问题 |
-| `Failed to set EtherCAT loop thread priority after authorization` | Error | 实时优先级设置失败，循环无法按预期运行 | 检查 `ecg`、能力和实时限制；不要把它当成普通性能告警 |
+| `Failed to set EtherCAT loop thread priority after authorization` | Error | 实时优先级设置失败，循环无法按预期运行 | 检查线程优先级辅助程序、能力和实时限制；不要把它当成普通性能告警 |
 
 ### 2.7 EtherCAT IGH
 
@@ -463,7 +468,7 @@ EncosDriver 同时使用三种错误报告方式：
 
 | 类型与 `what()` | 触发条件 | 处理建议 |
 | --- | --- | --- |
-| `std::runtime_error`: `Failed to authorize CAN loop thread priority` | 创建前的实时线程优先级授权失败 | 检查 `ecg`、ThreadPriorityHelper、`CAP_SYS_NICE` 和实时限制 |
+| `std::runtime_error`: `Failed to authorize CAN loop thread priority` | 创建前的实时线程优先级授权失败 | 检查 ThreadPriorityHelper、`CAP_SYS_NICE` 和实时限制 |
 | `std::runtime_error`: `Failed to initialize CAN interface in static mode` | 静态模式缺少能力，或接口时序/UP 配置失败 | 查看紧邻的 CAN 配置日志，确认 CAP_NET_RAW/CAP_NET_ADMIN 和 `ip link` |
 | `std::runtime_error`: `Failed to Initialize CAN socket from broker` | 动态模式 fd broker 未交付 socket | 根据 `.FdBroker` 日志处理 setcap、polkit、路径和握手错误 |
 | `std::runtime_error`: `Failed to Create CAN socket` | `socket(PF_CAN, ...)` 失败 | 检查内核 SocketCAN 支持、资源限制和权限 |
@@ -515,7 +520,9 @@ EncosDriver 同时使用三种错误报告方式：
 
 模板只允许的 `FeedbackType` 范围由 `static_assert` 在编译期检查，不会成为运行期异常。PVT 只允许 0/1，其余主要控制模式允许 0～3。
 
-控制/设置 API 等待反馈超时时，多数返回 `false`、空响应或 `MotorError::NoResponse`，而不是抛异常；`GetParameter()` 是明确的例外。`GotoLimit()`/`GotoZero()` 也通过 NaN/`false` 和日志报告通信失败或超时。
+控制/设置 API 等待反馈超时时，多数返回 `false`、空响应或 `MotorError::NoResponse`，而不是抛异常；`GetParameter()` 是明确的例外。
+
+旧版固件不响应新版协议独有的查询（`ProductId`、`HardwareVersion`、`FirmwareVersion`、`EncoderAngle`），调用这些参数会触发 `Get motor parameter timeout`；先判断 `GetProperties().fw_version != 0` 再调用。`BrakeStatus` 是旧协议查询，不能归入上述新版查询列表；按仓库协议约定，新版固件不再响应它。构造期固件版本探测遇到无响应时将版本记为 `0`，不会按 `GetParameter()` 的超时路径抛异常；底层发送或对象生命周期异常仍可能传播。
 
 ### 3.6 电机文件日志异常
 

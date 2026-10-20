@@ -5,10 +5,10 @@
 
 #include <chrono>
 
-#include "battery/battery_impl.h"
-#include "imu/imu_impl.h"
+#include "device/battery/battery_impl.h"
+#include "device/imu/imu_impl.h"
+#include "device/pms/pms_impl.h"
 #include "platform/sync.h"
-#include "pms/pms_impl.h"
 
 namespace encos {
 

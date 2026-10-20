@@ -11,5 +11,6 @@ namespace encos::detail {
 
 ENCOS_BASE_API void FailNextLogWriterTaskForTesting(const std::string& file_name);
 ENCOS_BASE_API void FailNextLogWriterInteractionForTesting();
+ENCOS_BASE_API void FailLogWriterCreationForTesting(bool enabled);
 
 }  // namespace encos::detail

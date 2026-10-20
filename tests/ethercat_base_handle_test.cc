@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "platform/log.h"
-#include "plugins/ethercat/ethercat_handle.h"
+#include "plugins/adapter/ethercat/ethercat_handle.h"
 
 namespace {
 

@@ -87,12 +87,14 @@ cmake --build external/tracy/capture/build -j
 | 事件 | 含义 | 异常时的首要检查方向 |
 |---|---|---|
 | `EtherCAT::TakePendingSendQueue` | 获取待发业务消息与输出帧 | 提交竞争、队列积压 |
-| `EtherCAT::BuildFrame` | 打包业务消息并写入 PDO 输出区 | 单周期消息量、打包成本、PDO 大小 |
-| `EtherCAT::WriteProcessData` | SOEM 或 IGH 发送过程数据 | 网卡驱动、发送路径 |
-| `EtherCAT::ReadProcessData` | SOEM 或 IGH 接收过程数据 | 链路响应、从站状态、WKC 与超时 |
-| `EtherCAT::MessageCallback` | 输入解码、消息路由与用户回调 | 回调阻塞、解码和路由开销 |
+| `EtherCAT::BuildFrame`（仅 IGH） | 打包业务消息并写入 PDO 输出区 | 单周期消息量、打包成本、PDO 大小 |
+| `EtherCAT::WriteProcessData`（仅 IGH） | IGH 发送过程数据 | 网卡驱动、发送路径 |
+| `EtherCAT::ReadProcessData`（仅 IGH） | IGH 接收过程数据 | 链路响应、从站状态、WKC 与超时 |
+| `EtherCAT::MessageCallback`（仅 IGH） | 输入解码、消息路由与用户回调 | 回调阻塞、解码和路由开销 |
 
-当总周期变长而这些子区间都较短时，应转而检查操作系统调度、线程抢占与锁竞争。
+当前 SOEM 的 `ExchangeOnce()` 没有上述四个细分 zone，仅能结合 `EtherCAT::Cycle`、frame 和共享的 `TakePendingSendQueue` 分析；不能从现有 SOEM trace 直接分离发送、接收和回调耗时。
+
+对 IGH，当总周期变长而这些子区间都较短时，应转而检查操作系统调度、线程抢占与锁竞争。
 
 ### 5.2 主线程提交路径
 
@@ -111,7 +113,7 @@ cmake --build external/tracy/capture/build -j
 
 ### 5.3 锁竞争
 
-Tracy 会记录本库发送与 EtherCAT 回调路径中的全部锁：
+Tracy 会记录本库发送与 EtherCAT 回调路径中的以下锁；这不是所有内部锁的完整列表：
 
 - `Adapter::submit_mutex`：Adapter 提交序列化与同步模式切换。
 - `Bus::outgoing_mutex`：Bus 待发缓存与同步批次。
@@ -131,7 +133,7 @@ Tracy 会记录本库发送与 EtherCAT 回调路径中的全部锁：
 ## 6. 推荐判读流程
 
 1. 在 Frame time graph 中选取一个最慢的 `EtherCAT` 周期。
-2. 在时间线中比较 `BuildFrame`、写、读和回调四段的耗时。
+2. 对 IGH，在时间线中比较 `BuildFrame`、写、读和回调四段的耗时；对 SOEM，先比较 `Cycle` 与 `TakePendingSendQueue`，剩余耗时需要结合其它证据定位。
 3. 观察同一时间范围内的锁颜色和等待链。
 4. 在 Statistics 中按总耗时、调用次数和平均耗时排序；再用 Find zone 观察耗时分布与长尾。
 5. 将异常 trace 与正常基线在 Compare 视图中比较同名 zone。
@@ -142,6 +144,6 @@ Tracy 会记录本库发送与 EtherCAT 回调路径中的全部锁：
 - 不要用 Debug trace 代表部署性能。
 - 采集时避免同时运行会大量占用 CPU、磁盘或网络的程序。
 - Trace 数据保存在内存中；只采集定位问题所需的时间，避免长时间采集占用大量内存。
-- 用户状态回调运行在 Adapter 接收线程。回调中的文件、网络或重计算会直接体现为
-  `EtherCAT::MessageCallback` 变长。
+- 用户状态回调运行在 Adapter 接收线程。回调中的文件、网络或重计算会延长周期；IGH 会体现为
+  `EtherCAT::MessageCallback` 变长，SOEM 当前没有独立回调 zone。
 - 若需要检查 EtherCAT 通信异常，除 Tracy 时间线外还应同时保存 WKC、从站状态和链路日志。

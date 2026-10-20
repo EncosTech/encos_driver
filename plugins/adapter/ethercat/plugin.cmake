@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+function(encos_ethercat_check out_available out_reason)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT WIN32)
+        set(${out_available} FALSE PARENT_SCOPE)
+        set(${out_reason} "Ethercat plugin is supported on Linux and Windows" PARENT_SCOPE)
+        return()
+    endif()
+    set(${out_available} TRUE PARENT_SCOPE)
+    set(${out_reason} "" PARENT_SCOPE)
+endfunction()
+
+set(ENCOS_PLUGIN_CHECK_FUNCTION encos_ethercat_check)
+set(ENCOS_PLUGIN_ADAPTER_TYPE "Ethercat")
+set(ENCOS_PLUGIN_DYNAMIC_TARGET "EthercatPlugin")
+set(ENCOS_PLUGIN_STATIC_TARGET "EthercatPluginCore")
+set(ENCOS_PLUGIN_STATIC_HEADER "ethercat/ethercat_adapter.h")
+set(ENCOS_PLUGIN_STATIC_FACTORY "encos::EthercatAdapter::Create")
+set(ENCOS_PLUGIN_STATIC_FACTORY_EXTEND "encos::EthercatAdapter::CreateWithExtend")
+set(ENCOS_PLUGIN_ENUMERATE_FUNCTION "encos::EnumerateEthercatInterfaces")
+set(ENCOS_PLUGIN_VISIBLE ON)

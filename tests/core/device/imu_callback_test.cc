@@ -3,9 +3,9 @@
 
 #include <thread>
 
-#include "battery/battery.h"
+#include "device/battery/battery.h"
+#include "device/imu/imu.h"
 #include "device_status_test_access.h"
-#include "imu/imu.h"
 #include "test_fixtures.h"
 
 namespace encos {
@@ -45,6 +45,55 @@ TEST_F(MotorTestFixture, ImuCallbackRunsOnReceiveThreadWithoutPolling) {
     EXPECT_EQ(callback_count, 1);
     EXPECT_EQ(callback_thread, receive_thread);
     ASSERT_TRUE(imu->GetStatus().acceleration.has_value());
+}
+
+TEST_F(MotorTestFixture, ImuLifecycleUsesFixedForwardingCommandId) {
+    for (const int index : {0, 3, 10}) {
+        adapter->ClearCommandRecords();
+        auto* imu = bus->GetImu(index);
+        ASSERT_NE(imu, nullptr);
+        EXPECT_EQ(bus->GetImu(index), imu);
+        ASSERT_TRUE(EncosDriverManager::Instance().DestroyImu(imu));
+        const auto messages = adapter->GetRawSentMessages();
+        ASSERT_EQ(messages.size(), 2u);
+        for (std::size_t i = 0; i < messages.size(); ++i) {
+            EXPECT_EQ(messages[i].bus_idx, 0);
+            EXPECT_EQ(messages[i].data.id, 0x0CF02D5Au);
+            EXPECT_EQ(messages[i].data.frame_flags, kCanFrameFlagEff);
+            EXPECT_EQ(messages[i].data.len, 1);
+            EXPECT_EQ(messages[i].data.data[0], i == 0 ? 0x01 : 0x00);
+        }
+    }
+}
+
+TEST_F(MotorTestFixture, BusCanControlImuWithoutCreatingDevice) {
+    auto* other_bus = adapter->GetBus(2);
+    other_bus->SetSyncMode(true);
+    adapter->ClearCommandRecords();
+    EXPECT_TRUE(other_bus->StartImu());
+    EXPECT_TRUE(other_bus->StopImu());
+    const auto messages = adapter->GetRawSentMessages();
+    ASSERT_EQ(messages.size(), 2u);
+    for (std::size_t i = 0; i < messages.size(); ++i) {
+        EXPECT_EQ(messages[i].bus_idx, 2);
+        EXPECT_EQ(messages[i].data.id, 0x0CF02D5Au);
+        EXPECT_EQ(messages[i].data.frame_flags, kCanFrameFlagEff);
+        EXPECT_EQ(messages[i].data.len, 1);
+        EXPECT_EQ(messages[i].data.data[0], i == 0 ? 0x01 : 0x00);
+    }
+}
+
+TEST_F(MotorTestFixture, BusDestructionStopsImu) {
+    auto* other_bus = adapter->GetBus(2);
+    other_bus->SetSyncMode(true);
+    ASSERT_NE(other_bus->GetImu(7), nullptr);
+    adapter->ClearCommandRecords();
+    ASSERT_TRUE(EncosDriverManager::Instance().DestroyBus(other_bus));
+    const auto messages = adapter->GetRawSentMessages();
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_EQ(messages[0].bus_idx, 2);
+    EXPECT_EQ(messages[0].data.id, 0x0CF02D5Au);
+    EXPECT_EQ(messages[0].data.data[0], 0x00);
 }
 
 TEST_F(MotorTestFixture, ImuDirectRouteUpdatesAllGroupsAndAllowsCallbackReentry) {

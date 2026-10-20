@@ -17,9 +17,9 @@ emcmake cmake -S . -B build-wasm \
     -DENCOS_ENABLE_INSTALL=OFF
 
 cmake --build build-wasm
-ctest --test-dir build-wasm --output-on-failure
+ctest --test-dir build-wasm --output-on-failure --timeout 60
 
 pnpm --dir npm typecheck
 pnpm --dir npm build
-pnpm --dir npm test:unit
-pnpm --dir npm test:browser
+timeout --kill-after=10s 120s pnpm --dir npm test:unit
+timeout --kill-after=10s 120s pnpm --dir npm test:browser

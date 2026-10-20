@@ -17,23 +17,24 @@
 
 #include "adapter/base_adapter.h"
 #include "adapter/base_adapter_impl.h"
-#include "battery/battery.h"
-#include "battery/battery_impl.h"
 #include "bus/bus.h"
 #include "bus/bus_impl.h"
+#include "device/battery/battery.h"
+#include "device/battery/battery_impl.h"
+#include "device/device_plugin.h"
+#include "device/glove/glove.h"
+#include "device/glove/glove_calibrator.h"
+#include "device/glove/glove_encoder.h"
+#include "device/glove/glove_impl.h"
+#include "device/imu/imu.h"
+#include "device/imu/imu_impl.h"
+#include "device/motor/motor.h"
+#include "device/motor/motor_impl.h"
+#include "device/motor/pack_helper.h"
+#include "device/pms/pms.h"
+#include "device/pms/pms_impl.h"
 #include "encos/driver_manager.h"
-#include "glove/glove.h"
-#include "glove/glove_calibrator.h"
-#include "glove/glove_encoder.h"
-#include "glove/glove_impl.h"
-#include "imu/imu.h"
-#include "imu/imu_impl.h"
-#include "motor/motor.h"
-#include "motor/motor_impl.h"
-#include "motor/pack_helper.h"
 #include "operation_gate.h"
-#include "pms/pms.h"
-#include "pms/pms_impl.h"
 #include "protocol/route_ids.h"
 
 namespace encos {
@@ -51,7 +52,15 @@ struct RouteRecord {
 
 namespace driver_manager_internal {
 
-enum class DeviceKind : std::uint8_t { Motor, Battery, Imu, Pms, GloveEncoder, GloveCalibrator };
+enum class DeviceKind : std::uint8_t {
+    Motor,
+    Battery,
+    Imu,
+    Pms,
+    GloveEncoder,
+    GloveCalibrator,
+    External
+};
 
 inline uint8_t WithCanFdFlag(uint8_t frame_flags, bool canfd) {
     frame_flags = SanitizeCanFrameFlags(frame_flags);
@@ -98,9 +107,14 @@ struct DeviceKey {
     Bus* bus = nullptr;
     DeviceKind kind = DeviceKind::Motor;
     int idx = 0;
+    /** @brief 外部设备类型令牌，用于区分同一 Bus 上的不同外部类型 */
+    const void* type_token = nullptr;
+    /** @brief 外部设备配置令牌（规范化配置串的驻留地址）；同一类型的不同配置为独立实例 */
+    const void* config_token = nullptr;
 
     bool operator==(const DeviceKey& rhs) const noexcept {
-        return bus == rhs.bus && kind == rhs.kind && idx == rhs.idx;
+        return bus == rhs.bus && kind == rhs.kind && idx == rhs.idx &&
+               type_token == rhs.type_token && config_token == rhs.config_token;
     }
 };
 
@@ -108,7 +122,10 @@ struct DeviceKeyHash {
     std::size_t operator()(const DeviceKey& key) const noexcept {
         const auto bus_hash = std::hash<Bus*>{}(key.bus);
         const auto kind_hash = std::hash<unsigned>{}(static_cast<unsigned>(key.kind));
-        return bus_hash ^ (kind_hash << 1u) ^ (std::hash<int>{}(key.idx) << 2u);
+        const auto token_hash = std::hash<const void*>{}(key.type_token);
+        const auto config_hash = std::hash<const void*>{}(key.config_token);
+        return bus_hash ^ (kind_hash << 1u) ^ (std::hash<int>{}(key.idx) << 2u) ^
+               (token_hash << 3u) ^ (config_hash << 4u);
     }
 };
 
@@ -141,18 +158,26 @@ struct DeviceRecipe {
     std::function<DeviceRoute(void*)> bind;
     std::function<void(void*)> initialize;
     std::function<void(void*)> commit;
-    void (*destroy)(void*) noexcept;
+    std::function<void(void*)> destroy;
+    /** @brief 外部设备类型令牌；内置设备为 nullptr */
+    const void* type_token = nullptr;
+    /** @brief 外部设备配置令牌；内置设备为 nullptr */
+    const void* config_token = nullptr;
+    /** @brief 认领整条总线：登记为所在总线的兜底接收者而非精确路由 */
+    bool claims_bus = false;
 };
 struct RouteEntry {
     RouteKey key;
     std::shared_ptr<RouteRecord> record;
+    /** @brief 该条目为整总线认领路由（登记在域认领表中而非精确路由表） */
+    bool claim = false;
 };
 /** @brief 登记移出管理器后继续持有路由，直至所有回调排空。 */
 struct DeviceRegistration {
     BaseAdapter* adapter = nullptr;
     Bus* bus = nullptr;
     OperationKind operation_kind = OperationKind::Motor;
-    void (*destroy)(void*) noexcept = nullptr;
+    std::function<void(void*)> destroy;
     std::vector<RouteEntry> routes;
     EncosDriverManager::CancellationCallback cancel_waiters;
 };
@@ -221,6 +246,7 @@ struct EncosDriverManager::Impl {
         MotorStatus limit_max_deltas;
     };
     platform::Mutex object_mutex;
+    platform::Mutex adapter_update_mutex;
     OperationRegistry operation_registry;
     std::condition_variable_any child_creation_condition;
     std::condition_variable_any deletion_condition;
@@ -460,8 +486,35 @@ struct EncosDriverManager::Impl {
         platform::LockGuard<platform::Mutex> domain_lock(domain.mutex);
         DeviceRegistration registration{adapter,        bus, recipe.operation_kind,
                                         recipe.destroy, {},  std::move(binding.cancel_waiters)};
-        registration.routes.reserve(recipe.can_ids.size());
+        registration.routes.reserve(recipe.claims_bus ? 1u : recipe.can_ids.size());
         const int raw_idx = bus_keys.at(bus).raw_idx;
+
+        if (recipe.claims_bus) {
+            // 整总线认领：不发布精确键，登记为本总线唯一兜底接收者。
+            if (domain.claim_routes.count(raw_idx) != 0) {
+                return false;
+            }
+            auto record = std::make_shared<RouteRecord>();
+            record->device = device;
+            record->bus = bus;
+            record->adapter = adapter;
+            record->callback = binding.callback;
+            const RouteKey key{
+                adapter, EncosDriverManager::MakeReceiveUniqueId(raw_idx, kDeviceClaimBusRouteId)};
+            registration.routes.push_back({key, record, true});
+            auto inserted = registrations.emplace(device, std::move(registration));
+            if (!inserted.second) {
+                return false;
+            }
+            try {
+                domain.claim_routes.emplace(raw_idx, inserted.first->second.routes.front().record);
+            } catch (...) {
+                registrations.erase(inserted.first);
+                throw;
+            }
+            return true;
+        }
+
         for (const auto can_id : recipe.can_ids) {
             const RouteKey key{adapter, EncosDriverManager::MakeReceiveUniqueId(raw_idx, can_id)};
             if (domain.routes.count(key.unique_id) != 0 ||
@@ -477,7 +530,7 @@ struct EncosDriverManager::Impl {
             record->bus = bus;
             record->adapter = adapter;
             record->callback = binding.callback;
-            registration.routes.push_back({key, std::move(record)});
+            registration.routes.push_back({key, std::move(record), false});
         }
         auto inserted = registrations.emplace(device, std::move(registration));
         if (!inserted.second) {
@@ -515,6 +568,15 @@ struct EncosDriverManager::Impl {
         for (const auto& entry : retired.routes) {
             platform::LockGuard<platform::Mutex> route_lock(entry.record->mutex);
             entry.record->retiring = true;
+            if (entry.claim) {
+                const auto raw_idx =
+                    static_cast<int>(static_cast<std::uint32_t>(entry.key.unique_id >> 32u));
+                const auto claim = domain.claim_routes.find(raw_idx);
+                if (claim != domain.claim_routes.end() && claim->second == entry.record) {
+                    domain.claim_routes.erase(claim);
+                }
+                continue;
+            }
             const auto active = domain.routes.find(entry.key.unique_id);
             if (active != domain.routes.end() && active->second == entry.record) {
                 domain.routes.erase(active);

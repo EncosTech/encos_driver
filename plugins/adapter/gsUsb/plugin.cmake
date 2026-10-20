@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
+function(encos_gs_usb_check out_available out_reason)
+    if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+        set(${out_available} FALSE PARENT_SCOPE)
+        set(${out_reason} "GsUsb plugin is not supported on Emscripten" PARENT_SCOPE)
+        return()
+    endif()
+    if(NOT WIN32)
+        set(${out_available} FALSE PARENT_SCOPE)
+        set(${out_reason} "GsUsb plugin is only supported on Windows" PARENT_SCOPE)
+        return()
+    endif()
+    set(${out_available} TRUE PARENT_SCOPE)
+    set(${out_reason} "" PARENT_SCOPE)
+endfunction()
+
+set(ENCOS_PLUGIN_CHECK_FUNCTION encos_gs_usb_check)
+set(ENCOS_PLUGIN_ADAPTER_TYPE "GsUsb")
+set(ENCOS_PLUGIN_DYNAMIC_TARGET "GsUsbPlugin")
+set(ENCOS_PLUGIN_STATIC_TARGET "GsUsbPluginCore")
+set(ENCOS_PLUGIN_STATIC_HEADER "gsUsb/gs_usb_adapter.h")
+set(ENCOS_PLUGIN_STATIC_FACTORY "encos::GsUsbAdapter::Create")
+set(ENCOS_PLUGIN_STATIC_FACTORY_EXTEND "encos::GsUsbAdapter::CreateWithExtend")
+set(ENCOS_PLUGIN_ENUMERATE_FUNCTION "encos::EnumerateGsUsbInterfaces")
+set(ENCOS_PLUGIN_VISIBLE ON)

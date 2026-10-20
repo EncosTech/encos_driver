@@ -17,12 +17,12 @@
 #include <vector>
 
 #include "adapter/base_adapter.h"
-#include "battery/battery.h"
 #include "bus/bus.h"
+#include "device/battery/battery.h"
+#include "device/imu/imu.h"
+#include "device/motor/motor.h"
+#include "device/pms/pms.h"
 #include "driver_manager_test_access.h"
-#include "imu/imu.h"
-#include "motor/motor.h"
-#include "pms/pms.h"
 #include "test_adapter.h"
 #include "wait_observer.h"
 
@@ -1356,7 +1356,13 @@ TEST_F(DriverManagerTest, NewlyPublishedBusInheritsConcurrentAdapterDefaultMode)
     EXPECT_TRUE(adapter_->GetSentMessages().empty());
 
     bus->Commit();
-    ASSERT_EQ(adapter_->GetSentMessages().size(), 1U);
+    // 软同步模式下构造期的固件版本查询同样排队，因此与本次控制命令一起提交。
+    const auto sent = adapter_->GetSentMessages();
+    ASSERT_EQ(sent.size(), 2U);
+    EXPECT_EQ(sent.front().data.len, 2);
+    EXPECT_EQ(sent.front().data.data[1],
+              static_cast<std::uint8_t>(MotorParameter::FirmwareVersion));
+    EXPECT_EQ(sent.back().data.data[0], 0x40);
 }
 
 TEST_F(DriverManagerTest, BusDeletionUnregistersKnownBusIndexAndAllowsCleanRecreation) {

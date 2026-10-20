@@ -8,7 +8,7 @@
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential cmake libcap-dev
+sudo apt-get install -y build-essential cmake libcap-dev libzstd-dev
 ```
 
 本仓库要求 CMake >= 3.18。
@@ -19,6 +19,15 @@ sudo apt-get install -y build-essential cmake libcap-dev
 sudo apt-get install -y libspdlog-dev libfmt-dev
 ```
 
+
+`Ethernet` 适配器额外依赖 `libxdp-dev`、`libbpf-dev`、`libelf-dev`、`pkg-config` 和支持 BPF target 的 Clang：
+
+```bash
+sudo apt-get install -y libxdp-dev libbpf-dev libelf-dev pkg-config clang
+```
+
+缺少这些依赖时，自动扫描会跳过该插件；显式列入 `ENCOS_PLUGINS_LIST` 则会在 CMake 配置阶段报错。
+
 如果需要构建测试，还需要：
 
 ```bash
@@ -27,14 +36,14 @@ sudo apt-get install -y libgtest-dev libgmock-dev python3
 
 ## 动态插件模式
 
-动态插件模式是 Linux 原生构建的默认工作方式。主库 `EncosDriver` 负责加载运行期插件，插件会构建为独立 `.so` 文件并放在构建目录的 `plugins/` 下。
+动态插件模式是 Linux 原生构建的默认工作方式。主库 `EncosMotorDriver`（产物 `libencosdriver.so`）负责加载运行期插件，插件会构建为独立 `.so` 文件并放在构建目录的 `plugins/` 下。
 
 ```bash
 cmake -S . -B build
 cmake --build build -j
 ```
 
-Linux 动态模式默认自动扫描 `plugins/` 目录，发现并构建所有平台可用的插件，通常包括：
+Linux 动态模式默认自动扫描 `plugins/adapter/` 与 `plugins/device/` 目录，发现并构建所有平台可用的插件。`plugins/adapter/` 下通常包括：
 
 - `Can`
 - `Ethercat`
@@ -44,6 +53,8 @@ Linux 动态模式默认自动扫描 `plugins/` 目录，发现并构建所有�
 - `RelayWs`（需要初始化 `external/IXWebSocket` 子模块）
 
 如果 IGH EtherCAT 用户态库已安装，则 `EthercatIGH` 也会被自动发现并构建。
+
+`plugins/device/` 存放设备插件。当前内置的 `testDevice` / `testClaimDevice` 仅在 `ENCOS_BUILD_TESTS=ON` 时可用（由插件清单的检查函数判定）。同时开启安装时，它们会与其他已启用动态插件一同安装、打包；发布构建应使用关闭测试的独立目录。
 
 要显式指定插件而不依赖自动扫描，使用 `ENCOS_PLUGINS_LIST`：
 
@@ -67,7 +78,7 @@ export ENCOS_PLUGIN_PATH="$PWD/build/plugins"
 
 ## 安装模式
 
-安装规则只支持 `Linux + 动态插件模式`。虽然当前 Linux 动态模式默认会启用安装规则，但发布或 CI 中建议显式指定 `ENCOS_ENABLE_INSTALL=ON`。
+安装规则支持 Linux 和 Windows 动态插件模式。Linux 动态模式默认开启，Windows 默认关闭；发布或 CI 中建议显式指定 `ENCOS_ENABLE_INSTALL=ON`。Windows 步骤见下文，DEB 打包仅支持 Linux。
 
 ```bash
 cmake -S . -B build \
@@ -110,7 +121,7 @@ cpack -G DEB
 生成的包名格式类似：
 
 ```text
-libencosdriver_2.2.5_amd64_noble.deb
+libencosdriver_4.0.0_amd64_noble.deb
 ```
 
 ### RelayWs 子模块
@@ -121,7 +132,9 @@ Native 的 `RelayWs` 插件客户端依赖 `IXWebSocket`：
 git submodule update --init --recursive external/IXWebSocket
 ```
 
-如果子模块未初始化，CMake 配置阶段会跳过 `RelayWs` 或报错（取决于是否显式要求该插件）。Emscripten 构建不需要此子模块。
+如果子模块未初始化，Linux 配置阶段会因找不到 `IXWebSocket` 而失败（可用
+`ENCOS_PLUGINS_BLACKLIST=relayWs` 或 `ENCOS_ENABLE_RELAY=OFF` 显式排除）。Emscripten 构建
+不需要此子模块。
 
 > `emrs` relay helper 已从本仓库提取到独立的 `motor_relay_server` 仓库。请参阅该仓库的文档获取 helper 构建和使用说明。
 
@@ -148,7 +161,7 @@ cmake --build build-static -j
 
 - `encos_driver` 构建为静态库。
 - `SetPluginPath()` 保留接口，但不会影响适配器加载。
-- `GetAvailableAdapterTypes()` 返回编译进主库的适配器。
+- `GetAvailableAdapterTypes()` 返回编译进主库且清单标为可见的适配器；`Fake` 默认隐藏。
 - 不支持安装和 DEB 打包。
 - 使用 `Can` 或 `Ethercat` 时，需要给最终可执行文件设置网络权限。
 - `Ethernet` 静态模式也由最终进程持有网络资源；Linux 额外需要 `cap_bpf`，
@@ -188,7 +201,7 @@ cmake --build build-test -j
 ctest --test-dir build-test --output-on-failure
 ```
 
-`ENCOS_BUILD_TESTS=ON` 要求 `ENCOS_ENABLE_PYTHON=ON`，因为测试里包含 CMake 配置策略检查和生成文件校验。
+`ENCOS_BUILD_TESTS=ON` 要求 `ENCOS_ENABLE_PYTHON=ON`，这是当前构建选项约束；Python 用于刷新电机型号生成文件。Port 和兼容 API 的配置期检查由 CMake 调用 C++ 编译器完成。
 
 代码修改后建议运行：
 
@@ -260,10 +273,10 @@ cmake --build build-no-spdlog -j
 
 ## 关闭 Python
 
-默认情况下，CMake 会用 Python 根据 `src/motor/motor_models.csv` 刷新生成文件：
+默认情况下，CMake 会用 Python 根据 `src/device/motor/motor_models.csv` 刷新生成文件：
 
-- `include/motor/motor_model_generated.h`
-- `src/motor/motor_model_generated.cc`
+- `include/device/motor/motor_model_generated.h`
+- `src/device/motor/motor_model_generated.cc`
 
 如果构建环境没有 Python，可以关闭生成步骤并使用仓库内已提交的生成文件：
 
@@ -311,7 +324,8 @@ Emscripten 下的规则：
 - `ENCOS_STATIC_MODE` 默认 `ON`，且不能设为 `OFF`。
 - `ENCOS_ENABLE_SPDLOG` 默认 `OFF`。
 - `ENCOS_BUILD_TESTS` 必须为 `OFF`。
-- `Can`、`Ethercat`、`EthercatIGH`、`UsbSerial`、`Slcan` 都不可用。
+- `Can`、`Ethercat`、`EthercatIGH`、`Slcan`、`Ethernet`、`GsUsb` 都不可用。
+- `UsbSerial` 可以构建为静态插件，运行时需要支持 Web Serial 的浏览器及用户授予串口访问权限。
 - `RelayWs` 在 Emscripten 下可以作为静态插件启用；它通过浏览器 WebSocket API 或 Node 测试环境中的 Emscripten WebSocket shim 建连。`/start` HTTP 请求由 TypeScript 运行时异步完成，再传入 C++ 的 `encos_create_adapter`。
 - 构建系统会添加 Asyncify 链接选项，以支持 `emscripten_sleep`。
 - WASM wrapper 入口中的会等待电机响应的 API 使用 Promise；不要把 Emscripten `SleepFor` 改成同步 busy wait，否则会阻塞真实适配器的事件循环和回调模型。
@@ -345,6 +359,187 @@ pnpm --dir npm test
 
 `ENCOS_BUILD_WASM_TESTS` 目前用于标记本次 CMake 配置服务于 WASM 测试流程；实际 npm 测试由 pnpm/Vitest 运行，不会启用 Emscripten C++ GoogleTest。
 
+## Windows 构建
+
+Windows 使用 **MinGW-w64**（[w64devkit](https://github.com/skeeto/w64devkit)）工具链，动态与静态
+模式均可构建。`Can`、`EthercatIGH`、`RelayWs` 为 Linux 专属，Windows 上会自动跳过。
+
+验证环境：Windows 11 x64、w64devkit（GCC 14.2 / MinGW-w64）、CMake 4.0.3、Ninja、
+vcpkg 2026-07-27。
+
+### 依赖（vcpkg）
+
+Windows 依赖统一由 **vcpkg** 提供，使用 MinGW 专用的 `x64-mingw-dynamic` triplet。原生构建强制
+依赖 `zstd`，默认还使用 `spdlog`/`fmt`（`ENCOS_ENABLE_SPDLOG`）。
+
+先把 MinGW 的 `bin` 加入当前终端 `PATH`（路径按实际解压位置调整；vcpkg 探测 triplet 编译器时
+需要），再安装 vcpkg 本体和依赖：
+
+```cmd
+set PATH=C:\w64devkit\bin;%PATH%
+
+git clone --depth 1 https://github.com/microsoft/vcpkg.git %USERPROFILE%\vcpkg
+%USERPROFILE%\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+set VCPKG_ROOT=%USERPROFILE%\vcpkg
+
+vcpkg install spdlog fmt zstd --triplet x64-mingw-dynamic
+```
+
+需要构建测试时再安装 `gtest`：
+
+```cmd
+vcpkg install gtest --triplet x64-mingw-dynamic
+```
+
+所有 Windows 构建都用 vcpkg 工具链引入依赖。`VCPKG_ROOT` 需在当前终端生效（或写入用户环境
+变量），后续每条配置命令都会带上这组参数：
+
+```text
+-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++
+-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
+-DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic
+```
+
+> `x64-mingw-dynamic` 是动态 triplet，安装脚本会把 `libfmt.dll`/`libspdlog.dll`/`libzstd.dll`
+> 等共享依赖一并复制到安装前缀。
+
+### 动态模式
+
+使用 Ninja 单配置生成器，产物平铺在 `build\` 与 `build\plugins\`：
+
+```cmd
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc ^
+  -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ^
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic
+cmake --build build
+```
+
+### 静态模式
+
+```cmd
+cmake -S . -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc ^
+  -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ^
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ^
+  -DENCOS_STATIC_MODE=ON -DENCOS_ENABLE_INSTALL=OFF
+cmake --build build-static
+```
+
+### Windows 插件支持
+
+| 插件 | Windows | 说明 |
+| --- | --- | --- |
+| `Fake` | 可用 | 内建测试适配器，默认隐藏 |
+| `UsbSerial` | 可用 | Overlapped I/O 串口，COM 端口枚举 |
+| `Slcan` | 可用 | 复用 `utils/serialPort` 的 Windows 后端；其单测仍为 Linux PTY 专属 |
+| `Ethernet` | 可用 | Winsock UDP 网关；配置网卡需管理员权限 |
+| `Ethercat` | 可用 | SOEM；运行期需要 Npcap（见下） |
+| `GsUsb` | 可用 | WinUSB gs_usb（candleLight 兼容）；默认 CAN FD，序列号作为设备标识；支持按整体/通道配置 `bitrate`/`sample_point`/`dbitrate`/`dsample_point` |
+| `Can` | 不可用 | Linux SocketCAN |
+| `EthercatIGH` | 不可用 | Linux IGH 主站 |
+| `RelayWs` | 不可用 | Linux 专属 |
+
+设备插件默认启用；`testDevice` / `testClaimDevice` 仅在 `ENCOS_BUILD_TESTS=ON` 时可用。
+
+EtherCAT 运行期依赖 Npcap：`EthercatPlugin.dll` 导入 `wpcap.dll`，安装 Npcap 时需勾选
+"Install Npcap in WinPcap API-compatible Mode"，并以管理员或原始套接字权限运行。未安装时
+`GetAvailableAdapterTypes()` 会静默跳过 `Ethercat`。
+
+> 多路 CAN 网关（单帧过程数据约 2.2KB）必须把网卡 **Jumbo Packet** 设为 `9014`（或 4088）、
+> IP MTU 设为 9000，否则大帧被丢弃，表现为持续的 `Bad WKC` 与 “Get motor parameter timeout”。
+
+`Ethernet` 适配器只使用 IPv4/UDP，不依赖 Npcap；首次配置专用网卡地址需要管理员权限，构建产物
+中的 `EthernetNetworkHelperExecutable.exe` 通过 UAC 提权完成配置。
+
+### 测试构建
+
+Windows 支持完整 C++ 测试。依赖测试需要先 `vcpkg install gtest --triplet x64-mingw-dynamic`。用
+Ninja 单配置生成器构建，产物平铺在 `build\` 与 `build\plugins\`，测试使用的 `./plugins` 相对路径才能命中：
+
+```cmd
+set PATH=C:\w64devkit\bin;%PATH%
+
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc ^
+  -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ^
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ^
+  -DENCOS_ENABLE_INSTALL=OFF -DENCOS_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+自动扫描在 `ENCOS_BUILD_TESTS=ON` 时会一并启用测试用的 `testDevice` / `testClaimDevice`。
+
+要点：
+
+- vcpkg 工具链默认启用 applocal 依赖部署，会把 `libfmt.dll`、`libspdlog.dll`、`libzstd.dll`、
+  `gtest` 等复制到可执行文件旁；若运行期仍缺 DLL，可临时
+  `set PATH=%VCPKG_ROOT%\installed\x64-mingw-dynamic\bin;%PATH%`；
+- 必须使用 Ninja 单配置生成器：插件与测试都输出到 `build\plugins\`，测试的 `./plugins`
+  相对路径才能命中；
+- 依赖 POSIX shell 工具的发布脚本测试（`EncosReleaseToGithub` /
+  `EncosPublishGithubReleaseWrapper`）在 Windows 上不注册。
+
+### 安装与消费
+
+Windows 动态模式支持 `ENCOS_ENABLE_INSTALL=ON`，同时生成安装规则和 `uninstall` 目标；CPack DEB 打包仅在 Linux 上配置。卸载脚本按安装清单删除文件，Windows 安装写入的用户环境变量需另行清理。
+
+```cmd
+cmake -S . -B build-install -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc ^
+  -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ^
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ^
+  -DCMAKE_INSTALL_PREFIX=C:/work/encos-prefix ^
+  -DENCOS_ENABLE_INSTALL=ON
+cmake --build build-install
+cmake --install build-install
+```
+
+安装阶段自动完成运行期环境配置（仅用户级，无需管理员；新终端生效）：
+
+- 把 `spdlog`/`fmt`/`zstd` 等共享依赖一并安装到 `<prefix>\bin`；
+- 把 `<prefix>\bin` **前置**到用户 `PATH`（前置可避免其他目录中同名旧版依赖被优先加载，导致
+  `0xC0000139` 入口点错误）；
+- 设置用户环境变量 `ENCOS_PLUGIN_PATH=<prefix>\lib\encosPlugins`。
+
+安装后不需要手动复制 DLL 或设置 `PATH`/`ENCOS_PLUGIN_PATH`。消费方（如 `motor_cli`）同样使用
+vcpkg 工具链并指向安装前缀：
+
+```cmd
+cmake -S ../motor_cli -B build-cli -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc ^
+  -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ^
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ^
+  -DCMAKE_PREFIX_PATH="<prefix>"
+cmake --build build-cli
+```
+
+当前终端若尚未刷新环境变量，可临时：
+
+```cmd
+set PATH=<prefix>\bin;%PATH%
+set ENCOS_PLUGIN_PATH=<prefix>\lib\encosPlugins
+```
+
+### 换行符与生成文件
+
+`src/device/motor/motor_models.csv` 的生成文件首行记录该 CSV 的 SHA1。`.gitattributes` 已把该
+CSV 固定为 `eol=lf`；若本地是旧的 CRLF 检出，删除后重新检出即可（`git ls-files --eol` 应显示
+`w/lf`）。没有 Python 时使用 `-DENCOS_ENABLE_PYTHON=OFF` 并依赖已提交的生成文件；仅在明确需要
+绕过校验时使用 `-DENCOS_SKIP_GENERATED_SHA1_CHECK=ON`。
+
+### 已知限制
+
+- 安装与打包仅支持动态模式；静态模式不支持安装。
+- Windows 无实时调度，EtherCAT 1000Hz 循环存在抖动，多总线网关下丢包率高于 Linux；参数读取已
+  增加一次超时重试。
+
 ## IGH EtherCAT 插件
 
 `EthercatIGH` 默认参与自动扫描，但只有在已安装 IGH EtherCAT 主站用户态头文件和库时才会被构建。如果需要显式启用而不依赖扫描结果，将其加入 `ENCOS_PLUGINS_LIST`：
@@ -370,11 +565,11 @@ CMake 会通过 `cmake/FindIGHEtherCAT.cmake` 查找：
 | `CMAKE_INSTALL_PREFIX` | CMake 默认值，常用 `/usr/local` | 安装前缀。安装模式和 DEB 打包都会使用它。 |
 | `ENCOS_BUILD_TESTS` | `OFF` | 构建 GoogleTest 测试目标，并注册 CTest。开启时要求 `ENCOS_ENABLE_PYTHON=ON`。 |
 | `ENCOS_BUILD_DOCS` | `OFF` | 增加 Doxygen `docs-latex` 目标，从 `include/` 生成 LaTeX API 文档。 |
-| `ENCOS_ENABLE_PYTHON` | `ON` | 启用 Python，用于刷新电机型号生成文件和运行相关配置测试。 |
+| `ENCOS_ENABLE_PYTHON` | `ON` | 启用 Python，用于刷新电机型号生成文件。 |
 | `ENCOS_SKIP_GENERATED_SHA1_CHECK` | `OFF` | 当 `ENCOS_ENABLE_PYTHON=OFF` 时，跳过 CSV 与生成文件 SHA1 一致性检查。 |
 | `ENCOS_ENABLE_SPDLOG` | 原生构建 `ON`，Emscripten `OFF` | 是否使用 spdlog/fmt 日志后端。关闭后使用轻量 fallback logger。 |
 | `ENCOS_STATIC_MODE` | 原生构建 `OFF`，Emscripten `ON` | 是否构建静态模式，把启用的适配器编进主库。 |
-| `ENCOS_ENABLE_INSTALL` | Linux 动态模式 `ON`，其他模式 `OFF` | 是否生成安装、卸载和 CPack 规则。仅支持 Linux 动态模式。 |
+| `ENCOS_ENABLE_INSTALL` | Linux 动态模式 `ON`，其他模式 `OFF` | 是否生成安装与卸载规则，支持 Linux/Windows 动态模式；仅 Linux 生成 CPack DEB 规则。 |
 | `ENCOS_ENABLE_RELAY` | `ON` | 启用 `RelayWs` 插件客户端与 `IXWebSocket` 依赖。关闭时不构建 relay 相关目标与第三方依赖。 |
 | `ENCOS_BUILD_WASM_BINDINGS` | `OFF` | 构建 Emscripten WASM wrapper 目标 `encosdriver_wasm`。仅 Emscripten 可用。 |
 | `ENCOS_BUILD_WASM_TESTS` | `OFF` | 标记 Emscripten 配置用于 WASM Node 测试流程。开启时要求 `ENCOS_BUILD_WASM_BINDINGS=ON`。 |
@@ -384,10 +579,10 @@ CMake 会通过 `cmake/FindIGHEtherCAT.cmake` 查找：
 CMake API：
 
 ```cmake
-add_emd_plugin(<name> <path> [OPTIONAL])
+add_emd_plugin(<name> <path> [ADAPTER|DEVICE] [OPTIONAL])
 ```
 
-在 `EncosPlugins.cmake` 可用后（根项目已 include 或 `add_subdirectory` 后），可通过该函数注册外部插件目录。`<path>` 下必须包含 `plugin.cmake` 清单文件。`OPTIONAL` 表示插件不可用时跳过，否则报错。注册的外部插件会进入最终生成的静态注册表或动态隐藏类型列表，无需额外 finalize 调用。
+在 `EncosPlugins.cmake` 可用后（根项目已 include 或 `add_subdirectory` 后），可通过该函数注册外部插件目录。`<path>` 下必须包含 `plugin.cmake` 清单文件。默认按适配器处理，设备插件需指定 `DEVICE`。`OPTIONAL` 表示插件不可用时跳过，否则报错。注册的外部插件会进入最终生成的静态注册表或动态隐藏类型列表，无需额外 finalize 调用。
 
 安装后的 encos_driver CMake 包同样暴露该 API。外部项目执行 `find_package(encos_driver REQUIRED)` 后可直接调用：
 
@@ -444,17 +639,16 @@ cmake -S . -B build-minimal \
 cmake --build build-minimal -j
 ```
 
-发布打包构建：
+发布前先用独立目录验证，再用关闭测试的目录打包，避免把测试设备插件装入发布包：
 
 ```bash
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DENCOS_ENABLE_INSTALL=ON \
-  -DENCOS_BUILD_TESTS=ON
-cmake --build build -j
-cmake --build build --target format-check
-cmake --build build --target tidy
-ctest --test-dir build --output-on-failure
-cd build
-cpack -G DEB
+cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Release -DENCOS_BUILD_TESTS=ON -DENCOS_ENABLE_INSTALL=OFF
+cmake --build build-test -j
+cmake --build build-test --target format-check
+cmake --build build-test --target tidy
+ctest --test-dir build-test --output-on-failure
+
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DENCOS_ENABLE_INSTALL=ON -DENCOS_BUILD_TESTS=OFF
+cmake --build build-release -j
+(cd build-release && cpack -G DEB)
 ```

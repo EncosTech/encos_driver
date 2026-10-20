@@ -7,14 +7,15 @@
 #include <vector>
 
 #include "adapter/base_adapter.h"
-#include "battery/battery.h"
 #include "bus/bus.h"
+#include "device/battery/battery.h"
+#include "device/device.h"
+#include "device/glove/glove.h"
+#include "device/imu/imu.h"
+#include "device/motor/motor.h"
+#include "device/pms/pms.h"
 #include "encos/driver_manager.h"
 #include "encos/export.h"
-#include "glove/glove.h"
-#include "imu/imu.h"
-#include "motor/motor.h"
-#include "pms/pms.h"
 #include "utils/log_writer.h"
 #include "utils/port.h"
 
@@ -39,6 +40,26 @@ ENCOS_API BaseAdapter* MakeAdapter(const std::string& adapter_type,
                                    const std::string& interface_name,
                                    const std::string& logger_name = "",
                                    LogLevel log_level = LogLevel::Info);
+
+/**
+ * @brief 创建适配器实例并传入扩展配置
+ * @param adapter_type 适配器类型名称（如 "Ethercat", "Can", "UsbSerial" 等）
+ * @param interface_name 网络接口名称（如 "eth0", "can0" 等）
+ * @param logger_name 日志记录器名称，默认为空则自动生成
+ * @param log_level 日志级别，默认为 info
+ * @param extend 适配器自定义扩展配置，默认空对象 `{}`；字段语义由各插件自行定义
+ * @return 非拥有的适配器裸指针
+ * @throws std::runtime_error `extend` 不是 JSON 对象或插件加载失败
+ *
+ * 与同名四参数重载是两个独立符号，既有调用方无需重新编译。适配器身份仍只由
+ * `interface_name` 决定：命中既有实例时，`extend` 中 `buses` 的条目会经
+ * `BaseAdapter::UpdateBusExtend` 增量应用到该实例；顶层公共参数无法重新应用，会被忽略
+ * 并记录诊断。只有实现了 `MakeAdapterV2` 的插件会收到该配置，其余插件按内置默认参数构造。
+ */
+ENCOS_API BaseAdapter* MakeAdapter(const std::string& adapter_type,
+                                   const std::string& interface_name,
+                                   const std::string& logger_name, LogLevel log_level,
+                                   const nlohmann::json& extend);
 
 /**
  * @brief 设置插件搜索路径
@@ -100,6 +121,20 @@ ENCOS_API bool DeleteImu(Imu* imu);
 
 /** @brief 删除管理器拥有的电源管理设备 */
 ENCOS_API bool DeletePms(Pms* pms);
+
+/**
+ * @brief 删除管理器拥有的外部设备插件设备
+ * @param device 由 `Bus::GetDevice()` 或管理器返回的指针
+ * @return 是否完成删除
+ */
+ENCOS_API bool DeleteDevice(Device* device);
+
+/**
+ * @brief 获取所有可用的外部设备插件类型
+ * @return 设备类型名称列表
+ *
+ */
+ENCOS_API std::vector<std::string> GetAvailableDeviceTypes();
 
 /**
  * @brief 删除管理器拥有的手套整手视图

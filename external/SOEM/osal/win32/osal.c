@@ -41,7 +41,20 @@ void osal_get_monotonic_time(ec_timet *ts)
 ec_timet osal_current_time(void)
 {
    struct timespec ts;
+#ifdef _UCRT
    timespec_get(&ts, TIME_UTC);
+#else
+   /* msvcrt 目标的 MinGW 没有 timespec_get/TIME_UTC，用 Win32 API 取 UTC 时间 */
+   FILETIME filetime;
+   ULARGE_INTEGER ticks;
+   GetSystemTimeAsFileTime(&filetime);
+   ticks.LowPart = filetime.dwLowDateTime;
+   ticks.HighPart = filetime.dwHighDateTime;
+   /* FILETIME 是自 1601-01-01 起的 100ns 计数；减去 1970-01-01 的偏移 */
+   uint64_t total_100ns = ticks.QuadPart - 116444736000000000ULL;
+   ts.tv_sec = (time_t)(total_100ns / 10000000ULL);
+   ts.tv_nsec = (long)((total_100ns % 10000000ULL) * 100ULL);
+#endif
    return ts;
 }
 

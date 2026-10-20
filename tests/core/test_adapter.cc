@@ -24,17 +24,17 @@
 
 #include "adapter/base_adapter.h"
 #include "base_adapter_test_access.h"
-#include "battery/battery.h"
 #include "bus/bus.h"
+#include "device/battery/battery.h"
+#include "device/imu/imu.h"
+#include "device/motor/motor.h"
+#include "device/motor/types.h"
+#include "device/pms/pms.h"
 #include "device_status_test_access.h"
 #include "driver_manager_test_access.h"
 #include "encos/driver_manager.h"
 #include "encos/export.h"
-#include "imu/imu.h"
-#include "motor/motor.h"
-#include "motor/types.h"
 #include "platform/log.h"
-#include "pms/pms.h"
 #include "test_fixtures.h"
 
 namespace encos {
@@ -161,6 +161,27 @@ public:
         condition_.notify_all();
     }
 
+    /**
+     * @brief 放行并丢弃构造期的批次
+     *
+     * 电机在构造时就会查询固件版本（0x32），这些报文会占用本适配器的首次提交阻塞。
+     * 在创建电机前调用本函数即可让构造期的发送不被阻塞。
+     */
+    void AllowConstructionTraffic() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            release_first_ = true;
+        }
+        condition_.notify_all();
+    }
+
+    /** @brief 清空已记录的批次并恢复首次提交阻塞，供 Commit 断言使用 */
+    void ResetBatches() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        batches_.clear();
+        release_first_ = false;
+    }
+
     std::vector<MotorMessages> GetBatches() {
         std::lock_guard<std::mutex> lock(mutex_);
         return batches_;
@@ -249,6 +270,7 @@ TEST(BusSoftSyncTests, CommitOnlySubmitsCallingBus) {
     auto* second_bus = adapter->GetBus(1);
     auto* first = first_bus->GetMotor(1, MotorModel::EC_A4310_P2);
     auto* second = second_bus->GetMotor(2, MotorModel::EC_A4310_P2);
+    adapter->ClearSentMessages();
 
     first_bus->SetSyncMode(true);
     second_bus->SetSyncMode(true);
@@ -279,6 +301,7 @@ TEST(BusSoftSyncTests, LeavingModeReleasesOnlyCallingBusBacklog) {
     auto* second_bus = adapter->GetBus(1);
     auto* first = first_bus->GetMotor(1, MotorModel::EC_A4310_P2);
     auto* second = second_bus->GetMotor(2, MotorModel::EC_A4310_P2);
+    adapter->ClearSentMessages();
 
     first_bus->SetSyncMode(true);
     second_bus->SetSyncMode(true);
@@ -365,6 +388,7 @@ TEST(AdapterSoftSyncTests, CommitUsesSynchronizedTransportHookOnlyForCommittedBa
 TEST(AdapterSoftSyncTests, ExplicitModeRetainsAndLeavingModeReleasesBacklog) {
     auto* adapter = MakeManagedTestAdapter("soft-sync-explicit");
     auto* motor = adapter->GetBus(0)->GetMotor(1, MotorModel::EC_A4310_P2);
+    adapter->ClearSentMessages();
 
     adapter->SetSyncMode(true);
     motor->SpdControl<0>(1.0F, 2.0F);
@@ -380,6 +404,7 @@ TEST(AdapterSoftSyncTests, CommitSubmitsAllCurrentDevicesAsOneBatch) {
     auto* adapter = MakeManagedTestAdapter("soft-sync-batch");
     auto* first = adapter->GetBus(0)->GetMotor(1, MotorModel::EC_A4310_P2);
     auto* second = adapter->GetBus(1)->GetMotor(2, MotorModel::EC_A4310_P2);
+    adapter->ClearSentMessages();
 
     adapter->SetSyncMode(true);
     first->SpdControl<0>(1.0F, 2.0F);
@@ -413,6 +438,7 @@ TEST(AdapterSoftSyncTests, MotorBatteryAndPmsUseRegistrationOrderInOneBatch) {
     auto* motor = bus->GetMotor(1, MotorModel::EC_A4310_P2);
     auto* battery = bus->GetBattery(2);
     auto* pms = bus->GetPms();
+    adapter->ClearSentMessages();
     adapter->SetSyncMode(true);
 
     motor->SpdControl<0>(1.0F, 2.0F);
@@ -469,8 +495,11 @@ TEST(AdapterSoftSyncTests, ConcurrentCommitsSubmitIndependentBatches) {
         }));
     auto* first_bus = adapter->GetBus(0);
     auto* second_bus = adapter->GetBus(1);
+    // 构造期每台电机都会发一帧固件版本查询，先放行以免它占住首次提交阻塞。
+    adapter->AllowConstructionTraffic();
     auto* first = first_bus->GetMotor(1, MotorModel::EC_A4310_P2);
     auto* second = second_bus->GetMotor(2, MotorModel::EC_A4310_P2);
+    adapter->ResetBatches();
     first_bus->SetSyncMode(true);
     second_bus->SetSyncMode(true);
     first->SpdControl<0>(1.0F, 2.0F);
@@ -519,6 +548,7 @@ TEST(AdapterSoftSyncTests, DeletingDeviceDiscardsItsQueuedPortSafely) {
     auto& manager = EncosDriverManager::Instance();
     auto* adapter = MakeManagedTestAdapter("soft-sync-device-delete");
     auto* motor = adapter->GetBus(0)->GetMotor(1, MotorModel::EC_A4310_P2);
+    adapter->ClearSentMessages();
     adapter->SetSyncMode(true);
     motor->SpdControl<0>(1.0F, 2.0F);
 
@@ -533,6 +563,7 @@ TEST(AdapterSoftSyncTests, ResponseWaitingApiDoesNotImplicitlyCommit) {
     auto* adapter = MakeManagedFakeAdapter("soft-sync-no-implicit-response-commit");
     adapter->SeedMotor(0, 1, MotorModel::EC_A4310_P2);
     auto* motor = adapter->GetBus(0)->GetMotor(1, MotorModel::EC_A4310_P2);
+    adapter->ClearCommandRecords();
     adapter->SetSyncMode(true);
 
     const auto result = motor->SpdControl<1>(1.0F, 2.0F);
@@ -1166,6 +1197,7 @@ TEST(FakeAdapterBaseTests, ManualModeRecordsCommandsWithoutAutoReply) {
 
     auto bus = adapter->GetBus(0);
     auto motor = bus->GetMotor(1, MotorModel::EC_A4310_P2);
+    adapter->ClearCommandRecords();
 
     const auto feedback = motor->SpdControl<1>(1.0f, 2.0f);
     EXPECT_EQ(feedback.error, MotorError::NoResponse);
@@ -1189,6 +1221,7 @@ TEST(BusExternalDeviceTests, GetBatteryMarksBusButAllowsMotorAccess) {
     ASSERT_NE(motor, nullptr);
     EXPECT_EQ(bus->SelectMotor(1), motor);
     EXPECT_EQ(bus->GetMotors().size(), 1u);
+    adapter->ClearSentMessages();
 
     const auto discovered = bus->ScanMotors();
     EXPECT_TRUE(discovered.empty());
@@ -1208,6 +1241,7 @@ TEST(BusExternalDeviceTests, GetImuMarksBusButAllowsExplicitMotorAccess) {
     ASSERT_NE(motor, nullptr);
     EXPECT_EQ(bus->SelectMotor(1), motor);
     EXPECT_EQ(bus->GetMotors().size(), 1u);
+    adapter->ClearSentMessages();
 
     const auto discovered = bus->ScanMotors();
     EXPECT_TRUE(discovered.empty());

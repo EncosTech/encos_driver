@@ -12,8 +12,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "device/motor/types.h"
 #include "encos/export.h"
-#include "motor/types.h"
+#include "external/json.hpp"
 #include "platform/log.h"
 
 namespace encos {
@@ -21,6 +22,7 @@ namespace encos {
 class BaseAdapter;
 class Battery;
 class Bus;
+class Device;
 class Glove;
 class GloveCalibrator;
 class GloveEncoder;
@@ -42,6 +44,7 @@ class EncosDriverManager {
     friend class BaseAdapter;
     friend class Battery;
     friend class Bus;
+    friend class Device;
     friend class Glove;
     friend class GloveCalibrator;
     friend class GloveEncoder;
@@ -97,11 +100,47 @@ public:
                                          LogLevel log_level = LogLevel::Info);
 
     /**
+     * @brief 通过插件创建或复用适配器并传入扩展配置
+     * @param adapter_type 适配器类型名
+     * @param interface_name 适配器唯一接口名
+     * @param logger_name 日志记录器名称，为空时自动生成
+     * @param log_level 日志过滤级别
+     * @param extend 适配器自定义扩展配置；字段语义由插件自行定义
+     * @return 非拥有的适配器裸指针
+     * @throws std::runtime_error `extend` 不是 JSON 对象、插件缺失或插件构造失败
+     *
+     * 与四参数重载是两个独立符号，既有调用方无需重新编译。适配器身份仍只由
+     * `interface_name` 决定：命中既有实例时，`extend` 中 `buses` 的条目会经
+     * `BaseAdapter::UpdateBusExtend` 增量应用到该实例；顶层公共参数无法重新应用，
+     * 会被忽略并记录诊断。返回的实例已处于更新完成后的状态。
+     */
+    ENCOS_API BaseAdapter* CreateAdapter(const std::string& adapter_type,
+                                         const std::string& interface_name,
+                                         const std::string& logger_name, LogLevel log_level,
+                                         const nlohmann::json& extend);
+
+    /**
      * @brief 接管工厂返回的适配器并按接口名并发去重
      * @param interface_name 适配器唯一接口名
      * @param factory 返回新裸指针的工厂；失败时由管理器回滚删除
      */
     ENCOS_BASE_API BaseAdapter* CreateAdapterWithFactory(const std::string& interface_name,
+                                                         AdapterFactory factory);
+
+    /**
+     * @brief 同上，并携带用于增量更新既有实例的扩展配置串
+     * @param interface_name 适配器唯一接口名
+     * @param extend_json 宿主规范化的扩展配置串；空串表示没有更新请求
+     * @param factory 返回新裸指针的工厂；失败时由管理器回滚删除
+     * @return 新建的，或已按 `buses` 增量更新过的既有适配器裸指针
+     * @throws std::runtime_error 插件构造失败，或既有实例的增量更新被拒绝
+     *
+     * 命中既有实例（含并发创建中的在飞实例）且 `extend_json` 非空时，调用该实例的
+     * `BaseAdapter::UpdateBusExtend`。更新在对象锁之外、以适配器自身的在飞引用保护下
+     * 串行执行。生命周期准入在对象锁内完成，销毁会等待在飞更新退出。
+     */
+    ENCOS_BASE_API BaseAdapter* CreateAdapterWithFactory(const std::string& interface_name,
+                                                         const std::string& extend_json,
                                                          AdapterFactory factory);
 
     /** @brief 获取或创建指定适配器下的总线 */
@@ -113,10 +152,10 @@ public:
     ENCOS_BASE_API Motor* CreateMotor(Bus* bus, int motor_idx, MotorModel model,
                                       uint8_t frame_flags, bool canfd);
     /** @brief 获取或创建使用明确量程的电机 */
-    ENCOS_BASE_API Motor* CreateMotor(Bus* bus, int motor_idx, MotorPVTRanges ranges,
+    ENCOS_BASE_API Motor* CreateMotor(Bus* bus, int motor_idx, MotorProperties ranges,
                                       uint8_t frame_flags = 0);
     /** @brief 获取或创建使用明确量程及 CAN FD 属性的电机 */
-    ENCOS_BASE_API Motor* CreateMotor(Bus* bus, int motor_idx, MotorPVTRanges ranges,
+    ENCOS_BASE_API Motor* CreateMotor(Bus* bus, int motor_idx, MotorProperties ranges,
                                       uint8_t frame_flags, bool canfd);
     /** @brief 获取或创建并从固件初始化电机 */
     ENCOS_BASE_API Motor* CreateMotor(Bus* bus, int motor_idx, uint8_t frame_flags = 0);
@@ -130,6 +169,18 @@ public:
     ENCOS_BASE_API Pms* CreatePms(Bus* bus);
     /** @brief 获取或创建指定从站的手套整手视图 */
     ENCOS_BASE_API Glove* CreateGlove(BaseAdapter* adapter, int slave_id);
+    /**
+     * @brief 获取或创建由外部设备插件提供的设备
+     * @param bus 设备所属总线
+     * @param device_type 设备类型名（如 "TestDevice"）
+     * @param config 设备自定义配置 JSON；未传入时为空对象 `{}`
+     * @return 非拥有的 `Device` 裸指针
+     * @throws std::runtime_error 设备插件缺失、ABI 不匹配或能力位与路由不一致
+     *
+     * 设备身份为 `(bus, type, config)`：配置规范化相等时复用既有实例，不同配置创建独立实例。
+     */
+    ENCOS_BASE_API Device* CreateDevice(Bus* bus, const std::string& device_type,
+                                        const nlohmann::json& config = nlohmann::json::object());
 
     /** @brief 查询已存在的电机且不创建对象 */
     ENCOS_BASE_API Motor* FindMotor(Bus* bus, int motor_idx) const;
@@ -155,6 +206,8 @@ public:
     ENCOS_BASE_API bool DestroyImu(Imu* imu);
     /** @brief 删除电源管理设备 */
     ENCOS_BASE_API bool DestroyPms(Pms* pms);
+    /** @brief 删除外部设备插件提供的设备 */
+    ENCOS_BASE_API bool DestroyDevice(Device* device);
     /**
      * @brief 删除管理器拥有的手套整手视图
      * @param glove 由 `CreateGlove()` 或 `BaseAdapter::GetGlove()` 返回的指针
@@ -196,6 +249,9 @@ private:
                                               const std::vector<std::uint32_t>& can_ids,
                                               ReceiveCallback callback,
                                               CancellationCallback cancel_waiters = {});
+    /** @brief 把一帧投递给本总线的整总线认领设备；未认领或认领项已退役时不投递 */
+    ENCOS_BASE_API void DeliverToClaimRoute(BaseAdapter* adapter, int raw_bus_idx,
+                                            const MotorPackMsg& message);
     ENCOS_BASE_API void ResetForTests();
     ENCOS_BASE_API void SetCreationHookForTests(CreationHook hook);
     ENCOS_BASE_API void SetDeviceInitializerHookForTests(DeviceInitializerHook hook);
@@ -224,7 +280,8 @@ private:
         friend class EncosDriverManager;
         DeviceOperation(OperationGate* gate, bool required);
 
-        static thread_local DeviceOperation* active_head_;
+        /** @brief 当前线程的活动操作栈顶；改用函数内 thread_local 以满足 MSVC 的 DLL 接口限制 */
+        static DeviceOperation*& ActiveHead();
         OperationGate* gate_ = nullptr;
         DeviceOperation* previous_ = nullptr;
         bool owns_admission_ = false;
@@ -235,6 +292,7 @@ private:
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(Battery* device);
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(Imu* device);
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(Pms* device);
+    ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(Device* device);
     ENCOS_BASE_API DeviceOperation TryAcquireGloveOperation(Glove* glove) noexcept;
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(GloveEncoder* device);
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(GloveCalibrator* device);

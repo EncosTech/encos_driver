@@ -66,7 +66,8 @@ test('fragmented USB serial feedback completes during Asyncify and writes stay s
   const adapter = runtime.createAdapter({ type: 'UsbSerial', interfaceName: name })
   let eventLoopProgressed = false
   try {
-    const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+    const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+    port.writes.length = 0
     await motor.spdControl({ speed: 1, current: 2, feedbackType: 0 })
     await motor.spdControl({ speed: 2, current: 2, feedbackType: 0 })
     await vi.waitFor(() => expect(port.writes).toHaveLength(2))
@@ -166,7 +167,8 @@ test('repeated adapter creation shares the port until its last handle is dispose
     expect(shared.ok()).toBe(true)
     expect(port.close).not.toHaveBeenCalled()
     expect(runtime.webSerial.status(name)).toMatchObject({ open: true, attached: true })
-    const motor = shared.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+    const motor = await shared.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+    port.writes.length = 0
     await motor.spdControl({ speed: 1, current: 2, feedbackType: 0 })
     await vi.waitFor(() => expect(port.writes).toHaveLength(1))
     shared.dispose()

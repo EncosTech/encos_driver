@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
+# 由 EncosDriver 安装阶段调用：把 <prefix>/bin 追加到用户 PATH，并设置
+# ENCOS_PLUGIN_PATH 指向安装的插件目录。默认只修改用户级环境变量（无需管理员）。
+$ErrorActionPreference = 'Stop'
+
+$prefix = '@CMAKE_INSTALL_PREFIX@'
+$bin = Join-Path $prefix 'bin'
+$plugins = Join-Path $prefix '@ENCOS_PLUGIN_INSTALL_LIBDIR@'
+$scope = 'User'
+
+try {
+    $current = [Environment]::GetEnvironmentVariable('Path', $scope)
+    if ($null -eq $current) {
+        $current = ''
+    }
+    # 先移除旧条目再前置，保证 <prefix>\bin 优先于其他目录（避免同名旧依赖 DLL 抢占）。
+    $parts = @($current.Split(';') | Where-Object { $_ -ne '' -and $_ -ne $bin })
+    $updated = (@($bin) + $parts) -join ';'
+    [Environment]::SetEnvironmentVariable('Path', $updated, $scope)
+    Write-Output "EncosDriver: PATH prepended $bin ($scope)"
+
+    [Environment]::SetEnvironmentVariable('ENCOS_PLUGIN_PATH', $plugins, $scope)
+    Write-Output "EncosDriver: ENCOS_PLUGIN_PATH = $plugins ($scope)"
+} catch {
+    Write-Output "EncosDriver: failed to update environment variables: $($_.Exception.Message)"
+    exit 1
+}
+
+# 通知已运行的进程环境变量已变化（新开终端即可生效）。
+try {
+    $signature = @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam,
+    string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+    $type = Add-Type -MemberDefinition $signature -Name 'EncosEnvBroadcast' -Namespace 'Encos' -PassThru
+    $result = [UIntPtr]::Zero
+    [void]$type::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000,
+        [ref]$result)
+} catch {
+    # 广播失败不影响环境变量写入。
+}

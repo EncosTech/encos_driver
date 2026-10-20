@@ -10,7 +10,32 @@
 #include <emscripten/emscripten.h>
 #endif
 
+#ifdef _WIN32
+// clang-format off
+#include <windows.h>
+// clang-format on
+#endif
+
 namespace encos::platform {
+
+#ifdef _WIN32
+namespace detail {
+
+/** @brief 每个线程复用的高精度可等待定时器，用于精确 SleepUntil */
+inline HANDLE HighResolutionTimer() {
+    static thread_local HANDLE timer = []() -> HANDLE {
+        HANDLE handle = CreateWaitableTimerExW(
+            nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (handle == nullptr) {
+            handle = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+        }
+        return handle;
+    }();
+    return timer;
+}
+
+}  // namespace detail
+#endif
 
 /**
  * @brief 阻塞当前执行流指定时长
@@ -41,6 +66,24 @@ inline void SleepUntil(const std::chrono::time_point<Clock, Duration>& time_poin
     if (time_point > now) {
         SleepFor(time_point - now);
     }
+#elif defined(_WIN32)
+    const auto remaining =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(time_point - Clock::now()).count();
+    if (remaining <= 0) {
+        return;
+    }
+    HANDLE timer = detail::HighResolutionTimer();
+    LARGE_INTEGER due{};
+    // 负值表示相对时间，单位 100ns。
+    due.QuadPart = -static_cast<LONGLONG>(remaining / 100);
+    if (due.QuadPart == 0) {
+        due.QuadPart = -1;
+    }
+    if (timer != nullptr && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) != 0) {
+        WaitForSingleObject(timer, INFINITE);
+        return;
+    }
+    std::this_thread::sleep_until(time_point);
 #else
     std::this_thread::sleep_until(time_point);
 #endif

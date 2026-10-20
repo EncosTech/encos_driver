@@ -78,9 +78,13 @@ function(encos_configure_options)
         ${_encos_default_install}
         "Enable install and packaging rules")
 
-    if(ENCOS_ENABLE_INSTALL AND
-       (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ENCOS_STATIC_MODE))
+    if(ENCOS_ENABLE_INSTALL AND ENCOS_STATIC_MODE)
         message(FATAL_ERROR
-            "ENCOS_ENABLE_INSTALL is only supported on Linux dynamic builds.")
+            "ENCOS_ENABLE_INSTALL is not supported in static mode.")
+    endif()
+    if(ENCOS_ENABLE_INSTALL AND
+       NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32))
+        message(FATAL_ERROR
+            "ENCOS_ENABLE_INSTALL is only supported on Linux and Windows dynamic builds.")
     endif()
 endfunction()

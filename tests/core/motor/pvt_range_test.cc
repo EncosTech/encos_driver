@@ -98,23 +98,23 @@ EXPECT_RANGE_WRITE_TESTS(SetPVTSpdRange, motor->SetPVTSpdRange({-12.34f, 56.78f}
 EXPECT_RANGE_WRITE_TESTS(SetPVTTorRange, motor->SetPVTTorRange({0.5f, 2.0f}, true),
                          MotorParameter::PVTTorRange, snapshot.ranges.torque, 0.5f, 2.0f, 5, 20)
 
-TEST_F(PVTRangeTests, SetDriverPVTRanges) {
-    MotorPVTRanges new_ranges = motor->GetPVTRanges();
+TEST_F(PVTRangeTests, SetProperties) {
+    MotorProperties new_ranges = motor->GetProperties();
     new_ranges.position = {10.0f, 20.0f};
     new_ranges.speed = {5.0f, 15.0f};
     new_ranges.current = {1.0f, 3.0f};
     new_ranges.torque = {0.5f, 2.0f};
     new_ranges.kp = {100.0f, 500.0f};
     new_ranges.kd = {10.0f, 50.0f};
-    motor->SetDriverPVTRanges(new_ranges);
-    const auto ranges = motor->GetPVTRanges();
+    motor->SetProperties(new_ranges);
+    const auto ranges = motor->GetProperties();
     EXPECT_EQ(ranges.position.min, 10.0f);
     EXPECT_EQ(ranges.position.max, 20.0f);
 }
 
 TEST_F(PVTRangeTests, ConcurrentRangeReadsObserveCoherentSnapshots) {
     auto make_ranges = [](float value) {
-        MotorPVTRanges ranges{};
+        MotorProperties ranges{};
         ranges.kp = {value, value};
         ranges.kd = {value, value};
         ranges.position = {value, value};
@@ -125,7 +125,7 @@ TEST_F(PVTRangeTests, ConcurrentRangeReadsObserveCoherentSnapshots) {
     };
     const auto first = make_ranges(1.0f);
     const auto second = make_ranges(2.0f);
-    motor->SetDriverPVTRanges(first);
+    motor->SetProperties(first);
 
     std::atomic<bool> start{false};
     std::thread writer([&] {
@@ -133,12 +133,12 @@ TEST_F(PVTRangeTests, ConcurrentRangeReadsObserveCoherentSnapshots) {
             std::this_thread::yield();
         }
         for (int iteration = 0; iteration < 10000; ++iteration) {
-            motor->SetDriverPVTRanges((iteration & 1) == 0 ? second : first);
+            motor->SetProperties((iteration & 1) == 0 ? second : first);
         }
     });
     start.store(true, std::memory_order_release);
     for (int iteration = 0; iteration < 10000; ++iteration) {
-        const auto ranges = motor->GetPVTRanges();
+        const auto ranges = motor->GetProperties();
         const float value = ranges.kp.min;
         EXPECT_TRUE(value == 1.0f || value == 2.0f);
         EXPECT_EQ(ranges.kp.max, value);
@@ -159,11 +159,11 @@ TEST_F(PVTRangeTests, ConcurrentRangeReadsObserveCoherentSnapshots) {
 #undef EXPECT_RANGE_WRITE_TESTS
 
 TEST_F(PVTRangeTests, FeedbackOneUsesDriverRangesForAllControlModes) {
-    auto ranges = motor->GetPVTRanges();
+    auto ranges = motor->GetProperties();
     ranges.position = {-3.0f, 7.0f};
     ranges.speed = {-9.0f, 31.0f};
     ranges.current = {-7.0f, 23.0f};
-    motor->SetDriverPVTRanges(ranges);
+    motor->SetProperties(ranges);
     adapter->SetReplyMode(FakeReplyMode::Manual);
     adapter->SetDecodedCommandObserver([&](const FakeCommandRecord&) {
         MotorPackMsg pack{};
@@ -192,11 +192,11 @@ TEST_F(PVTRangeTests, FeedbackOneUsesDriverRangesForAllControlModes) {
 }
 
 TEST_F(PVTRangeTests, FeedbackOneTracksRangeUpdatesInAsyncStatus) {
-    auto ranges = motor->GetPVTRanges();
+    auto ranges = motor->GetProperties();
     ranges.position = {-3.0f, 7.0f};
     ranges.speed = {-9.0f, 31.0f};
     ranges.current = {-7.0f, 23.0f};
-    motor->SetDriverPVTRanges(ranges);
+    motor->SetProperties(ranges);
     MotorPackMsg pack{};
     pack.id = 1;
     pack.len = 8;
@@ -227,7 +227,7 @@ TEST_F(PVTRangeTests, FeedbackOneTracksRangeUpdatesInAsyncStatus) {
 
 TEST_F(PVTRangeTests, SetCurrentRangeUpdatesPvtRangeAndFeedbackUpperBound) {
     motor->SetCurrentRange(27.0f);
-    const auto ranges = motor->GetPVTRanges();
+    const auto ranges = motor->GetProperties();
     EXPECT_FLOAT_EQ(ranges.current.min, -27.0f);
     EXPECT_FLOAT_EQ(ranges.current.max, 27.0f);
     MotorPackMsg pack{};

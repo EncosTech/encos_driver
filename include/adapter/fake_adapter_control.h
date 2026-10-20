@@ -10,8 +10,8 @@
 #include <variant>
 #include <vector>
 
+#include "device/motor/types.h"
 #include "encos/export.h"
-#include "motor/types.h"
 
 namespace encos {
 
@@ -20,20 +20,38 @@ namespace encos {
  */
 struct FakeMotorSnapshot {
     MotorModel model = MotorModel::EC_A4310_P2;  ///< 模拟电机型号
-    MotorPVTRanges ranges{};                     ///< PVT 控制范围
+    MotorProperties ranges{};                    ///< 控制属性、范围与固件版本
     float position_rad = 0.0f;                   ///< 位置（rad）
     float speed_rad_s = 0.0f;                    ///< 速度（rad/s）
     float current_a = 0.0f;                      ///< 电流（A）
     float torque_nm = 0.0f;                      ///< 转矩（N·m）
     float motor_temp_c = 25.0f;                  ///< 电机温度（°C）
     float mos_temp_c = 25.0f;                    ///< MOS 温度（°C）
-    float acceleration = 5.0f;                   ///< 加速度参数
+    float acceleration = 5.0f;                   ///< 运动模型的加速度
     float kt = 0.0f;                             ///< 转矩常数（N·m/A）
     uint16_t can_timeout_ms = 1000;              ///< CAN 超时（ms）
     uint8_t reply_frame_flags = 0;               ///< 回复帧格式标志
     MotorCommunicationMode communication_mode = MotorCommunicationMode::ClassicCan;  ///< 通信模式
     MotorError error = MotorError::NoError;  ///< 模拟错误状态
     bool brake_enabled = false;              ///< 制动是否启用
+    /**
+     * 模拟固件版本（0x32 的应答值）
+     *
+     * - `nullopt`：固件不认识 0x32，任何新版命令（0x27/0x30/0x31/0x32）都不应答，
+     *   也不支持电磁抱闸控制 —— 真机旧版固件的行为。
+     * - `0`：应答 0x32 但版本未知，驱动同样按旧版语义处理，其余新版命令不应答。
+     *   这是测试默认值：旧版语义但无需等待探测超时。
+     * - 非 0 值：完整的新版固件，0x27/0x30/0x31/0x32 均应答。
+     */
+    std::optional<uint32_t> fw_version{0};
+    uint32_t product_id = 0;        ///< 0x30 的应答值（仅新版固件）
+    uint32_t hw_version = 0;        ///< 0x31 的应答值，BCD `0xYYMMDDHH`（仅新版固件）
+    KpKi<uint16_t> cur_gain_raw{};  ///< 0x20 查询应答的原始电流环增益
+    KpKi<uint16_t> spd_gain_raw{};  ///< 0x21 查询应答的原始速度环增益
+    KpKd<uint16_t> pos_gain_raw{};  ///< 0x22 查询应答的原始位置环增益
+    uint8_t cal_flag = 0;           ///< 0x27 的校准标志
+    float raw_angle_deg = 0;        ///< 0x27 的原始角度（°）
+    float cal_angle_deg = 0;        ///< 0x27 的校准角度（°）
 };
 
 /**

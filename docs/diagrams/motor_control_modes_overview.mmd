@@ -6,15 +6,15 @@ flowchart TB
     Mode --> Callback["发送-回调模式"]
     Mode --> Poll["发送-轮询模式"]
 
-    Ack --> Ack1["设置 FeedbackType >= 1"]
+    Ack --> Ack1["PVT: FeedbackType = 1<br/>其他控制: 1 / 2 / 3"]
     Ack1 --> Ack2["控制调用阻塞等待电机反馈"]
-    Ack2 --> Ack3["返回当前指令对应状态"]
+    Ack2 --> Ack3["返回匹配反馈<br/>超时返回 NoResponse"]
 
-    Callback --> Cb1["模板参数为 0<br/>运行期 feedback >= 1"]
+    Callback --> Cb1["模板参数为 0<br/>其他控制 feedback = 1～3<br/>PVT 自动请求反馈"]
     Cb1 --> Cb2["控制调用立即返回"]
     Cb2 --> Cb3["状态由 SetOnStatus 回调异步递送"]
 
-    Poll --> P1["模板参数和 feedback 均为 0"]
+    Poll --> P1["模板参数为 0<br/>其他控制 feedback = 1<br/>PVT 自动请求反馈"]
     P1 --> P2["控制调用立即返回"]
     P2 --> P3["用户随后通过 GetStatus() 主动读取缓存状态"]
     P3 --> P4["建议结合 max_life_cycle 配置，避免旧状态残留"]

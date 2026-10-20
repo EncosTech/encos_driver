@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.18)
-project(encos_driver VERSION 3.3.2)
+project(encos_driver VERSION 4.0.0)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
@@ -10,6 +10,13 @@ set(ENCOS_PLUGIN_INSTALL_LIBDIR "${CMAKE_INSTALL_LIBDIR}/encosPlugins")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(WIN32)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+    if(MSVC)
+        add_compile_options(/utf-8)
+    endif()
+endif()
 
 include(CTest)
 include(EncosOptions)
@@ -25,6 +32,9 @@ option(ENCOS_BUILD_DOCS "Build EncosDriver LaTeX API documentation" OFF)
 option(ENCOS_ENABLE_RELAY "Build WebSocket relay support" ON)
 option(ENCOS_ENABLE_TSAN "Run Port concurrency tests with ThreadSanitizer" OFF)
 option(ENCOS_ENABLE_TRACY "Enable Tracy performance profiling" OFF)
+
+option(ENCOS_ENABLE_PACKAGE_VERIFY_TESTS
+    "Register the end-to-end installed-plugin verification as a CTest" OFF)
 
 # 插件在发现期间声明其测试，测试目标在全部插件注册后统一创建。
 include(EncosTests)
@@ -272,11 +282,11 @@ if(NOT ENCOS_STATIC_MODE)
 endif()
 
 set(MOTOR_MODEL_GENERATED_HEADER
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/motor/motor_model_generated.h)
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/device/motor/motor_model_generated.h)
 set(MOTOR_MODEL_GENERATED_SOURCE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/motor/motor_model_generated.cc)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/device/motor/motor_model_generated.cc)
 set(MOTOR_MODEL_CSV
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/motor/motor_models.csv)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/device/motor/motor_models.csv)
 
 if(ENCOS_ENABLE_PYTHON)
     add_custom_command(
@@ -334,26 +344,27 @@ add_library(${ENCOS_DRIVER_BASE_TARGET} ${_encos_base_library_type}
     src/driver_manager_status.cc
     src/driver_manager_dispatch.cc
     src/bus/bus.cc
-    src/motor/motor.cc
-    src/motor/motor_control.cc
-    src/motor/motor_limit.cc
-    src/motor/motor_log.cc
-    src/motor/motor_log_transport.cc
-    src/motor/motor_parameter.cc
-    src/motor/math_utils.cc
+    src/device/device.cc
+    src/device/device_plugin_host.cc
+    src/device/motor/motor.cc
+    src/device/motor/motor_control.cc
+    src/device/motor/motor_log.cc
+    src/device/motor/motor_log_transport.cc
+    src/device/motor/motor_parameter.cc
+    src/device/motor/math_utils.cc
     src/utils/log_writer.cc
     src/utils/thread_priority.cc
     src/utils/thread_priority_internal.cc
-    src/battery/battery.cc
-    src/glove/glove.cc
-    src/glove/glove_calibrator.cc
-    src/glove/glove_encoder.cc
-    src/imu/imu.cc
-    src/pms/pms.cc
+    src/device/battery/battery.cc
+    src/device/glove/glove.cc
+    src/device/glove/glove_calibrator.cc
+    src/device/glove/glove_encoder.cc
+    src/device/imu/imu.cc
+    src/device/pms/pms.cc
     ${MOTOR_MODEL_GENERATED_SOURCE}
 )
 
-add_subdirectory(plugins/utils/emr1)
+add_subdirectory(plugins/adapter/utils/emr1)
 
 if(ENCOS_ENABLE_TRACY)
     target_sources(${ENCOS_DRIVER_BASE_TARGET} PRIVATE
@@ -416,6 +427,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EMSCRIPTEN)
     add_dependencies(${ENCOS_DRIVER_BASE_TARGET} ThreadPriorityHelper)
 endif()
 
+if(WIN32 AND NOT ENCOS_STATIC_MODE)
+    # Base 内部的模板实例与 detail 实现没有显式导出宏；Windows 动态消费方
+    # （测试与 motor_cli 等）需要链接这些符号，故自动导出全部符号。
+    set_target_properties(${ENCOS_DRIVER_BASE_TARGET} PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
 if(ENCOS_STATIC_MODE)
     add_library(${ENCOS_DRIVER_TARGET} STATIC
         plugins/plugin_loader_static.cc
@@ -469,8 +487,15 @@ if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
 endif()
 
 if(WIN32)
-    target_link_libraries(${ENCOS_DRIVER_TARGET} PRIVATE ucrt)
-    target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PRIVATE ucrt iphlpapi)
+    if(MSVC)
+        target_link_libraries(${ENCOS_DRIVER_TARGET} PRIVATE ucrt)
+        target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PRIVATE ucrt)
+    endif()
+    target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PRIVATE iphlpapi winmm)
+    if(NOT ENCOS_STATIC_MODE)
+        set_target_properties(${ENCOS_DRIVER_TARGET} PROPERTIES
+            WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    endif()
 endif()
 
 set_target_properties(${ENCOS_DRIVER_TARGET} PROPERTIES
@@ -487,17 +512,6 @@ set_target_properties(${ENCOS_DRIVER_TARGET} PROPERTIES
 if(ENCOS_STATIC_MODE)
     target_compile_definitions(${ENCOS_DRIVER_TARGET} PUBLIC ENCOS_STATIC_MODE)
     target_compile_definitions(${ENCOS_DRIVER_BASE_TARGET} PUBLIC ENCOS_STATIC_MODE)
-endif()
-
-if(ENCOS_ENABLE_RELAY AND NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))
-#IXWebSocket client support(no TLS, no zlib, no install)
-    set(USE_TLS OFF CACHE BOOL "" FORCE)
-    set(USE_ZLIB OFF CACHE BOOL "" FORCE)
-    set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "" FORCE)
-    set(BUILD_DEMO OFF CACHE BOOL "" FORCE)
-    set(USE_WS OFF CACHE BOOL "" FORCE)
-    set(USE_TEST OFF CACHE BOOL "" FORCE)
-    add_subdirectory(external/IXWebSocket)
 endif()
 
 # 发现并添加内置插件
@@ -585,6 +599,19 @@ if(ENCOS_ENABLE_INSTALL)
         INCLUDES DESTINATION include
     )
 
+    # Windows 运行期依赖：把 spdlog/fmt/zstd 等共享库一并安装到 bin，
+    # 配合写入用户 PATH，消费方无需自行处理依赖 DLL。
+    if(WIN32)
+        foreach(_encos_dep_target spdlog::spdlog fmt::fmt ${ENCOS_ZSTD_TARGET})
+            if(TARGET ${_encos_dep_target})
+                get_target_property(_encos_dep_type ${_encos_dep_target} TYPE)
+                if(_encos_dep_type STREQUAL "SHARED_LIBRARY")
+                    install(FILES "$<TARGET_FILE:${_encos_dep_target}>" DESTINATION bin)
+                endif()
+            endif()
+        endforeach()
+    endif()
+
     install(DIRECTORY include/
         DESTINATION include/encos
         FILES_MATCHING
@@ -630,6 +657,11 @@ if(ENCOS_ENABLE_INSTALL)
         docs/arch.md
         docs/logging.md
         docs/changes.md
+        docs/plugin.md
+        DESTINATION share/doc/libencosdriver
+    )
+    # 第三方 JSON 单头文件随公开头一同安装，MIT 要求随附许可声明
+    install(FILES include/external/LICENSE.MIT
         DESTINATION share/doc/libencosdriver
     )
     install(DIRECTORY docs/diagrams/
@@ -666,13 +698,36 @@ if(ENCOS_ENABLE_INSTALL)
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in"
         "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake" @ONLY)
 
+    # Windows：安装时写入用户级 PATH 与 ENCOS_PLUGIN_PATH。
+    if(WIN32)
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows_set_env.ps1.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/windows_set_env.ps1" @ONLY)
+        install(CODE "
+            execute_process(
+                COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                        \"${CMAKE_CURRENT_BINARY_DIR}/windows_set_env.ps1\"
+                RESULT_VARIABLE _encos_env_result
+                OUTPUT_VARIABLE _encos_env_output
+                ERROR_VARIABLE _encos_env_error
+            )
+            if(_encos_env_output)
+                message(STATUS \"\${_encos_env_output}\")
+            endif()
+            if(NOT _encos_env_result EQUAL 0)
+                message(WARNING
+                    \"Failed to update Windows environment variables: \${_encos_env_error}\")
+            endif()
+        ")
+    endif()
+
     add_custom_target(uninstall
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
 endif()
 
 encos_configure_tests()
 
-if(ENCOS_ENABLE_INSTALL)
+if(ENCOS_ENABLE_INSTALL AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(CPACK_GENERATOR "DEB")
     set(CPACK_SOURCE_GENERATOR "")
     set(CPACK_BINARY_STGZ "OFF")
@@ -705,13 +760,13 @@ if(ENCOS_ENABLE_INSTALL)
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Encos Team <zuoqingyu@encos.cn>")
     set(CPACK_DEBIAN_PACKAGE_SECTION "libs")
     set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    # 依赖项与构建选项保持一致：关闭的选项不得成为 DEB 的运行时依赖
+    set(_encos_debian_depends "libcap-dev, libcap2-bin, libzstd-dev")
     if(ENCOS_ENABLE_SPDLOG)
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS
-            "libcap-dev, libcap2-bin, libzstd-dev, libspdlog-dev, libfmt-dev, libstdc++6, libc6")
-    else()
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS
-            "libcap-dev, libcap2-bin, libzstd-dev, libstdc++6, libc6")
+        string(APPEND _encos_debian_depends ", libspdlog-dev, libfmt-dev")
     endif()
+    string(APPEND _encos_debian_depends ", libstdc++6, libc6")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "${_encos_debian_depends}")
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS
         "${CMAKE_BINARY_DIR}"

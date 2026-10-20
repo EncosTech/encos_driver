@@ -56,6 +56,9 @@ component's source tree:
 - IXWebSocket: external/IXWebSocket/LICENSE.txt.
   BSD 3-Clause License. Its bundled dependencies retain their own licenses.
 
+- nlohmann/json: include/external/LICENSE.MIT, covering the vendored
+  json.hpp and json_fwd.hpp headers. MIT License.
+
 - IgH EtherCAT Master: a system dependency of the EthercatIGH plugin.
   The userspace library uses LGPL v2.1 and the kernel modules use GPL v2.0.
   Refer to the license files supplied with the upstream version in use.

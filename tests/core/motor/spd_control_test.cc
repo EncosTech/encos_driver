@@ -10,8 +10,8 @@
 #include <thread>
 #include <vector>
 
+#include "device/motor/pack_helper.h"
 #include "managed_adapter_test.h"
-#include "motor/pack_helper.h"
 #include "test_fixtures.h"
 
 namespace encos {
@@ -160,6 +160,8 @@ TEST(MotorEncodingTests, ConcurrentSpeedControlProducesStableFloatBytes) {
             auto adapter = MakeManagedAdapter<FakeAdapter>(name, name);
             adapter->SeedMotor(0, 1, MotorModel::EC_A4310_P2);
             auto motor = adapter->GetBus(0)->GetMotor(1, MotorModel::EC_A4310_P2);
+            // 丢弃构造期的固件版本查询，使本用例只统计控制命令的报文。
+            adapter->ClearCommandRecords();
             adapter->SetSyncMode(true);
 
             while (!start.load(std::memory_order_acquire)) {

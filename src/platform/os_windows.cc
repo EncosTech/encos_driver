@@ -15,6 +15,7 @@
 #include <iphlpapi.h>
 // clang-format on
 #include <cstdlib>
+#include <mmsystem.h>
 
 #ifndef GAA_FLAG_SKIP_ANYCAST
 #define GAA_FLAG_SKIP_ANYCAST 0x2
@@ -29,6 +30,19 @@
 namespace encos::platform {
 
 namespace {
+
+// Windows 默认定时器精度约 15.6ms，std::this_thread::sleep_until 无法稳定 1ms；
+// 将系统定时器精度提升到 1ms，使 EtherCAT 循环可保持 1000Hz。
+struct TimerResolutionGuard {
+    TimerResolutionGuard() {
+        timeBeginPeriod(1);
+    }
+    ~TimerResolutionGuard() {
+        timeEndPeriod(1);
+    }
+};
+
+const TimerResolutionGuard kTimerResolutionGuard;
 
 bool StartsWith(const std::string& value, const std::string& prefix) {
     return value.rfind(prefix, 0) == 0;
@@ -51,6 +65,7 @@ std::string Utf16ToUtf8(const wchar_t* value) {
 }  // namespace
 
 bool GetEnv(const std::string& name, std::string& out) noexcept {
+#if defined(_MSC_VER) || defined(_UCRT)
     char* value = nullptr;
     size_t size = 0;
     if (_dupenv_s(&value, &size, name.c_str()) != 0 || value == nullptr) {
@@ -59,10 +74,25 @@ bool GetEnv(const std::string& name, std::string& out) noexcept {
     out = value;
     free(value);
     return true;
+#else
+    // msvcrt 目标的 MinGW（如 w64devkit）没有 _dupenv_s
+    const char* value = std::getenv(name.c_str());
+    if (value == nullptr) {
+        return false;
+    }
+    out = value;
+    return true;
+#endif
 }
 
 void SetEnv(const std::string& name, const std::string& value) {
+#if defined(_MSC_VER) || defined(_UCRT)
     _putenv_s(name.c_str(), value.c_str());
+#else
+    // msvcrt 目标的 MinGW 没有 _putenv_s；必须用 _putenv 以同步 CRT 的 getenv 视图，
+    // 否则 SetEnvironmentVariableA 更新的是 Win32 环境块，getenv 读不到。
+    _putenv((name + "=" + value).c_str());
+#endif
 }
 
 fs::path PluginDir() {
@@ -75,6 +105,10 @@ fs::path PluginDir() {
 
 fs::path PluginLibraryPath(const fs::path& plugin_dir, const std::string& adapter_type) {
     return plugin_dir / (adapter_type + "Plugin.dll");
+}
+
+fs::path DeviceLibraryPath(const fs::path& plugin_dir, const std::string& device_type) {
+    return plugin_dir / (device_type + "Device.dll");
 }
 
 std::vector<std::string> GetWiredInterfaceNames() {
@@ -121,16 +155,27 @@ std::vector<std::string> GetCanInterfaceNames() {
 
 std::vector<std::string> GetSerialPortNames() {
     std::vector<std::string> ports;
-    char target_path[5000];
-    if (QueryDosDeviceA(nullptr, target_path, sizeof(target_path))) {
-        char* current = target_path;
-        while (*current) {
-            std::string name(current);
-            if (StartsWith(name, "COM")) {
-                ports.push_back(name);
+    // 设备列表长度随系统变化，固定缓冲区会因 ERROR_INSUFFICIENT_BUFFER 返回空列表；
+    // 这里在缓冲区不足时逐步扩容。
+    std::vector<char> buffer(4096);
+    for (;;) {
+        const DWORD length =
+            QueryDosDeviceA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length != 0) {
+            const char* current = buffer.data();
+            while (*current != '\0') {
+                std::string name(current);
+                if (StartsWith(name, "COM")) {
+                    ports.push_back(name);
+                }
+                current += name.length() + 1;
             }
-            current += name.length() + 1;
+            break;
         }
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || buffer.size() >= (1U << 20)) {
+            break;
+        }
+        buffer.resize(buffer.size() * 2);
     }
     return ports;
 }

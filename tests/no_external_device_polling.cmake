@@ -2,14 +2,14 @@
 # SPDX-License-Identifier: MIT
 
 set(device_files
-    "src/battery/battery.cc"
-    "src/battery/battery_impl.h"
-    "src/glove/glove.cc"
-    "src/glove/glove_impl.h"
-    "src/imu/imu.cc"
-    "src/imu/imu_impl.h"
-    "src/pms/pms.cc"
-    "src/pms/pms_impl.h"
+    "src/device/battery/battery.cc"
+    "src/device/battery/battery_impl.h"
+    "src/device/glove/glove.cc"
+    "src/device/glove/glove_impl.h"
+    "src/device/imu/imu.cc"
+    "src/device/imu/imu_impl.h"
+    "src/device/pms/pms.cc"
+    "src/device/pms/pms_impl.h"
 )
 
 set(forbidden_tokens

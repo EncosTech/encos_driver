@@ -10,11 +10,11 @@
 #include <thread>
 #include <vector>
 
-#include "battery/battery.h"
 #include "bus/bus.h"
+#include "device/battery/battery.h"
+#include "device/motor/motor.h"
 #include "driver_manager_test_access.h"
 #include "encos/driver_manager.h"
-#include "motor/motor.h"
 #include "test_adapter.h"
 
 namespace encos {

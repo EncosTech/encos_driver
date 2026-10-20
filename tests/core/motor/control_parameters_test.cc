@@ -62,49 +62,6 @@ TEST_F(ControlParametersTests, SetPosMinimumValidValue) {
                 kDecodedAngleTolerance);
 }
 
-TEST_F(ControlParametersTests, SetAccelerationFailure) {
-    adapter->SetParameterWritePolicy(0, 1, MotorParameter::Acceleration, FakeWritePolicy::Ignore);
-    EXPECT_FALSE(motor->SetAcceleration(5.0f, true));
-    const auto& payload = LastPayloadAs<FakeSetParameterPayload>(*adapter);
-    EXPECT_EQ(payload.parameter, MotorParameter::Acceleration);
-    EXPECT_TRUE(payload.wait_for_ack);
-    ExpectRawBytes(payload.raw_value, {0x01, 0xF4});
-}
-
-TEST_F(ControlParametersTests, SetAccelerationNoWait) {
-    EXPECT_TRUE(motor->SetAcceleration(5.0f, false));
-    const auto& payload = LastPayloadAs<FakeSetParameterPayload>(*adapter);
-    EXPECT_EQ(payload.parameter, MotorParameter::Acceleration);
-    EXPECT_FALSE(payload.wait_for_ack);
-    ExpectRawBytes(payload.raw_value, {0x01, 0xF4});
-}
-
-TEST_F(ControlParametersTests, SetAccelerationSuccess) {
-    EXPECT_TRUE(motor->SetAcceleration(5.0f, true));
-    const auto& payload = LastPayloadAs<FakeSetParameterPayload>(*adapter);
-    EXPECT_EQ(payload.parameter, MotorParameter::Acceleration);
-    EXPECT_TRUE(payload.wait_for_ack);
-    ExpectRawBytes(payload.raw_value, {0x01, 0xF4});
-}
-
-TEST_F(ControlParametersTests, SetAccelerationTimeout) {
-    adapter->SetReplyMode(FakeReplyMode::Manual);
-    EXPECT_FALSE(motor->SetAcceleration(5.0f, true));
-}
-
-TEST_F(ControlParametersTests, SetAccelerationAndGetAccelerationUseFakeSnapshot) {
-    EXPECT_TRUE(motor->SetAcceleration(5.0f, true));
-    const auto& write_payload = LastPayloadAs<FakeSetParameterPayload>(*adapter);
-    EXPECT_EQ(write_payload.parameter, MotorParameter::Acceleration);
-    EXPECT_TRUE(write_payload.wait_for_ack);
-    ExpectRawBytes(write_payload.raw_value, {0x01, 0xF4});
-
-    const float acceleration = motor->GetParameter<MotorParameter::Acceleration>();
-    EXPECT_NEAR(acceleration, 5.0f, kDecodedFloatTolerance);
-    const auto& read_payload = LastPayloadAs<FakeGetParameterPayload>(*adapter);
-    EXPECT_EQ(read_payload.parameter, MotorParameter::Acceleration);
-}
-
 TEST_F(ControlParametersTests, SetCommunicationModeIsRecordedAsRawParameterWrite) {
     EXPECT_TRUE(motor->SetCommunicationMode(MotorCommunicationMode::CanFd, false));
     const auto& payload = LastPayloadAs<FakeSetParameterPayload>(*adapter);
@@ -252,11 +209,6 @@ TEST_F(ControlParametersTests, SetCommunicationModeDoesNotChangeLocalCanFdFlag) 
     EXPECT_FALSE(motor->IsCanFdEnabled());
     EXPECT_TRUE(motor->SetCommunicationMode(MotorCommunicationMode::CanFd, true));
     EXPECT_FALSE(motor->IsCanFdEnabled());
-}
-
-TEST_F(ControlParametersTests, GetAccelerationTimeout) {
-    adapter->SetReplyMode(FakeReplyMode::Manual);
-    EXPECT_THROW((void) motor->GetParameter<MotorParameter::Acceleration>(), std::runtime_error);
 }
 
 #undef EXPECT_WRITE_SCENARIO

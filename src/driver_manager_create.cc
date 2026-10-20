@@ -13,7 +13,7 @@ void* EncosDriverManager::Impl::CreateDevice(Bus* bus, int idx, const DeviceReci
     if (bus == nullptr) {
         throw std::invalid_argument("Bus is null");
     }
-    const DeviceKey key{bus, kind, idx};
+    const DeviceKey key{bus, kind, idx, recipe.type_token, recipe.config_token};
     std::shared_ptr<PendingCreation> publication;
     bool leader = false;
     BusKey bus_key;
@@ -294,18 +294,21 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorModel model
             return new Motor(bus, static_cast<std::uint16_t>(motor_idx), model, bus->impl_->logger_,
                              writer, frame_flags, canfd);
         },
-        Impl::BindMotor, [](Motor*) {},
+        Impl::BindMotor,
+        [](Motor* motor) {
+            motor->QueryFirmwareVersion();
+        },
         [this, bus, motor_idx](Motor* motor) {
             ApplyMotorStatusConfigurationLocked(bus, motor_idx, motor);
         });
 }
 
-Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorPVTRanges ranges,
+Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorProperties ranges,
                                        uint8_t frame_flags) {
     return CreateMotor(bus, motor_idx, ranges, frame_flags, CanFrameFlagsUseCanFd(frame_flags));
 }
 
-Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorPVTRanges ranges,
+Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorProperties ranges,
                                        uint8_t frame_flags, bool canfd) {
     using driver_manager_internal::CreateDeviceWithRoutes;
     using driver_manager_internal::DeviceKind;
@@ -318,7 +321,10 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorPVTRanges r
             return new Motor(bus, static_cast<std::uint16_t>(motor_idx), ranges,
                              bus->impl_->logger_, writer, frame_flags, canfd);
         },
-        Impl::BindMotor, [](Motor*) {},
+        Impl::BindMotor,
+        [](Motor* motor) {
+            motor->QueryFirmwareVersion();
+        },
         [this, bus, motor_idx](Motor* motor) {
             ApplyMotorStatusConfigurationLocked(bus, motor_idx, motor);
         });
@@ -343,6 +349,7 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, uint8_t frame_fl
         Impl::BindMotor,
         [](Motor* motor) {
             motor->InitMotorPVTParam();
+            motor->QueryFirmwareVersion();
         },
         [this, bus, motor_idx](Motor* motor) {
             ApplyMotorStatusConfigurationLocked(bus, motor_idx, motor);

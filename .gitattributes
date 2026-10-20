@@ -1,0 +1,3 @@
+# 电机型号 CSV 固定以 LF 检出：生成文件首行记录的 CSV SHA1 基于 LF 计算，
+# 若在 Windows 上被 autocrlf 转成 CRLF，ENCOS_ENABLE_PYTHON=OFF 的校验会失败。
+src/device/motor/motor_models.csv text eol=lf

@@ -96,6 +96,7 @@ enum class OperationKind : std::uint8_t {
     Battery,
     Imu,
     Pms,
+    ExternalDevice,
     Glove,
     GloveEncoder,
     GloveCalibrator,

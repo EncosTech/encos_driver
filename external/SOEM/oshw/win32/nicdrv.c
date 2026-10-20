@@ -36,6 +36,9 @@
 #include <string.h>
 
 #include <winsock2.h>
+#if defined(__MINGW32__)
+#include <timeapi.h>
+#endif
 #include "soem/soem.h"
 #include "nicdrv.h"
 

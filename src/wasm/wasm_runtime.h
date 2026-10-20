@@ -10,12 +10,12 @@
 #include <unordered_set>
 #include <vector>
 
-#include "battery/battery.h"
 #include "bus/bus.h"
+#include "device/battery/battery.h"
+#include "device/imu/imu.h"
+#include "device/motor/motor.h"
 #include "encos_motor.h"
-#include "imu/imu.h"
-#include "motor/motor.h"
-#include "plugins/fake/fake_adapter.h"
+#include "plugins/adapter/fake/fake_adapter.h"
 
 namespace encos::wasm {
 
@@ -179,6 +179,7 @@ private:
 #endif
     std::uint32_t AllocateHandle();
 
+    BaseAdapter* motor_creation_adapter_ = nullptr;
     std::uint32_t next_handle_ = 1;
     std::unordered_map<std::uint32_t, AdapterEntry> adapters_;
     std::unordered_map<std::uint32_t, BusEntry> buses_;

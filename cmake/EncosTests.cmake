@@ -106,7 +106,15 @@ function(encos_configure_tests)
         int main() {
             using MakeAdapterFunction = encos::BaseAdapter* (*)(
                 const std::string&, const std::string&, const std::string&, encos::LogLevel);
-            static_assert(std::is_same_v<decltype(&encos::MakeAdapter), MakeAdapterFunction>);
+            using MakeAdapterExtendFunction = encos::BaseAdapter* (*)(
+                const std::string&, const std::string&, const std::string&, encos::LogLevel,
+                const nlohmann::json&);
+            // MakeAdapter 已重载：分别校验两个重载都是签名精确的实体函数
+            static_assert(std::is_same_v<decltype(static_cast<MakeAdapterFunction>(&encos::MakeAdapter)),
+                                         MakeAdapterFunction>);
+            static_assert(
+                std::is_same_v<decltype(static_cast<MakeAdapterExtendFunction>(&encos::MakeAdapter)),
+                               MakeAdapterExtendFunction>);
             static_assert(std::is_same_v<decltype(&encos::DeleteAdapter),
                                          bool (*)(encos::BaseAdapter*)>);
             static_assert(std::is_same_v<decltype(&encos::DeleteBus), bool (*)(encos::Bus*)>);
@@ -128,18 +136,23 @@ function(encos_configure_tests)
 
     include(GoogleTest)
 
-    add_test(
-        NAME EncosPublishGithubReleaseWrapper
-        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/publish_github_release_wrapper_test.sh
-    )
-    add_test(
-        NAME EncosReleaseToGithub
-        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_to_github_test.sh
-    )
+    # 发布脚本测试依赖 POSIX shell 工具链，仅在非 Windows 平台注册。
+    if(NOT WIN32)
+        add_test(
+            NAME EncosPublishGithubReleaseWrapper
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/publish_github_release_wrapper_test.sh
+        )
+        add_test(
+            NAME EncosReleaseToGithub
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_to_github_test.sh
+        )
+    endif()
 
     add_executable(${ENCOS_DRIVER_BASE_TEST_TARGET}
         src/wasm/wasm_runtime.cc
         tests/core/test_adapter.cc
+        tests/core/adapter_extend_test.cc
+        tests/core/adapter_bus_update_test.cc
         tests/core/adapter_routing_test.cc
         tests/core/device/battery_callback_test.cc
         tests/core/bus_port_scan_test.cc
@@ -156,6 +169,7 @@ function(encos_configure_tests)
         tests/core/motor/cur_control_test.cc
         tests/core/motor/tor_control_test.cc
         tests/core/motor/stop_test.cc
+        tests/core/motor/firmware_version_test.cc
         tests/core/motor/brake_test.cc
         tests/core/motor/pvt_range_test.cc
         tests/core/motor/can_id_test.cc
@@ -232,6 +246,11 @@ function(encos_configure_tests)
         PROPERTY _ENCOS_PLUGIN_TEST_INCLUDE_DIRECTORIES)
     get_property(_plugin_test_dependencies GLOBAL PROPERTY _ENCOS_PLUGIN_TEST_DEPENDENCIES)
 
+    if(TARGET TestDeviceDeviceCore AND TARGET TestClaimDeviceCore)
+        list(APPEND _plugin_test_sources tests/core/plugin/device_plugin_isolation_test.cc)
+        list(APPEND _plugin_test_libraries TestDeviceDeviceCore TestClaimDeviceCore)
+    endif()
+
     if(ENCOS_STATIC_MODE)
         list(APPEND _plugin_test_sources tests/core/plugin/plugin_static_test.cc)
     else()
@@ -240,6 +259,7 @@ function(encos_configure_tests)
         add_library(PluginCacheTestPlugin SHARED
             tests/core/plugin/plugin_loader_test_plugin.cc
         )
+        encos_configure_plugin_library(PluginCacheTestPlugin)
         set_target_properties(PluginCacheTestPlugin PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
@@ -271,12 +291,22 @@ function(encos_configure_tests)
     )
     target_link_libraries(${ENCOS_DRIVER_PLUGINS_TEST_TARGET} PRIVATE
         ${ENCOS_DRIVER_TARGET}
-        GTest::gtest_main
         GTest::gmock_main
         ${_plugin_test_libraries}
     )
     if(_plugin_test_dependencies)
         add_dependencies(${ENCOS_DRIVER_PLUGINS_TEST_TARGET} ${_plugin_test_dependencies})
+    endif()
+
+    if(MINGW)
+        # vcpkg 的 MinGW gmock_main 等 gtest 库以静态归档形式携带 winpthread 定义，
+        # 与工具链的 libwinpthread 重复；测试可执行文件允许重复定义即可（实现等价）。
+        target_link_options(${ENCOS_DRIVER_BASE_TEST_TARGET} PRIVATE
+            -Wl,--allow-multiple-definition
+        )
+        target_link_options(${ENCOS_DRIVER_PLUGINS_TEST_TARGET} PRIVATE
+            -Wl,--allow-multiple-definition
+        )
     endif()
 
     if(ENCOS_ENABLE_TSAN)
@@ -315,5 +345,22 @@ function(encos_configure_tests)
                     -o ${CMAKE_CURRENT_BINARY_DIR}/port_emscripten_compile.o
         )
         set_tests_properties(EncosPortEmscriptenCompile PROPERTIES LABELS "port;emscripten")
+    endif()
+
+    # 安装消费端到端验证：打包 DEB → 解包 → 无源码构建外部设备插件 → 运行期加载。
+    # 需要 dpkg-deb 且耗时较长，默认不注册，用 -DENCOS_ENABLE_PACKAGE_VERIFY_TESTS=ON 开启。
+    if(ENCOS_ENABLE_PACKAGE_VERIFY_TESTS AND NOT WIN32 AND NOT EMSCRIPTEN)
+        find_program(ENCOS_DPKG_DEB_BIN NAMES dpkg-deb)
+        if(ENCOS_DPKG_DEB_BIN)
+            add_test(
+                NAME EncosInstalledDevicePluginVerify
+                COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify-installed-device-plugin.sh
+            )
+            set_tests_properties(EncosInstalledDevicePluginVerify PROPERTIES
+                LABELS "package;plugin" TIMEOUT 3600
+            )
+        else()
+            message(STATUS "Skipping EncosInstalledDevicePluginVerify: dpkg-deb not found")
+        endif()
     endif()
 endfunction()

@@ -166,21 +166,6 @@ TEST_F(CanIdTests, SetPosProducesDecodedRadians) {
     EXPECT_NEAR(payload.position_rad, static_cast<float>(kPi / 2.0), kDecodedAngleTolerance);
 }
 
-TEST_F(CanIdTests, GotoZeroUsesPositionReadThenSetPos) {
-    auto seeded = adapter->GetMotorSnapshot(0, 1);
-    seeded.position_rad = 1.5f;
-    adapter->SeedMotor(0, 1, seeded);
-
-    EXPECT_TRUE(motor->GotoZero(0.5f));
-
-    const auto& commands = adapter->GetCommandRecords();
-    ASSERT_EQ(commands.size(), 2);
-    EXPECT_EQ(std::get<FakeGetParameterPayload>(commands[0].payload).parameter,
-              MotorParameter::Position);
-    const auto& payload = std::get<FakeSetPosPayload>(commands[1].payload);
-    EXPECT_NEAR(payload.position_rad, 1.0f, kDecodedAngleTolerance);
-}
-
 TEST_F(CanIdTests, ResetZeroPosFailure) {
     adapter->SetReplyMode(FakeReplyMode::Manual);
     EXPECT_FALSE(motor->ResetZeroPos(true));
@@ -234,15 +219,6 @@ TEST_F(CanIdTests, ResetZeroPosUsesLegacyResetCommandOnly) {
     ASSERT_EQ(commands.size(), 1);
     EXPECT_EQ(commands[0].kind, FakeCommandKind::ResetZeroPos);
     EXPECT_TRUE(std::get<FakeResetZeroPosPayload>(commands[0].payload).is_legacy_reset);
-}
-
-TEST_F(CanIdTests, GotoZeroFallsBackToLegacyControlWhenPositionQueryThrows) {
-    adapter->SetReplyMode(FakeReplyMode::Manual);
-    EXPECT_FALSE(motor->GotoZero(0.5f));
-    const auto& commands = adapter->GetCommandRecords();
-    ASSERT_FALSE(commands.empty());
-    EXPECT_EQ(std::get<FakeGetParameterPayload>(commands.front().payload).parameter,
-              MotorParameter::Position);
 }
 
 }  // namespace encos

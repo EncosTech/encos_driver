@@ -64,7 +64,12 @@ public:
      */
     static void SetPluginDir(const std::string& path) {
 #ifdef _WIN32
+#if defined(_MSC_VER) || defined(_UCRT)
         _putenv_s("ENCOS_PLUGIN_PATH", path.c_str());
+#else
+        // msvcrt 目标的 MinGW（如 w64devkit）没有 _putenv_s
+        _putenv(("ENCOS_PLUGIN_PATH=" + path).c_str());
+#endif
 #else
         setenv("ENCOS_PLUGIN_PATH", path.c_str(), 1);
 #endif

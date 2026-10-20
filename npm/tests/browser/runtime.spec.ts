@@ -14,7 +14,7 @@ test('browser keeps Asyncify responsive and Adapter disposal invalidates childre
     const adapter = runtime.createFakeAdapter({ interfaceName: 'browser-lifecycle' })
     adapter.fake.seedMotor(0, 1, driver.MotorModel.EC_A4310_P2)
     adapter.fake.setReplyMode(driver.FakeReplyMode.Manual)
-    const motor = adapter.getBus(0).getMotor(1, driver.MotorModel.EC_A4310_P2)
+    const motor = await adapter.getBus(0).getMotor(1, driver.MotorModel.EC_A4310_P2)
 
     let timerProgressed = false
     const timer = setTimeout(() => {

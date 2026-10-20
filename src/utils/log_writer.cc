@@ -20,6 +20,12 @@
 #include "platform/log.h"
 #include "utils/log_writer_test_hook.h"
 
+#if defined(_WIN32) && !defined(_MSC_VER) && !defined(_UCRT)
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
+#endif
+
 #if !defined(__EMSCRIPTEN__)
 #include <zstd.h>
 #endif
@@ -55,6 +61,8 @@ void FailNextLogWriterTaskForTesting(const std::string&) {}
 
 void FailNextLogWriterInteractionForTesting() {}
 
+void FailLogWriterCreationForTesting(bool) {}
+
 #else
 
 namespace {
@@ -62,6 +70,7 @@ namespace {
 platform::Mutex injected_failures_mutex;
 std::unordered_map<std::string, std::size_t> injected_failures;
 std::atomic<std::size_t> injected_interaction_failures{0};
+std::atomic<bool> injected_creation_failure{false};
 
 bool ConsumeInjectedFailure(const std::string& file_name) {
     platform::LockGuard<platform::Mutex> lock(injected_failures_mutex);
@@ -89,9 +98,32 @@ std::runtime_error FileError(const std::string& action, const std::string& file_
     return std::runtime_error(action + " '" + file_name + "': " + std::strerror(errno));
 }
 
+/**
+ * @brief 以“独占创建”方式打开文件
+ *
+ * msvcrt 目标的 MinGW（如 w64devkit）的 std::fopen 不支持 C11 的 "x" 模式（返回 EINVAL），
+ * 这里退回 _open 的 _O_CREAT|_O_EXCL 实现。
+ */
+std::FILE* FopenExclusive(const std::string& path) {
+#if defined(_WIN32) && !defined(_MSC_VER) && !defined(_UCRT)
+    const int fd =
+        _open(path.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+    if (fd < 0) {
+        return nullptr;
+    }
+    std::FILE* file = _fdopen(fd, "wb");
+    if (file == nullptr) {
+        _close(fd);
+    }
+    return file;
+#else
+    return std::fopen(path.c_str(), "wbx");
+#endif
+}
+
 std::pair<std::string, std::FILE*> CreateOutputFile(const std::string& base_name) {
     std::string candidate = base_name + ".csv.zstd";
-    if (std::FILE* file = std::fopen(candidate.c_str(), "wbx")) {
+    if (std::FILE* file = FopenExclusive(candidate)) {
         return {candidate, file};
     }
     if (errno != EEXIST) {
@@ -103,7 +135,7 @@ std::pair<std::string, std::FILE*> CreateOutputFile(const std::string& base_name
                          .count();
     for (;;) {
         candidate = base_name + "_" + std::to_string(timestamp) + ".csv.zstd";
-        if (std::FILE* file = std::fopen(candidate.c_str(), "wbx")) {
+        if (std::FILE* file = FopenExclusive(candidate)) {
             return {candidate, file};
         }
         if (errno != EEXIST) {
@@ -250,6 +282,9 @@ void WaitFor(const std::shared_ptr<LogWriterState>& state, std::uint64_t sequenc
 }  // namespace
 
 std::shared_ptr<LogWriterState> CreateLogWriterState(const std::string& base_name) {
+    if (injected_creation_failure.load()) {
+        throw std::runtime_error("Injected log writer creation failure");
+    }
     auto [file_name, file] = CreateOutputFile(base_name);
     std::unique_ptr<std::FILE, int (*)(std::FILE*)> file_guard(file, &std::fclose);
     (void) Worker();
@@ -300,6 +335,10 @@ void FailNextLogWriterTaskForTesting(const std::string& file_name) {
 
 void FailNextLogWriterInteractionForTesting() {
     injected_interaction_failures.fetch_add(1);
+}
+
+void FailLogWriterCreationForTesting(bool enabled) {
+    injected_creation_failure.store(enabled);
 }
 
 #endif

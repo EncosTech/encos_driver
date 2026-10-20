@@ -14,10 +14,10 @@
 #include <vector>
 
 #include "bus/bus.h"
+#include "device/glove/glove.h"
 #include "driver_manager_test_access.h"
 #include "encos/driver_manager.h"
 #include "encos/encos_driver.h"
-#include "glove/glove.h"
 #include "test_fixtures.h"
 
 namespace encos {

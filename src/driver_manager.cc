@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <cstdio>
+#include <utility>
 
 #include "driver_manager_impl.h"
 
@@ -45,10 +46,13 @@ EncosDriverManager::~EncosDriverManager() noexcept {
     delete impl_;
 }
 
-thread_local EncosDriverManager::DeviceOperation*
-    EncosDriverManager::DeviceOperation::active_head_ = nullptr;
+EncosDriverManager::DeviceOperation*& EncosDriverManager::DeviceOperation::ActiveHead() {
+    static thread_local DeviceOperation* active_head = nullptr;
+    return active_head;
+}
 
 EncosDriverManager::DeviceOperation::DeviceOperation(OperationGate* gate, bool required) {
+    DeviceOperation*& active_head_ = ActiveHead();
     if (gate == nullptr) {
         if (required) {
             throw std::runtime_error("Object is not registered or is retiring");
@@ -74,6 +78,7 @@ EncosDriverManager::DeviceOperation::~DeviceOperation() {
     if (gate_ == nullptr) {
         return;
     }
+    DeviceOperation*& active_head_ = ActiveHead();
     if (active_head_ != this) {
         std::terminate();
     }
@@ -101,6 +106,11 @@ EncosDriverManager::DeviceOperation EncosDriverManager::AcquireDeviceOperation(I
 EncosDriverManager::DeviceOperation EncosDriverManager::AcquireDeviceOperation(Pms* device) {
     return DeviceOperation(TryEnterRequired(impl_->operation_registry, device, OperationKind::Pms),
                            true);
+}
+
+EncosDriverManager::DeviceOperation EncosDriverManager::AcquireDeviceOperation(Device* device) {
+    return DeviceOperation(
+        TryEnterRequired(impl_->operation_registry, device, OperationKind::ExternalDevice), true);
 }
 
 EncosDriverManager::DeviceOperation EncosDriverManager::TryAcquireGloveOperation(
@@ -137,12 +147,20 @@ EncosDriverManager::DeviceOperation EncosDriverManager::TryAcquireAdapterReceive
 
 BaseAdapter* EncosDriverManager::CreateAdapterWithFactory(const std::string& interface_name,
                                                           AdapterFactory factory) {
+    return CreateAdapterWithFactory(interface_name, std::string{}, std::move(factory));
+}
+
+BaseAdapter* EncosDriverManager::CreateAdapterWithFactory(const std::string& interface_name,
+                                                          const std::string& extend_json,
+                                                          AdapterFactory factory) {
     using driver_manager_internal::AwaitOrLead;
     using driver_manager_internal::CompletePending;
     using driver_manager_internal::PendingCreation;
 
     std::shared_ptr<PendingCreation> publication;
     bool leader = false;
+    BaseAdapter* existing = nullptr;
+    OperationGate* gate = nullptr;
     {
         platform::UniqueLock<platform::Mutex> lock(impl_->object_mutex);
         for (;;) {
@@ -150,7 +168,8 @@ BaseAdapter* EncosDriverManager::CreateAdapterWithFactory(const std::string& int
             if (found != impl_->adapters.end()) {
                 auto* adapter = found->second;
                 if (impl_->deleting.count(adapter) == 0) {
-                    return adapter;
+                    existing = adapter;
+                    break;
                 }
                 impl_->ObserveWaitForTests();
                 impl_->deletion_condition.wait(lock, [this, &interface_name, adapter]() {
@@ -160,15 +179,37 @@ BaseAdapter* EncosDriverManager::CreateAdapterWithFactory(const std::string& int
                 });
                 continue;
             }
-            if (void* result = AwaitOrLead(lock, impl_->pending_adapters, interface_name,
-                                           publication, leader)) {
-                if (impl_->deleting.count(result) == 0) {
-                    return static_cast<BaseAdapter*>(result);
-                }
+            if (AwaitOrLead(lock, impl_->pending_adapters, interface_name, publication, leader) !=
+                nullptr) {
+                // 等待期间已发布的实例可能又被销毁，重新查询当前登记实例。
                 continue;
             }
             break;
         }
+        if (existing != nullptr && !extend_json.empty()) {
+            gate = TryEnterRequired(impl_->operation_registry, existing, OperationKind::Adapter);
+            if (gate == nullptr) {
+                throw std::runtime_error("Adapter '" + interface_name +
+                                         "' is being destroyed; retry MakeAdapter");
+            }
+        }
+    }
+    if (existing != nullptr) {
+        if (extend_json.empty()) {
+            return existing;
+        }
+        // 增量更新必须在对象锁之外执行：一次更新可能阻塞数秒，而且插件可能回调管理器
+        // 取同一把锁（例如 Ethernet 的按通道重配会经 GetBus/GetMotors 回到管理器）。
+        // 以适配器自身的在飞引用把生命周期钉住，DestroyAdapter 会在排空处等待。
+        struct GateLeaver {
+            OperationGate* gate;
+            ~GateLeaver() {
+                gate->Leave();
+            }
+        } leaver{gate};
+        platform::LockGuard<platform::Mutex> update_lock(impl_->adapter_update_mutex);
+        existing->UpdateBusExtend(extend_json);
+        return existing;
     }
     if (!leader) {
         return static_cast<BaseAdapter*>(publication->result);

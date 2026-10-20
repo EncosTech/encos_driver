@@ -6,6 +6,39 @@
 
 namespace encos {
 
+void EncosDriverManager::DeliverToClaimRoute(BaseAdapter* adapter, int raw_bus_idx,
+                                             const MotorPackMsg& message) {
+    auto& domain = adapter->impl_->route_domain;
+    std::shared_ptr<RouteRecord> route;
+    {
+        platform::LockGuard<platform::Mutex> lock(domain.mutex);
+        const auto found = domain.claim_routes.find(raw_bus_idx);
+        if (found == domain.claim_routes.end()) {
+            return;
+        }
+        route = found->second;
+        platform::LockGuard<platform::Mutex> route_lock(route->mutex);
+        if (route->retiring || !route->callback) {
+            return;
+        }
+        ++route->in_flight;
+    }
+    const auto previous = driver_manager_internal::callback_context;
+    driver_manager_internal::callback_context =
+        driver_manager_internal::CallbackContext{route->device, route->bus, route->adapter};
+    try {
+        route->callback(message);
+    } catch (...) {}
+    driver_manager_internal::callback_context = previous;
+    {
+        platform::LockGuard<platform::Mutex> lock(route->mutex);
+        --route->in_flight;
+        if (route->in_flight == 0) {
+            route->condition.notify_all();
+        }
+    }
+}
+
 Motor* EncosDriverManager::ReconcileDiscoveredMotor(Bus* bus, int motor_idx, uint8_t frame_flags) {
     return ReconcileDiscoveredMotor(bus, motor_idx, frame_flags,
                                     CanFrameFlagsUseCanFd(frame_flags));
@@ -254,6 +287,8 @@ bool EncosDriverManager::DispatchReceive(BaseAdapter* adapter, int raw_bus_idx,
                 }
             }
         }
+        // 认领设备同样接收未命中路由的系统帧。
+        DeliverToClaimRoute(adapter, raw_bus_idx, message);
         // 共享系统响应仍进入未知邮箱，供总线级协议消费者读取。
         return false;
     }
@@ -263,15 +298,20 @@ bool EncosDriverManager::DispatchReceive(BaseAdapter* adapter, int raw_bus_idx,
         platform::LockGuard<platform::Mutex> lock(domain.mutex);
         const auto found = domain.routes.find(
             MakeReceiveUniqueId(raw_bus_idx, static_cast<std::uint32_t>(message.id)));
-        if (found == domain.routes.end()) {
-            return false;
+        if (found != domain.routes.end()) {
+            route = found->second;
+            platform::LockGuard<platform::Mutex> route_lock(route->mutex);
+            if (route->retiring || !route->callback) {
+                route = nullptr;
+            } else {
+                ++route->in_flight;
+            }
         }
-        route = found->second;
-        platform::LockGuard<platform::Mutex> route_lock(route->mutex);
-        if (route->retiring || !route->callback) {
-            return false;
-        }
-        ++route->in_flight;
+    }
+    if (route == nullptr) {
+        // 未被其它设备路由命中：交给本总线认领设备（若有），并仍进入未知邮箱。
+        DeliverToClaimRoute(adapter, raw_bus_idx, message);
+        return false;
     }
 
     const auto previous = driver_manager_internal::callback_context;

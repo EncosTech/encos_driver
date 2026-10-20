@@ -22,13 +22,20 @@ target_compile_options(soem PUBLIC
   $<$<C_COMPILER_ID:GNU>:-std=c11>
 )
 
-target_compile_definitions(soem PUBLIC
-  $<$<C_COMPILER_ID:GNU>:_UCRT>
-)
-
-target_link_libraries(soem PUBLIC
-  $<$<C_COMPILER_ID:GNU>:ucrt>
-)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  include(CheckCSourceCompiles)
+  check_c_source_compiles([=[
+#include <_mingw.h>
+#ifndef _UCRT
+#error target uses msvcrt, not UCRT
+#endif
+int main(void) { return 0; }
+]=] SOEM_MINGW_USES_UCRT)
+  if(SOEM_MINGW_USES_UCRT)
+    target_compile_definitions(soem PUBLIC _UCRT)
+    target_link_libraries(soem PUBLIC ucrt)
+  endif()
+endif()
 
 foreach(target IN ITEMS
     soem

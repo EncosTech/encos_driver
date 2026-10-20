@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "motor/motor_impl.h"
+#include "device/motor/motor_impl.h"
 
 namespace encos {
 
@@ -18,7 +18,7 @@ std::unique_ptr<Motor> MotorWaiterTestAccess::CreateWithModel(Bus* bus, MotorMod
         frame_flags, canfd));
 }
 
-std::unique_ptr<Motor> MotorWaiterTestAccess::CreateWithRanges(Bus* bus, MotorPVTRanges ranges,
+std::unique_ptr<Motor> MotorWaiterTestAccess::CreateWithRanges(Bus* bus, MotorProperties ranges,
                                                                uint8_t frame_flags, bool canfd) {
     return std::unique_ptr<Motor>(new Motor(
         bus, 101, ranges, CreateLogger("motor_constructor_ranges_test"), [](const MotorPackMsg&) {},

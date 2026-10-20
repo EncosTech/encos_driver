@@ -85,7 +85,7 @@ test('control ABI keeps Promise wrappers and five-value/five-meta result layout'
   const runtime = await createEncosRuntime()
   const adapter = runtime.createFakeAdapter({ interfaceName: 'abi-control-layout' })
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
 
   const pending = motor.spdControl({ speed: 1, current: 2, feedbackType: 1 })
   expect(pending).toBeInstanceOf(Promise)

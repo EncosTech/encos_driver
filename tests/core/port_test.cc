@@ -18,7 +18,7 @@
 #include <type_traits>
 #include <vector>
 
-#include "motor/types.h"
+#include "device/motor/types.h"
 
 namespace encos {
 namespace {
@@ -263,7 +263,7 @@ TEST(PortProgressTests, SuspendedReaderNeverBlocksRepeatedWriterWraps) {
 
     const std::uint64_t steps_before = TestAccess::WriterStepCount(port);
     constexpr std::uint32_t kPublishedWhilePaused = 3000U;
-    auto writer = std::async(std::launch::async, [&port]() {
+    auto writer = std::async(std::launch::async, [&port, kPublishedWhilePaused]() {
         for (std::uint32_t value = 1U; value <= kPublishedWhilePaused; ++value) {
             port.Push(MakeFrame(value));
         }
@@ -385,7 +385,7 @@ TEST(PortConcurrencyTests, ConcurrentOverwriteNeverReturnsTornOrDuplicateMessage
     InstrumentedPort<31> port;
     constexpr std::uint32_t kPublishCount = 200000U;
     std::atomic<bool> producer_done{false};
-    std::thread producer([&port, &producer_done]() {
+    std::thread producer([&port, &producer_done, kPublishCount]() {
         for (std::uint32_t value = 0U; value < kPublishCount; ++value) {
             port.Push(MakeFrame(value));
         }
@@ -424,7 +424,7 @@ TEST(PortConcurrencyTests, ClearDuringPublicationNeverReturnsTornMessages) {
     InstrumentedPort<17> port;
     constexpr std::uint32_t kPublishCount = 50000U;
     std::atomic<bool> producer_done{false};
-    std::thread producer([&port, &producer_done]() {
+    std::thread producer([&port, &producer_done, kPublishCount]() {
         for (std::uint32_t value = 0U; value < kPublishCount; ++value) {
             port.Push(MakeFrame(value));
         }

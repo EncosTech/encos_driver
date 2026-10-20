@@ -13,6 +13,7 @@ export class BusWrapper {
   handle: number
   index: number
   disposed: boolean
+  #pendingMotors = new Map<number, Promise<MotorWrapper>>()
   motors: Map<number, MotorWrapper>
   batteries: Map<number, BatteryWrapper>
   imus: Map<number, ImuWrapper>
@@ -28,15 +29,30 @@ export class BusWrapper {
     this.imus = new Map()
   }
 
-  getMotor(motorIndex: number, model: number): MotorWrapper {
+  async getMotor(motorIndex: number, model: number): Promise<MotorWrapper> {
     this.#assertLive()
     const cached = this.motors.get(motorIndex)
     if (cached) {
       return cached
     }
+    const pending = this.#pendingMotors.get(motorIndex)
+    if (pending) {
+      return pending
+    }
+    const creation = this.#createMotor(motorIndex, model)
+    this.#pendingMotors.set(motorIndex, creation)
+    try {
+      return await creation
+    } finally {
+      this.#pendingMotors.delete(motorIndex)
+    }
+  }
+
+  async #createMotor(motorIndex: number, model: number): Promise<MotorWrapper> {
     const out = allocU32(this.runtime.module)
     try {
-      const code = this.runtime.calls.busGetMotorWithModel(this.handle, motorIndex, model, out)
+      const code = await this.runtime.calls.busGetMotorWithModel(this.handle, motorIndex, model, out)
+      this.#assertLive()
       assertOk(this.runtime, code, 'failed to get motor')
       const motor = new MotorWrapper(this, getU32(this.runtime.module, out), motorIndex)
       this.motors.set(motorIndex, motor)

@@ -175,7 +175,7 @@ TEST_F(RuntimeStoreTest, NormalAdapterHandlesReuseTheManagerOwnedAdapter) {
     if (!std::filesystem::exists(platform::PluginLibraryPath(plugin_dir, "Fake"))) {
         plugin_dir = std::filesystem::absolute("./build/plugins");
     }
-    setenv("ENCOS_PLUGIN_PATH", plugin_dir.c_str(), 1);
+    platform::SetEnv("ENCOS_PLUGIN_PATH", plugin_dir.string());
     RuntimeStore store;
     auto& manager = EncosDriverManager::Instance();
     int destroy_count = 0;

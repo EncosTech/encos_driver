@@ -13,15 +13,15 @@ test('dedicated Fake adapters are isolated and expose fake tools', async () => {
   first.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
   const firstBus = first.getBus(0)
   const secondBus = second.getBus(0)
-  const firstMotor = firstBus.getMotor(1, MotorModel.EC_A4310_P2)
-  const secondMotor = secondBus.getMotor(1, MotorModel.EC_A4310_P2)
+  const firstMotor = await firstBus.getMotor(1, MotorModel.EC_A4310_P2)
+  const secondMotor = await secondBus.getMotor(1, MotorModel.EC_A4310_P2)
 
   expect(first.handle).not.toBe(second.handle)
   expect(first.interfaceName).not.toBe(second.interfaceName)
   expect(firstMotor.handle).not.toBe(secondMotor.handle)
   await firstMotor.spdControl({ speed: 1, current: 2, feedbackType: 0 })
-  expect(first.fake.getCommandRecords().length).toBe(1)
-  expect(second.fake.getCommandRecords().length).toBe(0)
+  expect(first.fake.getCommandRecords().length).toBe(2)
+  expect(second.fake.getCommandRecords().length).toBe(1)
 
   first.dispose()
   second.dispose()
@@ -65,8 +65,8 @@ test('wrapper caches bus and motor handles until adapter disposal', async () => 
 
   const busA = adapter.getBus(0)
   const busB = adapter.getBus(0)
-  const motorA = busA.getMotor(1, MotorModel.EC_A4310_P2)
-  const motorB = busB.getMotor(1, MotorModel.EC_A4310_P2)
+  const motorA = await busA.getMotor(1, MotorModel.EC_A4310_P2)
+  const motorB = await busB.getMotor(1, MotorModel.EC_A4310_P2)
 
   expect(busA).toBe(busB)
   expect(motorA).toBe(motorB)
@@ -82,7 +82,7 @@ test('async motor APIs reject after adapter disposal', async () => {
   const runtime = await createEncosRuntime()
   const adapter = runtime.createFakeAdapter({ interfaceName: 'async-dispose-interface' })
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
 
   adapter.dispose()
 
@@ -98,13 +98,13 @@ test('disposing one shared Fake adapter handle preserves the other handle lease'
   const first = runtime.createFakeAdapter({ interfaceName: 'shared-fake-runtime-lease' })
   const second = runtime.createFakeAdapter({ interfaceName: 'shared-fake-runtime-lease' })
   const firstBus = first.getBus(0)
-  const firstMotor = firstBus.getMotor(1, MotorModel.EC_A4310_P2)
+  const firstMotor = await firstBus.getMotor(1, MotorModel.EC_A4310_P2)
 
   first.dispose()
   expect(() => firstMotor.getStatus()).toThrow(/disposed/i)
 
   second.fake.seedMotor(0, 2, MotorModel.EC_A4310_P2)
-  const secondMotor = second.getBus(0).getMotor(2, MotorModel.EC_A4310_P2)
+  const secondMotor = await second.getBus(0).getMotor(2, MotorModel.EC_A4310_P2)
   expect(second.ok()).toBe(true)
   expect(() => secondMotor.getStatus()).not.toThrow()
 
@@ -117,7 +117,7 @@ test('synchronous adapter disposal cancels an Asyncify waiter before deferred de
   const adapter = runtime.createFakeAdapter({ interfaceName: 'asyncify-dispose-cancellation' })
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
   adapter.fake.setReplyMode(FakeReplyMode.Manual)
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
 
   const pending = motor.spdControl({ speed: 1, current: 2, feedbackType: 1 })
   adapter.dispose()
@@ -145,4 +145,61 @@ test('failed Adapter disposal restores the wrapper so deletion can be retried', 
   adapter.dispose()
   expect(attempts).toBe(2)
   runtime.dispose()
+})
+
+
+test('motor creation waits for firmware timeout without blocking the event loop', async () => {
+  const runtime = await createEncosRuntime()
+  const adapter = runtime.createFakeAdapter({ interfaceName: 'firmware-timeout' })
+  let progressed = false
+  const timer = setTimeout(() => { progressed = true }, 0)
+  try {
+    const bus = adapter.getBus(0)
+    const pending = bus.getMotor(1, MotorModel.EC_A4310_P2)
+    const repeated = bus.getMotor(1, MotorModel.EC_A4310_P2)
+    expect(() => adapter.dispose()).toThrow(/dispose/i)
+    expect(adapter.disposed).toBe(false)
+    await expect(bus.getMotor(2, MotorModel.EC_A4310_P2)).rejects.toThrow(/operation.*progress/i)
+    const motor = await pending
+    expect(await repeated).toBe(motor)
+    expect(progressed).toBe(true)
+    const other = await bus.getMotor(2, MotorModel.EC_A4310_P2)
+    expect(other.index).toBe(2)
+    expect(await bus.getMotor(1, MotorModel.EC_A4310_P2)).toBe(motor)
+    await motor.spdControl({ speed: 1, current: 2, feedbackType: 0 })
+  } finally {
+    clearTimeout(timer)
+    runtime.dispose()
+  }
+})
+
+
+test('motor creation rejects when its adapter is disposed before wrapper publication', async () => {
+  const runtime = await createEncosRuntime()
+  const adapter = runtime.createFakeAdapter()
+  adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
+  const pending = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  adapter.dispose()
+  await expect(pending).rejects.toThrow(/disposed/i)
+  runtime.dispose()
+})
+
+test.each(['creation', 'control'])('rejects overlapping Asyncify calls with %s first', async (first) => {
+  const runtime = await createEncosRuntime()
+  const adapter = runtime.createFakeAdapter()
+  adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
+  const bus = adapter.getBus(0)
+  const motor = await bus.getMotor(1, MotorModel.EC_A4310_P2)
+  adapter.fake.setReplyMode(FakeReplyMode.Manual)
+  const create = () => bus.getMotor(2, MotorModel.EC_A4310_P2)
+  const control = () => motor.spdControl({ speed: 1, current: 2, feedbackType: 1 })
+  try {
+    const pending = first === 'creation' ? create() : control()
+    await expect(first === 'creation' ? control() : create()).rejects.toThrow(/operation.*progress/i)
+    await pending
+    expect((await control()).noResponse).toBe(true)
+    expect((await create()).index).toBe(2)
+  } finally {
+    runtime.dispose()
+  }
 })

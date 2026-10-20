@@ -38,13 +38,13 @@ def generate_header(models, csv_sha1):
         lines.append(f"    {row['model']},")
     lines.append("};")
     lines.append("")
-    lines.append("struct MotorPVTRanges;")
+    lines.append("struct MotorProperties;")
     lines.append("/**")
-    lines.append(" * @brief 获取指定电机型号的 PVT 控制范围")
+    lines.append(" * @brief 获取指定电机型号的控制属性")
     lines.append(" * @param model 电机型号")
-    lines.append(" * @return 该型号的 PVT 控制范围与转矩常数")
+    lines.append(" * @return 该型号的控制属性、范围与转矩常数")
     lines.append(" */")
-    lines.append("ENCOS_BASE_API MotorPVTRanges GetMotorModelRanges(MotorModel model);")
+    lines.append("ENCOS_BASE_API MotorProperties GetMotorModelRanges(MotorModel model);")
     lines.append("")
     lines.append("/** @brief 将型号名称转换为枚举，未知名称会抛出 std::invalid_argument */")
     lines.append("ENCOS_BASE_API MotorModel StringToMotorModel(const std::string& str);")
@@ -61,16 +61,16 @@ def generate_header(models, csv_sha1):
 def generate_source(models, csv_sha1):
     lines = [
         generated_banner(csv_sha1),
-        '#include "motor/motor_model_generated.h"',
+        '#include "device/motor/motor_model_generated.h"',
         "",
         "#include <stdexcept>",
         "",
-        '#include "motor/types.h"',
+        '#include "device/motor/types.h"',
         "",
         "namespace encos {",
         "",
-        "MotorPVTRanges GetMotorModelRanges(MotorModel model) {",
-        "    MotorPVTRanges ranges{};",
+        "MotorProperties GetMotorModelRanges(MotorModel model) {",
+        "    MotorProperties properties{};",
         "    switch (model) {",
     ]
 
@@ -82,35 +82,41 @@ def generate_source(models, csv_sha1):
             s += '.0'
         return s + 'f'
 
+    def fmt_bool(val):
+        return 'true' if str(val).strip().lower() in ('true', '1', 'yes') else 'false'
+
     for row in models:
         lines.append(f"        case MotorModel::{row['model']}:")
         lines.append(
-            f"            ranges.kp = {{{fmt(row['kp_min'])}, {fmt(row['kp_max'])}}};"
+            f"            properties.kp = {{{fmt(row['kp_min'])}, {fmt(row['kp_max'])}}};"
         )
         lines.append(
-            f"            ranges.kd = {{{fmt(0)}, {fmt(row['kd_max'])}}};"
+            f"            properties.kd = {{{fmt(0)}, {fmt(row['kd_max'])}}};"
         )
         lines.append(
-            f"            ranges.position = {{{fmt(row['pos_min'])}, {fmt(row['pos_max'])}}};"
+            f"            properties.position = {{{fmt(row['pos_min'])}, {fmt(row['pos_max'])}}};"
         )
         lines.append(
-            f"            ranges.speed = {{{fmt(row['speed_min'])}, {fmt(row['speed_max'])}}};"
+            f"            properties.speed = {{{fmt(row['speed_min'])}, {fmt(row['speed_max'])}}};"
         )
         lines.append(
-            f"            ranges.torque = {{{fmt(row['torque_min'])}, {fmt(row['torque_max'])}}};"
+            f"            properties.torque = {{{fmt(row['torque_min'])}, {fmt(row['torque_max'])}}};"
         )
         neg_current = fmt(-float(row['current_max']))
         pos_current = fmt(row['current_max'])
         lines.append(
-            f"            ranges.current = {{{neg_current}, {pos_current}}};"
+            f"            properties.current = {{{neg_current}, {pos_current}}};"
         )
         lines.append(
-            f"            ranges.kt = {fmt(row['kt'])};"
+            f"            properties.kt = {fmt(row['kt'])};"
+        )
+        lines.append(
+            f"            properties.brake = {fmt_bool(row.get('brake', ''))};"
         )
         lines.append("            break;")
 
     lines.append("    }")
-    lines.append("    return ranges;")
+    lines.append("    return properties;")
     lines.append("}")
     lines.append("")
     lines.append("MotorModel StringToMotorModel(const std::string& str) {")

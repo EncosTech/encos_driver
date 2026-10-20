@@ -22,6 +22,9 @@ ENCOS_BASE_API fs::path PluginDir();
 /** @brief 拼接指定适配器插件的动态库路径 */
 ENCOS_BASE_API fs::path PluginLibraryPath(const fs::path& plugin_dir,
                                           const std::string& adapter_type);
+/** @brief 拼接指定设备插件的动态库路径 */
+ENCOS_BASE_API fs::path DeviceLibraryPath(const fs::path& plugin_dir,
+                                          const std::string& device_type);
 /** @brief 获取可用的有线网络接口名称 */
 ENCOS_BASE_API std::vector<std::string> GetWiredInterfaceNames();
 /**

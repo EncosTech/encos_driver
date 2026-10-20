@@ -53,6 +53,10 @@ fs::path PluginLibraryPath(const fs::path& plugin_dir, const std::string& adapte
     return plugin_dir / ("lib" + adapter_type + "Plugin.so");
 }
 
+fs::path DeviceLibraryPath(const fs::path& plugin_dir, const std::string& device_type) {
+    return plugin_dir / ("lib" + device_type + "Device.so");
+}
+
 std::vector<std::string> GetWiredInterfaceNames() {
     std::set<std::string> names;
     struct ifaddrs* ifap = nullptr;

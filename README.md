@@ -6,11 +6,19 @@ encos_driver 是用于Encos电机、电池、PMS控制的 C++17 库，支持多�
 
 - CMake >= 3.18
 - C++17 编译器 (GCC/Clang)
-- 提前安装依赖 libcap 和 Zstd。默认日志后端使用 spdlog/fmt；如果通过 `ENCOS_ENABLE_SPDLOG=OFF` 关闭，则无需安装 spdlog/fmt
+- 提前安装依赖 libcap 和 Zstd。默认日志后端使用 spdlog/fmt；如果通过 `ENCOS_ENABLE_SPDLOG=OFF` 关闭，则无需安装 spdlog/fmt。JSON（`nlohmann/json`）以单头文件形式随仓库提供（`include/external/json.hpp`），无需额外安装 JSON 系统包
 ```bash
 sudo apt-get update
 sudo apt-get install -y libcap-dev libzstd-dev libspdlog-dev libfmt-dev
 ```
+
+`Ethernet` 适配器额外依赖 `libxdp-dev`、`libbpf-dev`、`libelf-dev`、`pkg-config` 和支持 BPF target 的 Clang：
+
+```bash
+sudo apt-get install -y libxdp-dev libbpf-dev libelf-dev pkg-config clang
+```
+
+缺少这些依赖时，自动扫描会跳过该插件；显式列入 `ENCOS_PLUGINS_LIST` 则会在 CMake 配置阶段报错。细节见 [`plugins/adapter/ethernet/README.md`](plugins/adapter/ethernet/README.md)。
 
 ### 插件选择
 
@@ -46,6 +54,8 @@ install(TARGETS my_adapterPlugin
 
 > 安装后的 `add_emd_plugin` 仅用于动态外部插件。EncosDriver 的静态模式不能安装，因此不存在安装后静态插件注册路径。
 
+内置插件按 `plugins/adapter/` 与 `plugins/device/` 分组。外部设备插件在源码树模式下通过 `DEVICE` 关键字注册，其工厂返回 `encos::MakeDeviceDriver` 风格的描述符；应用侧使用 `bus->GetDevice("<Type>", config)` 创建（`config` 为 `nlohmann::json` 自定义配置，可省略），运行期在 Linux 以 `lib<Type>Device.so`、Windows 以 `<Type>Device.dll` 动态加载；设备插件框架支持全部平台（含 wasm 的静态模式），具体插件仍需通过其清单的可用性检查，编写方式见 `docs/plugin.md`。适配器插件可经初始化入口的 `extend` 参数传入自定义配置，采用"顶层公共参数 + 保留键 `buses` 按总线覆盖"的信封结构，例如 `encos::MakeAdapter("Can", "can0", "", encos::LogLevel::Info, {{"bitrate", 500000}})` 或 `{{"bitrate", 1000000}, {"buses", {{"2:5", {{"bitrate", 500000}}}}}}`；详见 `docs/plugin.md`。
+
 更多细节请参阅 [构建说明](docs/build.md)。
 
 > `emrs`（WebSocket relay helper）和 Fake Plot GUI 已从本仓库提取到独立的 `motor_relay_server` 仓库。`bench`/`stress` 工具已合并到 `motor_cli` 的 `emcli bench` 和 `emcli stress` 命令。请参阅对应仓库的文档。
@@ -62,7 +72,7 @@ cmake --build build --target tidy
 
 ## 安装
 
-安装和打包仅支持 `Linux + 动态模式`，并且需要显式开启 `ENCOS_ENABLE_INSTALL=ON`。
+安装支持 Linux 和 Windows 动态模式；Linux 动态模式默认启用安装，Windows 需显式设置 `ENCOS_ENABLE_INSTALL=ON`。DEB 打包仅支持 Linux 动态模式。发布构建建议显式设置安装选项。
 你可以通过设置 `CMAKE_INSTALL_PREFIX` 来更改安装路径。
 
 ```bash
@@ -84,7 +94,7 @@ cmake --build build -j
 
 ### Emscripten 构建
 
-Emscripten 构建只支持静态模式，不能构建 C++ GoogleTest 测试。除了 `Fake` 适配器外，`RelayWs` 也可以在 Emscripten 下启用；手动启用 CAN、EtherCAT、UsbSerial、Slcan 等适配器会在 CMake 配置阶段报错。Emscripten 下默认关闭 spdlog，日志会降级到标准输出/错误输出，debug 级别调用会被宏展开为空。
+Emscripten 构建只支持静态模式，不能构建 C++ GoogleTest 测试。`Fake`、`RelayWs` 和 `UsbSerial` 可以在 Emscripten 下启用；`UsbSerial` 运行时需要支持 Web Serial 的浏览器及用户授予串口访问权限。手动启用 CAN、EtherCAT、Slcan、Ethernet 等不支持该平台的适配器会在 CMake 配置阶段报错；设备插件框架在 wasm 下可用，具体插件仍由其清单检查构建条件，经生成的静态注册表提供类型。Emscripten 下默认关闭 spdlog，日志会降级到 console，debug 级别调用会被宏展开为空。
 
 如果 emsdk 需要手动激活，可先执行：
 
@@ -212,13 +222,25 @@ int main() {
 当前可用的适配器插件：
 - Ethercat  EtherCAT 适配器，使用 fd broker 模式自动获取原始套接字权限
 - EthercatIGH  IGH EtherCAT 主站适配器（仅在已安装 IGH 用户态库时可用）
+- Ethernet  通过 IPv4/UDP 连接以太网转 CAN 网关的适配器，Linux 使用 AF_XDP、Windows 使用 Winsock UDP；仅在 Linux/Windows 且依赖齐备时可用
 - Can  SocketCAN 适配器，使用 fd broker 模式自动获取原始套接字权限
 - UsbSerial  适配 Encos USB 转 CAN 适配器，仅用于临时调试，性能不可靠
 - Slcan  适配 slcan 虚拟 CAN 设备，适用于 Canable 等 USB 转 CAN 适配器
 - Fake  用于单元测试的虚拟适配器，默认不出现在 `GetAvailableAdapterTypes()` 中
 - RelayWs  通过 WebSocket relay helper 远程控制电机的适配器；WASM 构建中也可用
+- GsUsb  Windows WinUSB gs_usb（candleLight 兼容）适配器，支持 CAN FD
 
 在动态模式下，上述适配器以独立插件构建；在静态模式下，只有启用的适配器会被编进主库。`Fake` 可通过 `ENCOS_PLUGINS_LIST` 或 `ENCOS_PLUGINS_BLACKLIST` 排除；若开启 `ENCOS_BUILD_TESTS=ON`，则最终插件列表必须包含 `Fake`，否则配置阶段会报错。
+
+`Ethernet` 的连接串只填网卡名（如 `enx6c1ff7bd2e87`），插件在与网关约定的 `192.168.100.0/24` 网段上通过 UDP 广播发现在线网关，无需指定 IP：
+
+```cpp
+auto* adapter = encos::MakeAdapter("Ethernet", "enx6c1ff7bd2e87");
+auto* bus = adapter->GetBus(9, 4);  // 192.168.100.10 上该网关的第 4 路 CAN
+// 使用结束后 encos::DeleteAdapter(adapter);
+```
+
+它还需要 `libxdp-dev`/`libbpf-dev`/`libelf-dev` 和支持 BPF target 的 Clang，网段、slave ID、CAN 时序、权限与静态部署等约定见 [`plugins/adapter/ethernet/README.md`](plugins/adapter/ethernet/README.md)。
 
 ### RelayWs 远程电机控制
 
@@ -262,7 +284,8 @@ runtime.dispose()
 
 ## 权限问题
 - 动态模式下，Ethercat 和 Can 适配器通过单独的 fd broker 可执行文件管理套接字权限，安装后会自动设置所需 capability
-- Can 适配器在 Linux 下会在 fd broker 中自动执行 SocketCAN 初始化（`ip link set <ifname> type can bitrate 1000000` + `ip link set <ifname> up`），默认固定波特率为 `1000000`
+- Can 适配器在 Linux 下会在 fd broker 中自动配置并启用 SocketCAN 接口，默认波特率为 `1000000`；可通过 `extend` 的 `bitrate`、`sample_point`、`dbitrate`、`dsample_point` 配置时序，格式见 [插件指南](docs/plugin.md)
+- 动态模式下，Linux 的 Ethernet 适配器通过 `EthernetXdpBrokerExecutable` 建立 XSK/UMEM 并挂接 BPF 程序，安装后会自动设置 `cap_net_raw,cap_net_admin,cap_bpf`；普通用户首次初始化时经 Polkit（`pkexec`）授权，权限随文件保留。需要 `libcap2-bin`、认证代理，且插件、broker 与 `ethernet_xdp.bpf.o` 必须位于同一插件目录
 - 静态模式下使用 Ethercat/Can 前，需要对最终可执行文件手动设置 `cap_net_raw,cap_net_admin`；
   `SetCurrentThreadPriority()` 直接调用 `sched_setscheduler()` 并 `mlockall()`，因此还需要
   `cap_sys_nice` 与 `cap_ipc_lock`
@@ -276,6 +299,8 @@ runtime.dispose()
 ```bash
 sudo setcap cap_net_raw,cap_net_admin,cap_sys_nice,cap_ipc_lock+ep <Executable>
 ```
+使用静态模式下的 `Ethernet` 时，网络权限集合应为 `cap_net_raw,cap_net_admin,cap_bpf`；该模式下网络资源由最终进程持有，BPF 对象已嵌入库中，不需要部署 broker、`ethernet_xdp.bpf.o` 或插件目录。
+
 动态 CAN/EtherCAT 插件通过 fd broker 获取已配置的套接字；线程优先级 helper 不使用
 setuid，也不能修改调用进程之外的线程。
 

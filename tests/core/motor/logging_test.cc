@@ -14,7 +14,7 @@
 #include <vector>
 #include <zstd.h>
 
-#include "motor/motor_log_transport.h"
+#include "device/motor/motor_log_transport.h"
 #include "test_fixtures.h"
 #include "utils/log_writer_test_hook.h"
 #include "waiter_test_access.h"
@@ -275,7 +275,7 @@ TEST_F(MotorLoggingTests, SameBaseIsNoOpAndDifferentBaseSwitchesThePair) {
 TEST_F(MotorLoggingTests, LogsSevenControlTypesAndSkipsManagementCommands) {
     MotorLogDirectory directory;
     const auto base_name = (directory.Path() / "commands").string();
-    const auto ranges = motor->GetPVTRanges();
+    const auto ranges = motor->GetProperties();
     motor->EnableLog(base_name);
 
     motor->PVTControl<0>(ranges.kp.max + 1.0F, ranges.kd.max + 1.0F, ranges.position.max + 1.0F,
@@ -286,7 +286,6 @@ TEST_F(MotorLoggingTests, LogsSevenControlTypesAndSkipsManagementCommands) {
     motor->TorControl<0>(7.0F);
     motor->Stop<0>(MotorStopMode::DynamicBrake, 8.0F);
     EXPECT_TRUE(motor->Brake(true, false));
-    EXPECT_TRUE(motor->SetAcceleration(9.0F, false));
     motor->DisableLog();
 
     const auto rows = ParseSimpleCsv(DecompressMotorLog(base_name + "_command.csv.zstd"));
@@ -366,17 +365,16 @@ TEST_F(MotorLoggingTests, RebuildsBothWritersAfterAnAsynchronousFailure) {
 
 TEST_F(MotorLoggingTests, DisablesImmediatelyWhenAllReconstructionAttemptsFail) {
     MotorLogDirectory directory;
-    const auto session_directory = directory.Path() / "removed";
-    fs::create_directories(session_directory);
     adapter->SetReplyMode(FakeReplyMode::Manual);
-    motor->EnableLog((session_directory / "session").string());
-    fs::remove_all(session_directory);
+    motor->EnableLog((directory.Path() / "session").string());
 
+    detail::FailLogWriterCreationForTesting(true);
     detail::FailNextLogWriterInteractionForTesting();
     EXPECT_NO_THROW(motor->SpdControl<0>(1.0F, 2.0F));
     ASSERT_TRUE(WaitForMotorLogFailure(motor));
     EXPECT_NO_THROW(motor->SpdControl<0>(1.0F, 2.0F));
     EXPECT_FALSE(motor->IsLogged());
+    detail::FailLogWriterCreationForTesting(false);
 }
 
 TEST_F(MotorLoggingTests, StatusLogFailureDoesNotPreventUserCallback) {

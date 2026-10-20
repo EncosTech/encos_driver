@@ -13,9 +13,9 @@
 #include "base_adapter_test_access.h"
 #include "bus/bus.h"
 #include "bus/bus_impl.h"
+#include "device/motor/motor.h"
 #include "driver_manager_test_access.h"
 #include "encos/driver_manager.h"
-#include "motor/motor.h"
 #include "test_adapter.h"
 #include "wait_observer.h"
 

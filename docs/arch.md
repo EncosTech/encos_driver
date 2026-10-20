@@ -35,9 +35,11 @@ EncosDriver 面向上层控制程序提供统一的电机与外设接口，并�
 | 速度控制 | `SpdControl` | 目标速度、电流限制 |
 | 电流控制 | `CurControl` | 目标电流 |
 | 扭矩控制 | `TorControl` | 目标扭矩 |
-| 停止与制动 | `Stop`、`Brake` | 停止方式、制动电流或抱闸状态 |
+| 停止与制动 | `Stop`、`Brake` | 停止方式、制动电流或抱闸状态（`Brake` 仅旧版固件可用） |
 
 该层完成单位换算、量程限制和位域编码，将控制参数转换为 CAN ID 加 8 字节数据区的业务报文。收到反馈后，它执行反馈解码、状态过滤、缓存更新、同步等待者唤醒以及状态回调。
+
+电机固件存在新旧两版 CAN 协议：驱动在构造每个电机时发送一帧固件版本查询（0x32），把结果记入 `MotorProperties::fw_version`（`0` 表示旧版固件或不支持该查询），并据此选择温度解码、故障码映射、`Stop`/`Brake` 语义与速度/位置环增益倍率。这条分支只依赖该字段，不依赖调用方显式配置。
 
 除 Motor 外，Bus 也可承载 Battery、IMU、PMS 等设备。它们复用相同的消息提交和 ID 路由机制，但各自负责自身的数据编解码。
 
@@ -53,7 +55,7 @@ EncosDriver 面向上层控制程序提供统一的电机与外设接口，并�
 UsbSerial 只提供索引为 0 的单条 Bus。EtherCAT 网关可包含多个从站，每个从站又可暴露多条 CAN Bus；系统使用组合索引表示它们：
 
 ```text
-bus_idx = (slave_idx << 16) | bus_idx_in_slave
+bus_idx = (slave_idx << 16) | (bus_idx_in_slave & 0xFF)
 ```
 
 接收时，`BaseAdapter::OnMessage()` 将消息交给管理器。管理器按 Adapter、Bus 索引和 CAN ID 查找路由：已注册消息进入对应 Motor 或外设，未匹配消息进入 Bus 的未知消息邮箱。
@@ -66,6 +68,24 @@ bus_idx = (slave_idx << 16) | bus_idx_in_slave
 - UsbSerial 插件给单条 CAN 数据报增加串口帧头、长度和校验和。
 
 因此，插件切换不会改变 Motor 控制报文的含义。EtherCAT 的不同主站实现共享同一套 CAN-over-EtherCAT PDO 编解码规则，本章统一称为 EtherCAT 插件。
+
+### 2.5 设备插件层
+
+除适配器插件外，系统支持以独立 `.so` 提供**外部设备插件**，用于接入电机之外的简单设备或实现总线级协议消费者。
+
+插件由 `MakeDeviceDriver()` 导出 `DeviceDriverDescriptorV1`（通过 C linkage 入口导出），核心把它翻译为既有的 `DeviceRecipe`，因此外部设备复用与内置设备完全相同的生命周期引擎：管理器去重、路由发布与失败回滚、operation gate 在飞保护、以及 Bus/Adapter 级联删除。路由配置以 `const char*` 传递，但设备创建入口接收 `DeviceCreateContext`，其中包含 `std::string`、`std::function` 和日志对象。宿主与插件必须使用兼容的 C++ ABI、标准库及相关依赖；导出符号采用 C linkage 并不意味着完整接口是可跨工具链的 C ABI。
+
+**两层接口**：描述符接口之上提供 header-only 的现代 C++ 包装层（`include/device/device_plugin_builder.h`）。插件作者只面对 `nlohmann::json`、lambda 与 `std::unique_ptr`，包装层负责解析配置串、把 `create` 抛出的异常转为构造失败，并生成适配描述符函数指针的静态 trampoline。一个 `.so` 只导出一个设备类型。
+
+**配置与身份**：宿主入口为 `Bus::GetDevice(type, config)` / `EncosDriverManager::CreateDevice(bus, type, config)`，`config` 为 `nlohmann::json`（未传入时为空对象）。设备不携带索引语义；身份为 `(bus, type, config)`——配置规范化后相等才复用既有实例，配置不同即创建独立实例，各自持有独立路由与生命周期。
+
+**整总线认领**：声明 `kDeviceCapabilityClaimBus` 能力位并在 `fill_route_ids` 中返回整总线标识符 `kDeviceClaimBusRouteId`（`UINT32_MAX`，落在 29 位扩展帧 ID 空间之外）的设备，会成为所在总线的兜底接收者，接收所有未被其它设备路由命中的帧以及未命中路由的系统帧 `0x7FF`。精确路由优先，认领不独占（未命中帧仍进入未知邮箱，扫描语义不变），同一总线至多一个认领设备。
+
+**发现与加载**：与适配器插件共用同一扁平插件目录，按文件名后缀 `<Type>Device.so` 与导出符号 `MakeDeviceDriver` 双重判别；静态构建模式改用生成的设备静态注册表。
+
+- **适配器扩展配置**：`MakeAdapter` 的可选 `extend` 参数采用标准化信封——顶层键为全部总线的公共参数，保留键 `buses` 按总线覆盖；生效参数按「插件默认值 ← 公共参数 ← 该总线覆盖」三层字段级合并。信封解析与合并由 `include/adapter/adapter_extend.h` 单一实现。总线级配置在 `MakeAdapter` 时即已齐备；已存在实例的**总线级增量配置**经 `BaseAdapter::UpdateBusExtend`（只认 `buses`、不做跨总线回滚）在运行期下发。`BaseAdapter::GetBus` 仍保持非虚、签名不变。
+
+**平台边界**：设备插件能力面在全部平台无条件可用，包括 Emscripten/wasm（wasm 强制静态模式，设备类型经生成的静态注册表提供）。JSON（`nlohmann/json`）以单头文件形式随仓库提供（`include/external/json.hpp`），不依赖系统包。
 
 ## 三、控制逻辑
 
@@ -98,7 +118,7 @@ bus_idx = (slave_idx << 16) | bus_idx_in_slave
 - `Commit()` 返回只表示 Adapter 已接收该批次，不表示物理链路已经发出，也不表示电机已经执行；
 - EtherCAT 插件仍按自身周期发送，UsbSerial 插件仍按串口发送机制工作。
 
-EtherCAT 会保留同一 Bus 上不同同步批次的边界，避免它们被合并进同一底层输出包；不同 Bus 的消息仍可共享空闲 PDO 槽位。
+EtherCAT 会保留同一 Bus 上不同同步批次的边界，避免它们被合并进同一底层输出包；不同 Bus 的消息仍可共享空闲 PDO 槽位。软同步不保证所有命令送达：EtherCAT 待发帧超过 3 帧时只保留最新完整帧，详见 [EtherCAT 协议](ethercat_protocol.md)。
 
 ### 3.4 反馈消费方式
 
@@ -201,11 +221,11 @@ UsbSerial 插件实现 CAN over Serial：每条 CAN 数据报独立封装为一�
 
 若有效数据长度为 `N`，扩展 ID 串口帧总长度为 `N + 7`。
 
-串口层通过接收回调交付字节，插件从字节流中搜索 `0xAA` 或 `0xBB`，读取总长度，等待完整帧并验证校验和。校验通过后，插件还原 CAN ID、扩展帧属性、有效长度和最多 8 字节数据，再交给统一路由层。三平台的线程、JS 桥、发送同步和关闭流程统一由 `plugins/utils/serialPort` 管理，UsbSerial 本身不再包含平台实现。
+串口层通过接收回调交付字节，插件从字节流中搜索 `0xAA` 或 `0xBB`，读取总长度，等待完整帧并验证校验和。校验通过后，插件还原 CAN ID、扩展帧属性、有效长度和最多 8 字节数据，再交给统一路由层。三平台的线程、JS 桥、发送同步和关闭流程统一由 `plugins/adapter/utils/serialPort` 管理，UsbSerial 本身不再包含平台实现。
 
-每次发送独立写出一条串口帧，不合并查询、不自动重发；短写仅续写尚未提交的字节。发送不等待业务应答，允许多个请求在途。协议编解码共用，I/O 按平台选择：Linux 使用非阻塞串口与 `poll`，Windows 使用 Overlapped I/O，Emscripten 使用 Web Serial Streams。原生接收不等待缓冲区填满，也不占用发送锁；发送背压预算为 100 ms，Windows 取消后还需等待驱动完成取消。浏览器使用有界异步发送队列，不承诺同样的同步超时。原生接收线程保留优先级 50 设置调用，失败时警告并继续；现有 Windows 优先级辅助函数返回不支持。开发环境测试在进程外屏蔽实际优先级调用，不改变产品行为。
+每次发送独立写出一条串口帧，不合并查询、不自动重发；短写仅续写尚未提交的字节。发送不等待业务应答，允许多个请求在途。协议编解码共用，I/O 按平台选择：Linux 使用非阻塞串口与 `poll`，Windows 使用 Overlapped I/O，Emscripten 使用 Web Serial Streams。原生接收不等待缓冲区填满，也不占用发送锁；发送背压预算为 100 ms，Windows 取消后还需等待驱动完成取消。浏览器使用有界异步发送队列，不承诺同样的同步超时。原生接收线程保留优先级 50 设置调用，失败时警告并继续；Windows 使用 `SetThreadPriority`，优先级参数 50 映射为 `THREAD_PRIORITY_HIGHEST`。开发环境测试在进程外屏蔽实际优先级调用，不改变产品行为。
 
-Linux 关闭时通过唤醒管道取消读写等待；Windows 使用取消事件与 `CancelIoEx`。原生平台等待接收线程退出及发送锁释放后再销毁串口。浏览器同步解除 C++ 回调绑定，再异步取消流、释放锁并关闭端口。这里的 115200 是串口配置值；USB CDC 固件实际传输速率取决于设备实现。串口封装只携带标准/扩展 ID 信息，不携带 CAN FD 标志，因而上层显示的 `CanFD=false` 不能用于判断设备侧物理总线是否工作在 CAN FD 模式。平台接口与浏览器示例见 [UsbSerial 平台后端](usb_serial_platforms.md)。
+Linux 关闭时通过唤醒管道取消读写等待；Windows 使用取消事件与 `CancelIoEx`。原生平台等待接收线程退出及发送锁释放后再销毁串口。浏览器同步解除 C++ 回调绑定，再异步取消流、释放锁并关闭端口。这里的 115200 是串口配置值；USB CDC 固件实际传输速率取决于设备实现。串口封装只携带标准/扩展 ID 信息，不携带 CAN FD 标志，因而上层显示的 `CanFD=false` 不能用于判断设备侧物理总线是否工作在 CAN FD 模式。平台实现与 Web Serial 桥接接口见源码目录 `plugins/adapter/utils/serialPort/`；浏览器先通过同一 WASM 模块的 `webSerial.requestPort()` 获取 `webserial:<id>` 连接名，再将其传给 `MakeAdapter("UsbSerial", ...)`。
 
 ## 七、架构边界总结
 

@@ -51,5 +51,6 @@ build_markdown_pdf "${repo_root}/docs/changes.md" "${dist_dir}/changes.pdf"
 build_markdown_pdf "${repo_root}/docs/arch.md" "${dist_dir}/arch.pdf"
 build_markdown_pdf "${repo_root}/docs/using_guide.md" "${dist_dir}/using_guide.pdf"
 build_markdown_pdf "${repo_root}/docs/logging.md" "${dist_dir}/logging.pdf"
+build_markdown_pdf "${repo_root}/docs/plugin.md" "${dist_dir}/plugin.pdf"
 
 printf '文档已生成到 %s\n' "${dist_dir}"

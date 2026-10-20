@@ -30,6 +30,18 @@ FakeAdapterControl* BaseAdapter::GetFakeAdapterControl() {
     return nullptr;
 }
 
+bool BaseAdapter::UpdateBusExtend(const std::string& extend_json) {
+    if (extend_json.empty()) {
+        // 没有更新请求，不算是“不支持该能力”。
+        return true;
+    }
+    Logger()->warn(
+        "Adapter '{}' does not support live bus reconfiguration; the extend configuration "
+        "was ignored",
+        GetInterfaceName());
+    return false;
+}
+
 LoggerPtr BaseAdapter::Logger() const {
     return impl_->logger_;
 }
@@ -224,7 +236,7 @@ void BaseAdapter::SubmitDeviceMessage(Bus* bus, void* channel, const MotorMessag
     }
 }
 
-void BaseAdapter::SubmitBusMessages(Bus* bus, const MotorMessages& messages) {
+void BaseAdapter::SubmitBusMessages(Bus* bus, const MotorMessages& messages, bool immediate) {
     if (messages.empty()) {
         return;
     }
@@ -232,7 +244,7 @@ void BaseAdapter::SubmitBusMessages(Bus* bus, const MotorMessages& messages) {
     platform::LockGuard<decltype(impl_->submit_mutex)> submit_lock(impl_->submit_mutex);
     {
         platform::LockGuard<decltype(bus->impl_->outgoing_mutex)> lock(bus->impl_->outgoing_mutex);
-        if (bus->impl_->sync_mode) {
+        if (bus->impl_->sync_mode && !immediate) {
             bus->impl_->bulk_queue.insert(bus->impl_->bulk_queue.end(), messages.begin(),
                                           messages.end());
             return;

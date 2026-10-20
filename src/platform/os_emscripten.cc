@@ -26,6 +26,12 @@ fs::path PluginLibraryPath(const fs::path& plugin_dir, const std::string& adapte
     return {};
 }
 
+fs::path DeviceLibraryPath(const fs::path& plugin_dir, const std::string& device_type) {
+    (void) plugin_dir;
+    (void) device_type;
+    return {};
+}
+
 std::vector<std::string> GetWiredInterfaceNames() {
     return {};
 }

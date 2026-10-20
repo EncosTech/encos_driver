@@ -17,11 +17,12 @@ test('seeded Fake motor records and decodes speed control commands', async () =>
   const adapter = runtime.createFakeAdapter({ interfaceName: 'fake-spd-command' })
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
 
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
   await motor.spdControl({ speed: 1.25, current: 2.5, feedbackType: 0 })
 
   const commands = adapter.fake.getCommandRecords()
-  expect(commands.length).toBe(1)
+  expect(commands.length).toBe(2)
+  expect(commands.shift()!.kind).toBe(FakeCommandKind.GetParameter)
   expect(commands[0].kind).toBe(FakeCommandKind.SpdControl)
   expect(commands[0].busIndex).toBe(0)
   expect(commands[0].motorIndex).toBe(1)
@@ -41,7 +42,7 @@ test('calibration APIs expose current control and position setters', async () =>
   const adapter = runtime.createFakeAdapter({ interfaceName: 'fake-calibration-apis' })
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
 
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
   await motor.curControl({ current: -1.5, feedbackType: 1 })
 
   let command = adapter.fake.getLastCommand()
@@ -72,7 +73,7 @@ test('speed control supports feedback type 2 and 3', async () => {
   const adapter = runtime.createFakeAdapter({ interfaceName: 'fake-spd-feedback-types' })
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
 
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
   let extraSleepOccurred = false
   const extraSleepTimer = setTimeout(() => {
     extraSleepOccurred = true
@@ -102,7 +103,7 @@ test('manual speed control records command and returns no response', async () =>
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
   adapter.fake.setReplyMode(FakeReplyMode.Manual)
 
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
   let eventLoopProgressed = false
   const progressTimer = setTimeout(() => {
     eventLoopProgressed = true
@@ -139,7 +140,7 @@ test('position control supports feedback type 2 and 3', async () => {
   const adapter = runtime.createFakeAdapter({ interfaceName: 'fake-pos-feedback-types' })
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
 
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
   const feedback2 = await motor.posControl({
     position: 0.25,
     speed: 1.0,
@@ -179,7 +180,7 @@ test('parameter write policy can ignore CAN timeout ack', async () => {
     FakeWritePolicy.Ignore,
   )
 
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
   expect(await motor.setCanTimeout(1000, true)).toBe(false)
 
   const command = adapter.fake.getLastCommand()
@@ -195,7 +196,7 @@ test('PVT control decodes command with seeded motor ranges', async () => {
   const adapter = runtime.createFakeAdapter({ interfaceName: 'fake-pvt-command' })
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A10010_P2)
 
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A10010_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A10010_P2)
   const ranges = adapter.fake.getMotorSnapshot(0, 1).ranges
   const torque = ranges.torque.max * 0.75
   await motor.pvtControl({
@@ -239,7 +240,7 @@ test('auto-create is disabled by default but commands are still recorded', async
   const runtime = await createEncosRuntime()
   const adapter = runtime.createFakeAdapter({ interfaceName: 'fake-auto-create-disabled' })
 
-  const motor = adapter.getBus(0).getMotor(7, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(7, MotorModel.EC_A4310_P2)
   await motor.posControl({ position: 1.0, speed: 2.0, current: 3.0, feedbackType: 0 })
 
   const command = adapter.fake.getLastCommand()
@@ -256,7 +257,7 @@ test('injected feedback updates adapter status cache', async () => {
   const adapter = runtime.createFakeAdapter({ interfaceName: 'fake-inject-feedback' })
   adapter.fake.seedMotor(0, 1, MotorModel.EC_A4310_P2)
 
-  const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
   adapter.fake.injectFeedback(0, 1, {
     feedbackType: 1,
     error: 0,
@@ -282,7 +283,7 @@ test('auto-create creates snapshot and replies unless reply mode is manual', asy
   const adapter = runtime.createFakeAdapter({ interfaceName: 'fake-auto-create' })
   adapter.fake.enableAutoCreateMotor()
 
-  const motor = adapter.getBus(0).getMotor(7, MotorModel.EC_A4310_P2)
+  const motor = await adapter.getBus(0).getMotor(7, MotorModel.EC_A4310_P2)
   await motor.posControl({ position: 1.25, speed: 2.0, current: 3.0, feedbackType: 1 })
 
   const snapshot = adapter.fake.getMotorSnapshot(0, 7)
@@ -297,7 +298,7 @@ test('auto-create creates snapshot and replies unless reply mode is manual', asy
   manualAdapter.fake.enableAutoCreateMotor()
   manualAdapter.fake.setReplyMode(FakeReplyMode.Manual)
 
-  const manualMotor = manualAdapter.getBus(0).getMotor(8, MotorModel.EC_A4310_P2)
+  const manualMotor = await manualAdapter.getBus(0).getMotor(8, MotorModel.EC_A4310_P2)
   await manualMotor.posControl({ position: 0.5, speed: 1.0, current: 2.0, feedbackType: 1 })
 
   expect(manualAdapter.fake.getMotorSnapshot(0, 8).model).toBe(MotorModel.EC_A4310_P2)

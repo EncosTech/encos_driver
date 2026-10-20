@@ -2,20 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
-#include <unistd.h>
 #include <unordered_map>
 #include <vector>
 #include <zstd.h>
 
 #include "adapter/base_adapter.h"
 #include "bus/bus.h"
+#include "device/motor/motor.h"
 #include "encos/driver_manager.h"
-#include "motor/motor.h"
 
 namespace encos {
 namespace {
@@ -84,7 +85,11 @@ protected:
 
 int main() {
     using encos::EncosDriverManager;
-    encos::log_base_name = "/tmp/encos-motor-log-shutdown-" + std::to_string(getpid());
+    const auto unique_suffix =
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    encos::log_base_name =
+        (std::filesystem::temp_directory_path() / ("encos-motor-log-shutdown-" + unique_suffix))
+            .string();
     if (std::atexit(encos::VerifyLogsFlushed) != 0) {
         return 3;
     }
@@ -97,5 +102,7 @@ int main() {
     auto* motor = adapter->GetBus(0)->GetMotor(1, encos::MotorModel::EC_A4310_P2);
     motor->EnableLog(encos::log_base_name);
     motor->SpdControl<0>(1.0F, 2.0F);
+    // Windows 上 DLL 静态析构晚于 exe 的 atexit，显式销毁以在进程退出前完成日志落盘。
+    manager.DestroyAdapter(adapter);
     return 0;
 }

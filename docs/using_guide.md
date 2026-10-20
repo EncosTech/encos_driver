@@ -31,8 +31,9 @@ auto* adapter = encos::MakeAdapter("Can", "can0");
 |------|------|------|
 | `adapter_type` | 适配器类型名称 | `"Can"`、`"Ethercat"`、`"UsbSerial"` |
 | `interface_name` | 网络/通信接口名称 | `"can0"`、`"eth0"`、`"/dev/ttyUSB0"` |
-| `logger_name` | （可选）日志记录器名称 | 默认与`interface_name`相同 |
+| `logger_name` | （可选）日志记录器名称 | 默认由类型生成，如 `CanAdapter` |
 | `log_level` | （可选）日志级别 | 默认为 `encos::LogLevel::Info` |
+| `extend` | （可选，第五个参数）JSON 扩展配置；顶层公共参数与 `buses` 按总线覆盖 | `{{"bitrate", 500000}}` |
 
 ```cpp
 // 创建 CAN 适配器
@@ -42,12 +43,14 @@ auto* can_adapter = encos::MakeAdapter("Can", "can0");
 auto* ec_adapter = encos::MakeAdapter("Ethercat", "eth0", "my_ec", encos::LogLevel::Debug);
 ```
 
+扩展配置示例：`encos::MakeAdapter("Can", "can0", "", encos::LogLevel::Info, {{"bitrate", 500000}})`。具体字段、默认值及已有实例的总线增量更新规则见 [插件指南](plugin.md)。
+
 ### 1.3 所有权与删除
 
-Adapter、Bus、Motor、Battery、Imu 和 Pms 均由进程级 `EncosDriverManager` 拥有。
+Adapter、Bus、Motor、Battery、Imu、Pms、Glove 和外部 Device 均由进程级 `EncosDriverManager` 拥有。
 创建及查询接口返回的是非拥有裸指针，调用方不得直接 `delete`，也不得把它们包装进拥有型智能指针。
 `DeleteAdapter(adapter)` 会注销接收路由并级联删除其全部 Bus 和设备；删除完成后，相关裸指针全部失效。
-如需提前释放子对象，可调用 `DeleteBus`、`DeleteMotor`、`DeleteBattery`、`DeleteImu` 或 `DeletePms`。
+如需提前释放子对象，可调用 `DeleteBus`、`DeleteMotor`、`DeleteBattery`、`DeleteImu`、`DeletePms`、`DeleteGlove` 或 `DeleteDevice`。
 
 ```cpp
 auto* adapter = encos::MakeAdapter("Can", "can0");
@@ -67,9 +70,12 @@ if (!encos::DeleteAdapter(adapter)) {
 
 - **Ethercat** — Linux/Windows SOEM EtherCAT 适配器；Windows 支持网卡友好名称或 SOEM/pcap 设备名。
 - **EthercatIGH** — IGH 主站 EtherCAT 适配器
+- **Ethernet** — 通过 IPv4/UDP 连接以太网转 CAN 网关的适配器；Linux 使用 AF_XDP、Windows 使用 Winsock UDP，连接串填网卡名（详见 `plugins/adapter/ethernet/README.md`）
 - **Can** — Linux SocketCAN 适配器
-- **UsbSerial** — USB 串口适配器（建议仅用于临时调试）
+- **UsbSerial** — Linux/Windows USB 串口适配器，也可在 Emscripten 浏览器中经 Web Serial 使用（建议仅用于临时调试）
 - **Slcan** — slcan 虚拟 CAN 设备适配器（如 Canable 等）
+- **GsUsb** — Windows WinUSB gs_usb（candleLight 兼容）适配器，支持 CAN FD
+- **RelayWs** — 通过 WebSocket relay helper 远程控制电机的适配器（原生与 WASM 均可用）
 
 > 动态模式下，如果插件文件未找到或加载失败，`MakeAdapter` 会抛出 `std::runtime_error`。
 
@@ -126,7 +132,7 @@ for (const auto& t : types) {
 }
 ```
 
-该函数返回当前插件目录中所有可加载的适配器类型名称列表，结果按字母顺序排列。
+动态模式下，该函数返回当前插件目录中可加载且未隐藏的适配器类型；静态模式下返回注册表中的可见类型。结果按字母顺序排列，`Fake` 默认隐藏。
 
 ### 2.2 查询指定适配器的可用接口
 
@@ -141,7 +147,9 @@ for (const auto& iface : ifaces) {
 
 | 适配器类型 | 接口类型 | 典型示例 |
 |-----------|----------|----------|
-| `Ethercat` / `EthercatIGH` | 有线以太网接口 | `eth0`、`enp3s0` |
+| `Ethercat` | 有线以太网接口 | `eth0`、`enp3s0` |
+| `EthercatIGH` | IGH 主站编号（扫描 `/dev/EtherCAT*`） | `0` |
+| `Ethernet` | 有线以太网接口（只填网卡名，在线网关由 UDP 广播发现） | `eth0`、`enx6c1ff7bd2e87` |
 | `UsbSerial` / `Slcan` | 串口设备 | `/dev/ttyUSB0`、`COM3` |
 | `Can`（仅 Linux） | CAN 总线接口 | `can0`、`vcan0` |
 
@@ -159,7 +167,7 @@ for (const auto& iface : ifaces) {
 auto adapter = encos::MakeAdapter("Can", "can0");
 auto bus = adapter->GetBus();        // 获取总线索引为 0 的总线
 // 或显式指定索引
-auto bus = adapter->GetBus(0);
+bus = adapter->GetBus(0);
 ```
 
 ### 3.2 获取多从站/多总线场景下的总线
@@ -191,7 +199,7 @@ for (const auto& [idx, bus] : buses) {
 
 ### 4.1 通过已知电机型号创建
 
-当你明确知道电机型号时，可直接传入 `MotorModel` 枚举。库会使用该型号预定义的 PVT 控制范围和电流量程，**无需向电机固件查询参数**：
+当你明确知道电机型号时，可直接传入 `MotorModel` 枚举。库会使用该型号预定义的 PVT 控制范围和电流量程，无需向电机固件查询这些量程。不过首次创建仍会发送固件版本查询并短暂等待，因此应在默认直接发送模式下完成创建：
 
 ```cpp
 auto bus = adapter->GetBus(0);
@@ -201,27 +209,34 @@ auto motor = bus->GetMotor(1, encos::MotorModel::EC_A4310_P2);
 motor->SpdControl<0>(1.0f, 2.0f);
 ```
 
-预定义的电机型号包括 `EC_A4310_P2`、`EC_A8112_P1`、`EC_A10020_P1_6_72V` 等，完整列表见 `include/motor/motor_model_generated.h`。
+预定义的电机型号包括 `EC_A4310_P2`、`EC_A8112_P1`、`EC_A10020_P1_6_72V` 等，完整列表见 `include/device/motor/motor_model_generated.h`。
 
-### 4.2 通过自定义 PVT 范围创建
+### 4.2 通过自定义控制属性创建
 
-如果电机型号不在预定义列表中，或需要手动指定参数范围，可传入 `MotorPVTRanges` 结构：
+如果电机型号不在预定义列表中，或需要手动指定参数范围，可传入 `MotorProperties` 结构：
 
 ```cpp
-encos::MotorPVTRanges ranges;
-ranges.kp        = {0.0f, 500.0f};
-ranges.kd        = {0.0f, 5.0f};
-ranges.position  = {-12.5f, 12.5f};
-ranges.speed     = {-40.0f, 40.0f};
-ranges.torque    = {-10.0f, 10.0f};
-ranges.current   = {-20.0f, 20.0f};
-ranges.kt        = 0.095f;
+encos::MotorProperties properties;
+properties.kp        = {0.0f, 500.0f};
+properties.kd        = {0.0f, 5.0f};
+properties.position  = {-12.5f, 12.5f};
+properties.speed     = {-40.0f, 40.0f};
+properties.torque    = {-10.0f, 10.0f};
+properties.current   = {-20.0f, 20.0f};
+properties.kt        = 0.095f;
 
-auto motor = bus->GetMotor(1, ranges);
+auto motor = bus->GetMotor(1, properties);
 motor->PVTControl<0>(10.0f, 1.0f, 0.5f, 1.0f, 5.0f);
 ```
 
-回报帧 1 的位置（16 位）和速度（12 位）分别按该电机 `PVTRanges.position` 和 `PVTRanges.speed` 的最小、最大值线性解码，单位为 rad 和 rad/s。电流（12 位）按 `PVTRanges.current.min/max` 解码，支持非对称范围。`SetCurrentRange()` 已弃用，兼容调用会将本地电流范围设为 `{-range, range}`，建议改用 `SetDriverPVTRanges()`。同步控制返回值与异步状态使用同一规则；驱动配置的范围应与电机固件一致。
+回报帧 1 的位置（16 位）和速度（12 位）分别按该电机 `properties.position` 和 `properties.speed` 的最小、最大值线性解码，单位为 rad 和 rad/s。电流（12 位）按 `properties.current.min/max` 解码，支持非对称范围。`SetCurrentRange()` 已弃用，兼容调用会将本地电流范围设为 `{-range, range}`，建议改用 `SetProperties()`。同步控制返回值与异步状态使用同一规则；驱动配置的范围应与电机固件一致。
+
+`MotorProperties` 还带两个只读能力字段：
+
+- `brake`：电机是否带机械抱闸，**只在按型号初始化时**由型号表 `motor_models.csv` 的 `brake` 列给出；其它初始化方式一律为 `false`。可用 `Motor::HasBrake()` 直接查询。
+- `fw_version`：构造时查询到的固件版本（BCD `0xYYMMDDHH`），`0` 表示旧版固件或不支持该查询。
+
+`Motor::SetProperties()` 只更新上表的范围字段，不会覆盖 `kt`、`brake` 与 `fw_version`。旧名 `MotorPVTRanges` / `GetPVTRanges()` / `SetDriverPVTRanges()` 仍可用，但已标注弃用。
 
 ### 4.3 通过固件自动初始化创建
 
@@ -299,7 +314,7 @@ battery->SetOnStatus([](const encos::BatteryStatus& status) {
 });
 ```
 
-电池状态回调在每次后台 update pass 中最多触发一次；即使该次 pass 同时处理了多个电池上报包，也会在合并完成后只回调一次。
+每条有效电池状态报文都会更新对应状态分组，并在接收线程中同步触发一次回调。回调携带当前汇总快照；未被本帧更新的分组可能来自较早的报文，不保证多个分组来自同一采样时刻。
 
 ---
 
@@ -312,16 +327,9 @@ battery->SetOnStatus([](const encos::BatteryStatus& status) {
 | 方法 | 说明 | 阻塞行为 |
 |------|------|----------|
 | `ResetZeroPos(bool wait_for_ack = true)` | 将当前位置设为零点 | `wait_for_ack=true` 时阻塞等待确认，`false`则立即返回设置成功 |
-| `GotoLimit(limit, dir, spd, cur, timeout)` | 向限位方向运动并触碰限位，返回零点偏移量 | **阻塞**，直到触碰限位或超时（失败返回 NaN） |
-| `GotoZero(offset, spd, cur, timeout)` | 运动到零位并应用偏移量重置零点 | **阻塞**，直到到位或超时 |
-| `Calibrate(limit, dir, spd, cur, timeout)` | 依次执行 `GotoLimit` 和 `GotoZero`，完成一键校准 | **阻塞**，直到校准完成或超时 |
+| `SetPos(double now_pos)` | 将当前位置读数写为指定坐标值（rad） | **阻塞**等待确认，超时返回 `false` |
 
-示例：
-
-```cpp
-// 自动校准：在 ±12.5 rad 范围内，向正方向运动
-bool ok = motor->Calibrate({-12.5f, 12.5f}, 1);
-```
+限位校准（原先的 `GotoLimit`/`GotoZero`/`Calibrate`）已随新版协议下线，需要找限位或一键回零时请在上层自行实现。
 
 ### 5.2 设置参数
 
@@ -331,8 +339,6 @@ bool ok = motor->Calibrate({-12.5f, 12.5f}, 1);
 - `wait_for_ack = false`：发送指令后立即返回，不等待确认
 
 ```cpp
-motor->SetAcceleration(10.0f);                       // 阻塞，设置加速度
-motor->SetKt(0.095f, false);                         // 非阻塞，设置扭矩常数 Nm/A
 motor->SetCurPI(1.0f, 0.1f);                         // 阻塞，设置电流环 PI
 motor->SetSpdPI(0.5f, 0.05f);                        // 阻塞，设置速度环 PI
 motor->SetPosPD(10.0f, 1.0f);                        // 阻塞，设置位置环 PD
@@ -350,17 +356,28 @@ motor->SetCanTimeout(100);                           // 阻塞，设置 CAN 超�
 float pos = motor->GetParameter<encos::MotorParameter::Position>();     // rad
 float spd = motor->GetParameter<encos::MotorParameter::Speed>();        // rad/s
 float cur = motor->GetParameter<encos::MotorParameter::Current>();      // A
-auto version = motor->GetParameter<encos::MotorParameter::Version>();   // Version 结构体
+auto gains = motor->GetParameter<encos::MotorParameter::SpdKpKi>();     // KpKi<float>
 ```
 
-> **阻塞行为**：`GetParameter` 会发送查询指令并**阻塞等待**电机响应，返回后才继续执行。完整支持的参数列表见 API 头文件。
+新版协议新增的查询：
+
+```cpp
+uint32_t product_id = motor->GetParameter<encos::MotorParameter::ProductId>();        // 0x30
+uint32_t hw_version = motor->GetParameter<encos::MotorParameter::HardwareVersion>();  // 0x31，BCD 0xYYMMDDHH
+uint32_t fw_version = motor->GetParameter<encos::MotorParameter::FirmwareVersion>();  // 0x32，BCD 0xYYMMDDHH
+auto angle = motor->GetParameter<encos::MotorParameter::EncoderAngle>();              // 0x27
+```
+
+> **阻塞行为**：`GetParameter` 会发送查询指令并**阻塞等待**电机响应，返回后才继续执行；超时抛出 `std::runtime_error`。完整支持的参数列表见 API 头文件。
+
+> **固件版本**：驱动在构造电机时会发一帧固件版本查询（0x32）并记入 `GetProperties().fw_version`。`ProductId`/`HardwareVersion`/`FirmwareVersion`/`EncoderAngle` 属于新版查询，旧版固件不支持时会超时抛异常。`BrakeStatus` 属于旧版协议；新版协议不再提供该查询，无应答时同样会超时。`fw_version == 0` 也可能表示版本探测未收到应答，应结合设备固件能力判断。
 
 ### 5.4 运动控制
 
 所有控制方法均采用模板参数 `FeedbackType` 决定反馈行为：
 
 - `FeedbackType == 0`：指令发送后立即返回 `void`（**非阻塞发令**）
-- `FeedbackType >= 1`：**阻塞等待**电机反馈，返回对应的反馈结构体
+- `PVTControl` 的 `FeedbackType == 1`，其他运动控制的 `FeedbackType == 1/2/3`：**阻塞等待**电机反馈，返回对应的反馈结构体；超时返回带 `NoResponse` 的默认结构体。
 
 > 当使用非阻塞发令（`FeedbackType == 0`）时，方法不会返回电机状态。如需获取状态，参见 [第七章](#七电机控制流)。
 
@@ -395,21 +412,27 @@ auto fb = motor->PVTControl<1>(10.0f, 1.0f, 0.5f, 1.0f, 5.0f);
 | `CurControl<FeedbackType>(current, feedback)` | 电流控制 |
 | `TorControl<FeedbackType>(torque, feedback)` | 扭矩控制 |
 | `Stop<FeedbackType>(mode, current, feedback)` | 刹车/停止，支持多种制动模式 |
+| `Brake(bool enabled, bool wait_for_ack)` | 机械抱闸控制（仅旧版固件，见下） |
 
-与 `PVTControl` 不同的是，上述方法均带有一个额外的 `feedback` 参数（默认等于模板参数 `FeedbackType`），允许你在运行期覆盖反馈行为。例如，即使模板参数为 `0`，也可以通过指定 `feedback` 来请求返回电机状态：
+`PosControl`、`SpdControl`、`CurControl`、`TorControl` 和 `Stop` 带有 `feedback` 参数（默认等于模板参数 `FeedbackType`）。模板参数为 `0` 时，可以在运行期选择是否请求反馈及反馈类型，但函数仍返回 `void`；模板参数为 `1/2/3` 时，`feedback` 必须与之相同，否则抛出 `std::invalid_argument`。`Brake` 使用独立的 `wait_for_ack` 参数。`PVTControl` 无此参数，无论模板参数为 `0` 还是 `1`，都会请求类型 1 反馈。
+
+`Stop()` 的制动模式随固件版本不同：旧版固件按 `MotorStopMode` 原样发送 CTRL_MODE 2/3/4（2 为变阻尼控制模式并忽略电流，3 为能耗制动、4 为再生制动，后两者把 `current` 当作刹车电流阈值）；新版固件把三种模式统一映射为 CTRL_MODE 2（阻尼制动），`current` 作为制动电流上限。例如，模板参数为 `0` 时，可指定 `feedback` 请求异步状态，再通过回调或 `GetStatus()` 获取：
 
 ```cpp
-// 模板参数为 0，但通过 feedback 参数请求返回状态
-auto fb = motor->PosControl<0>(3.14f, 10.0f, 5.0f, 1);
+// 非阻塞请求类型 1 反馈，调用本身返回 void
+motor->PosControl<0>(3.14f, 10.0f, 5.0f, 1);
+
+// 如需在调用中等待并取得反馈，使用模板参数 1
+auto fb = motor->PosControl<1>(3.14f, 10.0f, 5.0f);
 ```
 
-此外，`Brake(bool enabled)` 用于显式启用或释放刹车抱闸，默认**阻塞**等待确认。
+此外，`Brake(bool enabled)` 用于显式启用或释放刹车抱闸，默认**阻塞**等待确认。新版协议已移除电磁抱闸控制命令，因此**新版固件上 `Brake()` 不发送任何报文并直接返回 `false`**；旧版固件上行为不变。可用 `HasBrake()` 判断硬件是否带抱闸、用 `GetProperties().fw_version != 0` 判断固件版本。
 
 `Brake(true)` 表示抱紧，发送 `75 00 00`；`Brake(false)` 表示释放，发送 `75 00 01`。
 按手册 §9.1.4 发送，按 §10.6 接收类型 6 报文；首字节低 5 位为错误码，仅无错误且状态匹配时确认成功。确认包分别为 `C0 00` 和 `C0 01`。不等待确认时，返回成功仅表示发送流程完成，不能确认电机已应用状态。
 `GetParameter<MotorParameter::BrakeStatus>()` 返回协议原始状态：`0` 表示抱紧，`1` 表示释放，公开返回类型仍为 `uint16_t`。
 
-> **重要提示**：`Motor` 对象在创建后会保持独立工作，即使原始的 `Bus` 和 `Adapter` 对象被释放，已获取的 `Motor` 仍然可以正常发送控制指令。但这也意味着你无法通过 `Motor` 反向获取到它所属的 `Bus` 或 `Adapter`。如果你后续仍需要操作总线（如扫描新电机）或访问适配器状态，请在创建电机前保留 `adapter` 和 `bus` 的实例。
+> **生命周期**：`Motor*` 是管理器拥有的非拥有指针。`DeleteBus()` 会级联删除其设备，`DeleteAdapter()` 会级联删除其 Bus 和设备；删除完成后，相关 `Motor*` 全部失效。必须在父对象删除前结束对这些指针的使用。
 
 ---
 
@@ -477,7 +500,7 @@ CAN FD，再查询普通 CAN；同一 ID 同时响应时，返回的电机会按
 
 **适用场景**：需要即时获取电机当前状态的场合，如单步调试、位置确认。
 
-在调用控制指令时，将模板参数 `FeedbackType` 设为 `1`（或更高），函数会**阻塞等待**电机返回反馈数据包，并将解析后的状态结构体直接返回给调用者：
+在调用控制指令时，将 `PVTControl` 的模板参数 `FeedbackType` 设为 `1`，或将其他运动控制接口设为 `1/2/3`，函数会**阻塞等待**电机返回匹配类型的反馈或超时。收到反馈时返回解析结果，超时时返回 `error == MotorError::NoResponse` 的默认结构体：
 
 ```cpp
 // PVT 控制，阻塞等待反馈
@@ -522,19 +545,17 @@ motor->SpdControl<0>(1.0f, 2.0f, 1);  // 第三个参数 feedback=1 请求反馈
 
 **适用场景**：最常见的高频控制逻辑，控制循环与状态查询分离，如主循环发令、监控线程查询状态。
 
-将模板参数 `FeedbackType` 和函数参数 `feedback` 均设为 `0`。指令发送后立即返回，用户可在需要时通过 `Motor::GetStatus()` 主动查询最近一次缓存的状态：
+将模板参数 `FeedbackType` 设为 `0`，并通过 `feedback = 1` 请求异步反馈。调用不等待应答；收到反馈后缓存会更新，用户可通过 `Motor::GetStatus()` 读取。`feedback = 0` 不请求反馈，只有另有主动上报来源时才能持续更新缓存。`PVTControl<0>` 总会请求类型 1 反馈。
 
 ```cpp
-// 高频控制循环（非阻塞）
+// 高频控制循环（不等待应答）
 while (running) {
-    motor->SpdControl<0>(1.0f, 2.0f);  // feedback 默认为 0
+    motor->SpdControl<0>(1.0f, 2.0f, 1);  // 请求异步反馈以更新缓存
+    auto status = motor->GetStatus();    // 可能是上一周期反馈；尚未收到时为空
+    if (status) {
+        // 在此使用状态；避免在高频循环中逐帧输出日志。
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
-}
-
-// 另一个线程低频查询状态
-auto status = motor->GetStatus();
-if (status) {
-    std::cout << "Current: " << status->current << std::endl;
 }
 ```
 
@@ -555,15 +576,15 @@ if (status) {
 auto status = motor->GetStatus();           // deduction = 1
 
 // 仅读取状态而不扣减生命周期（ peek 模式）
-auto status = motor->GetStatus(0);          // deduction = 0，不消耗生命周期
+auto peek_status = motor->GetStatus(0);     // deduction = 0，不消耗生命周期
 
 // 一次性大量扣减生命周期
-auto status = motor->GetStatus(10);         // deduction = 10
+auto consumed_status = motor->GetStatus(10); // deduction = 10
 ```
 
 #### 生命周期配置
 
-生命周期参数在**适配器级别**进行配置，影响该适配器下所有电机：
+可在**适配器级别**配置生命周期，影响该适配器下所有电机；也可使用 `motor->SetMaxStatusLifeCycle()` 单独调整某个电机：
 
 ```cpp
 // 设置状态最大生命周期为 5
@@ -617,7 +638,7 @@ struct MotorStatus {
 
 > **注意**：`MotorStatus` 虽然包含了所有可能的回报数据，但**实际填充的字段取决于你设置的回报类型**。例如，当回调中设置 `feedback = 2` 时，电机可能只返回位置、电流和温度，此时 `speed` 字段将保持默认值 `NaN`。在读取状态数据前，建议检查字段是否为 `NaN`，或使用 `std::isnan()` 进行判断。
 
-这与发送-应答模式不同：后者由模板参数决定精确的返回值类型（`MotorFeedbackMsg1` / `MotorFeedbackMsg2` / `MotorFeedbackMsg3`），因此返回的结构体一定与回报类型完全对应，不存在缺失值的问题。
+这与发送-应答模式不同：后者由模板参数决定返回值类型（`MotorFeedbackMsg1` / `MotorFeedbackMsg2` / `MotorFeedbackMsg3`）。仍应检查 `error`：超时返回 `NoResponse`，不能把默认字段视为有效测量值。
 
 ### 7.5 控制流对比
 
@@ -665,12 +686,14 @@ struct MotorStatus {
 
 程序还会通过受限的线程优先级 helper，把插件通信 loop 设置为 `SCHED_FIFO 50`。helper
 只持有 `CAP_SYS_NICE`，且只能修改直接调用进程中的目标线程。若安装阶段未成功设置
-capability，首次启动通信 loop 时可以通过 GUI 显式授权；拒绝授权不会阻止驱动运行，
-但线程会保留原调度策略。
+capability，创建适配器时会尝试通过 GUI 显式授权。Linux 的 `Ethercat` 和 `Can`
+要求该步骤成功：拒绝授权或设置失败会使构造抛出异常；通信 loop 中再次设置失败也会
+退出 loop。其他插件可能仅警告并继续，不能据此假定所有适配器都会降级运行。
 
 #### CAN 相关权限
 
-`Can` 插件会在具备权限时自动完成 CAN 口初始化，包括：
+`Can` 插件会在具备权限时检查 CAN 口配置，并在需要时完成初始化。默认仲裁段位率为
+1000000 bit/s，可通过 `extend.bitrate` 覆盖；以下命令仅展示默认仲裁段配置：
 
 1. `ip link set <ifname> down`
 2. `ip link set <ifname> type can bitrate 1000000`
@@ -697,7 +720,7 @@ capability，首次启动通信 loop 时可以通过 GUI 显式授权；拒绝�
 ### 9.3 驱动内部已自动处理的部分
 
 - `Can` 会自动启用接口并完成基础配置。
-- CAN、EtherCAT、USB-Serial、SLCAN 和 RelayWs 的主通信 loop 会自动请求
+- CAN、EtherCAT、USB-Serial、SLCAN、Ethernet 和 RelayWs 的主通信 loop 会自动请求
   `SCHED_FIFO 50`。
 - 驱动不会修改任何线程的 CPU affinity，也不要求更改内核启动参数。
 
@@ -769,8 +792,8 @@ void InitRealtimeMutex() {
 如果仍然出现周期抖动或高丢包率，建议依次确认：
 
 1. helper 的 `CAP_SYS_NICE` 和通信线程实时优先级是否生效
-2. 如果丢包率较高，建议启用软同步模式，即在每一轮消息发送完成后显式调用
-   `bus->Commit()`（不要让程序根据消息内容推算批次边界）
+2. 需要明确批次边界时，在初始化完成后先启用软同步模式，再于每轮发令后显式调用
+   `bus->Commit()`。同时检查负载；EtherCAT 待发帧超过 3 帧时会裁剪旧帧，软同步不保证不丢帧
 3. 应用控制线程是否使用低于驱动通信线程的合理优先级
 4. 是否存在普通线程长时间持锁导致的优先级反转
 5. 日志、内存分配、文件 IO 或其他阻塞工作是否进入实时路径

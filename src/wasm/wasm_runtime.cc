@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "utils/scope_exit.h"
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -186,6 +188,9 @@ ErrorCode RuntimeStore::DisposeAdapter(std::uint32_t adapter_handle) {
         return ErrorCode::InvalidHandle;
     }
 
+    if (motor_creation_adapter_ == adapter_it->second.adapter) {
+        return ErrorCode::OperationFailed;
+    }
     auto& entry = adapter_it->second;
     entry.disposing = true;
     std::vector<decltype(motors_)::node_type> removed_motors;
@@ -437,6 +442,18 @@ Result<std::uint32_t> RuntimeStore::GetMotorWithModel(std::uint32_t bus_handle, 
         return Result<std::uint32_t>::Success(existing->second);
     }
 
+    if (motor_creation_adapter_ != nullptr) {
+        return Result<std::uint32_t>::Failure(ErrorCode::OperationFailed,
+                                              "motor creation is in progress");
+    }
+    auto adapter = ResolveAdapter(bus_entry.adapter_handle);
+    if (!adapter.Ok()) {
+        return Result<std::uint32_t>::Failure(adapter.code, adapter.message);
+    }
+    motor_creation_adapter_ = adapter.value->adapter;
+    auto finish_creation = utils::MakeScopeExit([this]() {
+        motor_creation_adapter_ = nullptr;
+    });
     auto motor = bus_entry.bus->GetMotor(motor_idx, model);
     if (!motor) {
         return Result<std::uint32_t>::Failure(ErrorCode::OperationFailed, "GetMotor returned null");

@@ -107,7 +107,7 @@ test('RelayWs response completes while Asyncify yields the event loop', async ()
     interfaceName: `ws://127.0.0.1:${address.port}/ws`,
   })
   try {
-    const motor = adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
+    const motor = await adapter.getBus(0).getMotor(1, MotorModel.EC_A4310_P2)
     const result = await motor.spdControl({ speed: 1, current: 2, feedbackType: 1 })
     expect(eventLoopProgressed).toBe(true)
     expect(result.noResponse).toBe(false)

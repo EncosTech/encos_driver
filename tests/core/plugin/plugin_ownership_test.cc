@@ -12,8 +12,8 @@
 
 #include "adapter/base_adapter.h"
 #include "bus/bus.h"
+#include "device/motor/motor.h"
 #include "encos/driver_manager.h"
-#include "motor/motor.h"
 
 namespace encos {
 namespace {

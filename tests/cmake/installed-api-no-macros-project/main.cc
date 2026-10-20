@@ -10,8 +10,16 @@
 #endif
 
 int main() {
-    auto* volatile make_adapter = &encos::MakeAdapter;
-    if (make_adapter == nullptr) {
+    // MakeAdapter 已重载，取地址需显式选择重载；两个重载都必须可寻址
+    using MakeAdapterFunction = encos::BaseAdapter* (*) (const std::string&, const std::string&,
+                                                         const std::string&, encos::LogLevel);
+    using MakeAdapterExtendFunction =
+        encos::BaseAdapter* (*) (const std::string&, const std::string&, const std::string&,
+                                 encos::LogLevel, const nlohmann::json&);
+    auto* volatile make_adapter = static_cast<MakeAdapterFunction>(&encos::MakeAdapter);
+    auto* volatile make_adapter_extend =
+        static_cast<MakeAdapterExtendFunction>(&encos::MakeAdapter);
+    if (make_adapter == nullptr || make_adapter_extend == nullptr) {
         return 1;
     }
     return encos::DeleteAdapter(nullptr) || encos::DeleteBus(nullptr) ||

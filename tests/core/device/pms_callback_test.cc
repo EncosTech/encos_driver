@@ -3,9 +3,9 @@
 
 #include <thread>
 
-#include "battery/battery.h"
+#include "device/battery/battery.h"
+#include "device/pms/pms.h"
 #include "device_status_test_access.h"
-#include "pms/pms.h"
 #include "test_fixtures.h"
 
 namespace encos {

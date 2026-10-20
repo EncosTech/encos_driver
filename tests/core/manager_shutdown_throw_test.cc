@@ -61,5 +61,8 @@ int main() {
                 throw std::runtime_error("injected shutdown failure");
             }
         });
+    // Windows 上 DLL 静态析构晚于 exe 的 atexit，显式触发与管理器析构等价的清理路径。
+    encos::DriverManagerTestAccess::Internals(manager).contain_deletion_hook_exceptions = true;
+    encos::DriverManagerTestAccess::Reset(manager);
     return 0;
 }

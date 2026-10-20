@@ -13,8 +13,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "device/motor/types.h"
 #include "encos/export.h"
-#include "motor/types.h"
 #include "platform/log.h"
 
 namespace encos {
@@ -79,6 +79,21 @@ public:
      * @return 如果适配器正常返回 true，否则返回 false
      */
     virtual bool Ok() = 0;
+
+    /**
+     * @brief 用扩展配置信封中的 `buses` 增量更新已初始化实例的总线参数
+     * @param extend_json 宿主规范化的扩展配置串；空串表示没有更新请求
+     * @return 该适配器支持运行期总线重配置并已处理本次配置时返回 true；默认实现
+     *         （不支持该能力）在非空配置下返回 false
+     * @throws std::runtime_error 信封或字段非法、指向不存在的总线，或配置被设备拒绝
+     *
+     * 只应用 `buses` 中显式点名的总线，顶层公共参数 MUST 被忽略并记录诊断。不做跨总线
+     * 回滚：已成功的总线保持新配置。重配会中断目标总线上正在传输的报文，调用方负责
+     * 先停止该总线的流量。
+     *
+     * 默认实现只记录一条诊断并返回 false，因此不支持的适配器无需改动。
+     */
+    virtual bool UpdateBusExtend(const std::string& extend_json);
 
     /**
      * @brief 查询 Fake 适配器控制能力
@@ -229,7 +244,7 @@ private:
     std::function<void(const MotorPackMsg&)> MakeDeviceWriter(Bus* bus);
     void InitializeBusSyncMode(Bus* bus, std::function<void()> publish);
     void SubmitDeviceMessage(Bus* bus, void* channel, const MotorMessage& message);
-    void SubmitBusMessages(Bus* bus, const MotorMessages& messages);
+    void SubmitBusMessages(Bus* bus, const MotorMessages& messages, bool immediate = false);
     void CommitBus(Bus* bus);
     void SetBusSyncMode(Bus* bus, bool enabled);
 

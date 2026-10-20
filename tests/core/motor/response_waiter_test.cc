@@ -166,7 +166,7 @@ TEST_F(ResponseWaiterTests, ExplicitCanFdRangesOverloadPreservesRanges) {
 
     ASSERT_NE(initialized, nullptr);
     EXPECT_TRUE(initialized->IsCanFdEnabled());
-    EXPECT_FLOAT_EQ(initialized->GetPVTRanges().current.max, 37.5F);
+    EXPECT_FLOAT_EQ(initialized->GetProperties().current.max, 37.5F);
 }
 
 TEST_F(ResponseWaiterTests, ExplicitCanFdFirmwareOverloadUsesProtocolBeforeInitialization) {
@@ -299,6 +299,8 @@ TEST_F(ResponseWaiterTests, SharedSystemResponseBroadcastsToEveryMotorWaiter) {
     adapter->SeedMotor(0, 2, MotorModel::EC_A4310_P2);
     auto* other_motor = bus->GetMotor(2, MotorModel::EC_A4310_P2);
     ASSERT_NE(other_motor, nullptr);
+    // 丢弃构造期的固件版本查询记录，下面的计数只统计两条 SetPos 命令。
+    adapter->ClearCommandRecords();
 
     std::atomic<bool> first_done{false};
     std::atomic<bool> second_done{false};

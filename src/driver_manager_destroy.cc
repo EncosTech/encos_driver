@@ -119,6 +119,13 @@ bool EncosDriverManager::DestroyPms(Pms* pms) {
     return DestroyDevice(impl_, pms, DeviceKind::Pms);
 }
 
+bool EncosDriverManager::DestroyDevice(Device* device) {
+    using driver_manager_internal::DestroyDevice;
+    using driver_manager_internal::DeviceKind;
+
+    return DestroyDevice(impl_, device, DeviceKind::External);
+}
+
 bool EncosDriverManager::DestroyGlove(Glove* glove) {
     using driver_manager_internal::callback_context;
     using driver_manager_internal::GloveKey;

@@ -16,6 +16,13 @@ BaseAdapter* MakeAdapter(const std::string& adapter_type, const std::string& int
                                                         log_level);
 }
 
+BaseAdapter* MakeAdapter(const std::string& adapter_type, const std::string& interface_name,
+                         const std::string& logger_name, LogLevel log_level,
+                         const nlohmann::json& extend) {
+    return EncosDriverManager::Instance().CreateAdapter(adapter_type, interface_name, logger_name,
+                                                        log_level, extend);
+}
+
 bool UnloadAdapterByInterfaceName(const std::string& interface_name) {
     return EncosDriverManager::Instance().DestroyAdapterByInterfaceName(interface_name);
 }
@@ -42,6 +49,10 @@ bool DeleteImu(Imu* imu) {
 
 bool DeletePms(Pms* pms) {
     return EncosDriverManager::Instance().DestroyPms(pms);
+}
+
+bool DeleteDevice(Device* device) {
+    return EncosDriverManager::Instance().DestroyDevice(device);
 }
 
 bool DeleteGlove(Glove* glove) {

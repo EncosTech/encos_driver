@@ -17,6 +17,7 @@
 #include <string>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -64,6 +65,37 @@ bool HasEffectiveSysNiceCapability() {
     return false;
 }
 
+/**
+ * @brief 判断 helper 可执行文件是否已通过文件能力获得 CAP_SYS_NICE
+ *
+ * 安装步骤会给 helper 打上 `cap_sys_nice+ep`。此时 helper 不再 fail-closed，
+ * “无能力时必须以权限错误退出”的用例失去前提，应当跳过。
+ *
+ * 只读 `security.capability` 扩展属性中 permitted 的低 32 位：CAP_SYS_NICE 是第 23 位，
+ * 三种 vfs_cap_data 版本都把 permitted 低 32 位放在偏移 4，无需区分版本。
+ */
+bool HelperHasSysNiceFileCapability() {
+    constexpr const char* kCapabilityAttribute = "security.capability";
+    const ssize_t size =
+        getxattr(ENCOS_TEST_THREAD_PRIORITY_HELPER, kCapabilityAttribute, nullptr, 0);
+    // vfs_cap_data：v1 为 12 字节，v2 为 20 字节，v3 另附 8 字节 rootid
+    if (size < 12 || size > 32) {
+        return false;
+    }
+    std::uint8_t buffer[32] = {};
+    // 必须一次读满整个属性值，缓冲区过小会得到 ERANGE
+    if (getxattr(ENCOS_TEST_THREAD_PRIORITY_HELPER, kCapabilityAttribute, buffer,
+                 static_cast<std::size_t>(size)) != size) {
+        return false;
+    }
+    const auto permitted_low = static_cast<std::uint64_t>(buffer[4]) |
+                               (static_cast<std::uint64_t>(buffer[5]) << 8U) |
+                               (static_cast<std::uint64_t>(buffer[6]) << 16U) |
+                               (static_cast<std::uint64_t>(buffer[7]) << 24U);
+    constexpr std::uint64_t kCapSysNiceMask = std::uint64_t{1} << 23u;
+    return (permitted_low & kCapSysNiceMask) != 0;
+}
+
 TEST(ThreadPriorityHelperTests, ParsesOnlyExactPositiveDecimalArguments) {
     ThreadPriorityRequest request{};
     const char* valid[] = {"helper", "123", "456", "50"};
@@ -108,6 +140,9 @@ TEST(ThreadPriorityHelperTests, ExecutableRejectsMalformedAndExternalTargets) {
 TEST(ThreadPriorityHelperTests, ExecutableFailsClosedWithoutCapability) {
     if (HasEffectiveSysNiceCapability()) {
         GTEST_SKIP() << "Current test process already has effective CAP_SYS_NICE";
+    }
+    if (HelperHasSysNiceFileCapability()) {
+        GTEST_SKIP() << "Helper executable already carries CAP_SYS_NICE (installed setup)";
     }
     const auto process_id = std::to_string(getpid());
     const auto thread_id = std::to_string(static_cast<pid_t>(syscall(SYS_gettid)));

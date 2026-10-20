@@ -13,8 +13,8 @@
 #include <type_traits>
 #include <vector>
 
-#include "motor/motor.h"
-#include "motor/types.h"
+#include "device/motor/motor.h"
+#include "device/motor/types.h"
 #include "platform/log.h"
 
 namespace encos {
@@ -23,7 +23,7 @@ class MotorWaiterTestAccess {
 public:
     static std::unique_ptr<Motor> CreateWithModel(Bus* bus, MotorModel model, uint8_t frame_flags,
                                                   bool canfd);
-    static std::unique_ptr<Motor> CreateWithRanges(Bus* bus, MotorPVTRanges ranges,
+    static std::unique_ptr<Motor> CreateWithRanges(Bus* bus, MotorProperties ranges,
                                                    uint8_t frame_flags, bool canfd);
     static std::unique_ptr<Motor> CreateForFirmwareInitialization(Bus* bus, uint8_t frame_flags,
                                                                   bool canfd);

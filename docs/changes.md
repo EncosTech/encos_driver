@@ -880,3 +880,58 @@
 
 - 补充 A0/C0 抱闸确认及错误、状态不匹配、长报文的回归测试。
 - 发布脚本测试覆盖根目录和子目录的代理配置排除，以及目标快照旧配置清理。
+
+### 4.0.0
+
+#### Breaking Changes
+
+- 基类 `BaseAdapter` 新增公开虚函数 `UpdateBusExtend(const std::string&)`，会移动 vtable 槽位：用旧版驱动头文件编译的**外部**适配器插件需要重新编译。内置插件与本库同批构建，无影响。
+- 设备头文件与实现目录收拢到 `include/device/` 与 `src/device/`，include 路径统一为 `device/<dev>/...`；直接按旧路径包含设备头文件的消费者需要更新。
+- 内置插件按类别迁入 `plugins/adapter/`，适配器共享工具迁入 `plugins/adapter/utils/`；新增设备插件目录 `plugins/device/`。
+- 电机命令集适配新版《电机 CAN 通信协议说明 V1.0.0》，同时保持旧版固件可用：驱动在构造时查询固件版本（0x32），据此选择命令与解码语义。
+- 删除 `Motor::GotoLimit`、`Motor::GotoZero`、`Motor::Calibrate` 与 `src/device/motor/motor_limit.cc`。
+- 删除新版协议不再支持的命令与对应接口：`Motor::SetAcceleration`（配置 0x01）、`Motor::SetKt`（配置 0x04）、`MotorParameter::Acceleration`(0x05)、`Version`(0x1E) 与 `struct Version`、`FluxKpGain`(0x06)、`FluxKiGain`(0x07)、`FbKpGain`(0x08)、`PdGain`(0x09)。配置通信模式（0x02）与查询抱闸状态（0x25）按要求保留。
+- `MotorPVTRanges` 更名为 `MotorProperties`，旧名保留为 `[[deprecated]]` 别名；`Motor::GetPVTRanges`/`Motor::SetDriverPVTRanges` 更名为 `Motor::GetProperties`/`Motor::SetProperties`，旧名保留为 `[[deprecated]]` 转发。`Bus::GetMotor`、`EncosDriverManager::CreateMotor` 与 `FakeMotorSnapshot::ranges` 的签名同步换用新类型。
+- `MotorError` 追加 `OutputEncoderError`(9)、`FetOverTemperature`(10)、`OverSpeed`(11)、`TemperatureWarning`(12)；既有成员数值不变。新版固件的 6/7/8/9/31 与旧版固件的 6/7/8 含义不同，由驱动按固件版本映射。
+- 新版固件下 `Motor::Brake` 不发送任何报文并直接返回 `false`（协议已移除电磁抱闸控制），`Motor::Stop` 把三种 `MotorStopMode` 统一映射为 CTRL_MODE 2 并以 `current` 作为制动电流上限。
+- **所有**电机初始化路径（型号、显式 `MotorProperties`、按索引查询固件）都会额外发送一帧固件版本查询；旧版固件不应答，需等一个短超时（`kFirmwareProbeTimeout`，100 ms）后判为旧版。型号初始化路径不再是零 CAN 流量。
+- npm 的 `Bus.getMotor(index, model)` 改为返回 `Promise<MotorWrapper>`，调用方需使用 `await` 等待固件探测完成。同一 Runtime 的创建与异步控制需依次等待，重叠调用会返回明确错误。
+
+#### Feature
+
+- 除 Ethercat 插件外，项目自有代码采用 MIT 许可证，代码文件补充 SPDX 说明；原开源插件和第三方依赖保留其许可，安装包与 npm 包随附许可证。
+
+- 适配器缓存命中不再丢弃扩展配置：同一 `interface_name` 二次 `MakeAdapter` 时，新 `extend` 中 `buses` 的条目经 `BaseAdapter::UpdateBusExtend` 增量应用到既有实例。顶层公共参数无法重新应用，被忽略并记录警告；管理器不解析参数语义，只按非空字符串转发。
+- 新增 `CreateAdapterWithFactory(interface_name, extend_json, factory)` 重载；原二参数重载转发空串，既有调用点无需改动。更新在对象锁之外、适配器自身的在飞引用保护下执行，不会与 `DestroyAdapter` 竞态；更新抛异常时不撤销也不销毁既有实例。
+- `AdapterExtend` 新增按总线取值的 `BusOverride(slave, bus)`（只返回该总线在 `buses` 中的条目、**不合并**顶层公共参数）与 `Common()`；增量更新路径据此实现“只认 buses”的语义。
+- `Ethernet`、`Ethercat`、`EthercatIGH`、`GsUsb` 四个插件实现 `UpdateBusExtend`：部分字段合并到该总线当前生效时序之上，逐条重配，不做跨总线回滚。其余插件继承默认空实现（记录诊断并返回 false）。
+- 修复 `Ethercat` 与 `EthercatIGH` 的静态构建扩展配置入口：两者的 `plugin.cmake` 此前未声明 `ENCOS_PLUGIN_STATIC_FACTORY_EXTEND`，且 `CreateWithExtend` 收的是 `AdapterExtend` 而静态注册表传字符串，静态模式下 extend 会被静默忽略。现改为与 Can/Slcan/GsUsb 一致的字符串签名。
+- 新增外部设备插件机制：`include/device/device.h` 的抽象 `Device` 基类、`include/device/device_plugin.h` 的 C ABI 描述符与 `MakeDeviceDriver` 入口，运行期以扁平目录下 `lib<Type>Device.so` 后缀与 `MakeDeviceDriver` 符号双重判别加载，并校验 `abi_version`。
+- 管理器新增 `CreateDevice`/`DestroyDevice`/`GetAvailableDeviceTypes`，`Bus` 新增 `GetDevice`；外部设备复用既有设备生命周期引擎、operation gate 在飞保护与级联删除。
+- CMake 插件发现按 adapter/device 分类，分别生成适配器与设备静态注册表；`plugin.cmake` 新增 `ENCOS_PLUGIN_KIND`/`ENCOS_PLUGIN_DEVICE_TYPE` 与目录一致性校验。
+- 新增测试设备插件 `plugins/device/testDevice/`，仅在 `ENCOS_BUILD_TESTS=ON` 时可用（由插件检查函数门控），不进入安装与 DEB。
+- CI 拆分测试构建与 DEB 打包构建：打包构建使用 `ENCOS_BUILD_TESTS=OFF` 的独立产物目录，测试专用插件不会进入发布包。
+- 设备入口去掉索引：`Bus::GetDevice(type, config)` 与 `EncosDriverManager::CreateDevice(bus, type, config)` 以 `nlohmann::json` 自定义配置取代原 `idx` 参数；设备身份为 `(bus, type, config)`，配置不同即独立实例。`DeviceCreateContext` 的 `index` 字段改为 `config`，`Device::Index()` 改为 `Config()`，`fill_route_ids` 改为接收规范化配置串。新增 `nlohmann::_json` 依赖（DEB 依赖 `nlohmann-json3-dev`，安装包配置导出 `find_dependency`）。
+- 新增现代 C++ 设备插件包装层 `include/device/device_plugin_builder.h`：`encos::DevicePlugin` 链式 builder（`Routes`/`Create`/`Destroy`/`ClaimBus`/`Capabilities`），配置直接以 JSON 传递，作者无需接触 C ABI 或手写解析。
+- 新增"整总线认领"能力：能力位 `kDeviceCapabilityClaimBus` 与整总线标识符 `kDeviceClaimBusRouteId`；认领设备接收本总线所有未被其它设备路由命中的帧（含系统帧 `0x7FF`），精确路由优先、认领不独占、同一总线至多一个认领设备。
+- 新增构建选项 `ENCOS_ENABLE_DEVICE_PLUGINS`（原生默认 ON，Emscripten/wasm 必须 OFF）：关闭时设备插件入口不声明不编译、公共头不依赖 `nlohmann/json`、设备插件目录扫描跳过。
+- `add_emd_plugin` 的安装消费模式放宽清单要求：静态注册表字段仅源码树模式需要，安装环境下只需检查函数、类型名与动态目标名。
+- 新增 `scripts/verify-installed-device-plugin.sh` 与 `tests/cmake/installed-device-plugin-project` 样例工程：在仅安装 DEB、无驱动源码的环境中构建外部设备插件并完成运行期加载验证（可用 `-DENCOS_ENABLE_PACKAGE_VERIFY_TESTS=ON` 注册为 CTest）。
+- 型号表 `src/device/motor/motor_models.csv` 新增 `brake` 布尔列（当前 71 行全部为 `false`，待硬件侧确认）；`MotorProperties` 新增 `brake` 与 `fw_version` 字段，`brake` 只在按型号初始化时由型号表给出；新增 `Motor::HasBrake()`，且 `Motor::SetProperties` 不覆盖 `brake`/`fw_version`（与既有的 `kt` 处理一致）。
+- 新增新版协议查询：`MotorParameter::ProductId`(0x30)、`HardwareVersion`(0x31)、`FirmwareVersion`(0x32) 返回 `uint32_t`（版本为 BCD `0xYYMMDDHH`），`MotorParameter::EncoderAngle`(0x27) 返回 `MotorEncoderAngle`（校准标志与原始/校准角度）。这些命令在旧版固件上超时抛 `std::runtime_error`，与其它参数查询一致。
+- 新增 `Bus::StartAutoAssignCanId(uint16_t)` 与 `Bus::StopAutoAssignCanId()`：新版协议 2.5 的自动分配 CAN ID 广播（0x08），无即时应答，分配完成后需重新上电并重新 `ScanMotors()`。
+- 按固件版本分支的语义：温度反馈解码（旧版 `(raw-50)/2`、新版 `raw-55`）、故障码映射、`Stop`/`Brake` 行为、速度环与位置环增益倍率（配置 0x0D/0x0E 与查询 0x21/0x22，旧版 ×1e-5、新版 ×0.002）。
+- `SetCommunicationMode`（配置通信模式 0x02）只存在于旧版协议，旧版帧格式不变，新版固件上不发送任何报文并直接返回 `false`。
+- 假适配器 `FakeMotorSnapshot` 新增 `fw_version`（`nullopt` 模拟不认识 0x32 的真机旧固件、`0` 为旧版语义但不等待超时、非 0 为完整新版固件）与产品标识/硬件版本/编码器角度字段；按固件版本编码温度反馈；补齐电流环/速度环/位置环增益查询与写入的真实存取。
+
+#### Fix
+
+- GitHub 发布快照递归排除 `AGENTS.md`、`CLAUDE.md` 和 `.claude`、`.codex`、`.agents`、`.cursor`、`.gemini`、`.opencode`，同时清理目标分支已有的对应文件。
+
+- 修复 WASM 电机创建期间异步固件探测被同步包装器提前读取，导致无效句柄、测试无响应和 Asyncify 状态损坏的问题。
+- 合并同一 Bus 包装器的重复创建请求；创建期间拒绝同步销毁适配器，并在创建恢复后检查包装器是否已销毁，失败后可重试。
+- WASM CI 增加测试进程与任务超时，避免阻塞后无限等待。
+
+#### Test
+
+- 更新 Fake 与串口测试的初始化固件查询计数，增加固件探测超时、重复创建、销毁竞态和异步调用重叠的回归测试。
