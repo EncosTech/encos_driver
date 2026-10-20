@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include "example_soem/ethercat_layer.h"
 
 #include <stdio.h>
@@ -229,6 +232,11 @@ static bool configure_layouts(EcMaster* master) {
  * @return 成功返回 true，失败返回 false
  */
 bool ec_master_open(EcMaster* master, const char* ifname) {
+    return ec_master_open_with_configs(master, ifname, NULL, 0);
+}
+
+bool ec_master_open_with_configs(EcMaster* master, const char* ifname,
+                                 const EcAdapterConfig* configs, size_t count) {
     if (master == NULL || ifname == NULL) {
         return false;
     }
@@ -254,7 +262,17 @@ bool ec_master_open(EcMaster* master, const char* ifname) {
         return false;
     }
 
-    ecx_statecheck(&master->ctx, 0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 4);
+    if (ecx_statecheck(&master->ctx, 0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 4) !=
+        EC_STATE_SAFE_OP) {
+        fprintf(stderr, "Not all slaves reached SAFE_OP before CAN timing setup.\n");
+        ecx_close(&master->ctx);
+        return false;
+    }
+
+    if (!ec_master_configure_adapters(master, configs, count)) {
+        ecx_close(&master->ctx);
+        return false;
+    }
 
     master->ctx.slavelist[0].state = EC_STATE_OPERATIONAL;
     ecx_send_processdata(&master->ctx);

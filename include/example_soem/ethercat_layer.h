@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <soem/soem.h>
@@ -11,6 +14,16 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** @brief 单路 CAN 时序；从站和总线编号从 0 开始，速率单位 bit/s */
+typedef struct {
+    uint16_t slave_id;    /**< 从站编号 */
+    uint16_t bus_id;      /**< CAN 通道编号 */
+    uint32_t bitrate;     /**< 仲裁段波特率 */
+    uint32_t dbitrate;    /**< 数据段波特率 */
+    double sample_point;  /**< 仲裁段采样点，范围 (0, 1) */
+    double dsample_point; /**< 数据段采样点，范围 (0, 1) */
+} EcAdapterConfig;
 
 /** @brief EtherCAT 从站 PDO 格式 */
 typedef enum {
@@ -111,6 +124,27 @@ bool ec_read_motor_packet(const uint8_t* slave_input, const EcSlavePdoLayout* la
  * @return 成功返回 true，失败返回 false
  */
 bool ec_master_open(EcMaster* master, const char* ifname);
+
+/**
+ * @brief 打开主站并在开始 PDO 通信前配置 CAN 时序
+ * @param master 主站句柄
+ * @param interface_name SOEM 网卡名或 IgH 主站编号
+ * @param configs 配置数组；数量为零时可为 NULL，保持固件原配置
+ * @param count 配置项数量
+ * @return 初始化及配置成功返回 true
+ */
+bool ec_master_open_with_configs(EcMaster* master, const char* interface_name,
+                                 const EcAdapterConfig* configs, size_t count);
+
+/**
+ * @brief 初始化期间配置 CAN 时序；SOEM 立即写入，IgH 在激活前注册状态切换 SDO
+ * @param master 已发现从站布局、尚未完成初始化的主站
+ * @param configs 配置数组；同一从站同一通道不能重复
+ * @param count 配置项数量
+ * @return 校验和写入或注册成功返回 true；失败时应关闭主站，不开始 PDO 通信
+ * @note 仅供初始化阶段调用，不支持运行时修改；下发失败不会回滚已写入项
+ */
+bool ec_master_configure_adapters(EcMaster* master, const EcAdapterConfig* configs, size_t count);
 
 /**
  * @brief 关闭 SOEM EtherCAT 主站

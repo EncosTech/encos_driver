@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.14)
 project(example_soem C)
 
@@ -16,6 +19,7 @@ if(NOT TARGET soem)
 endif()
 
 add_library(example_soem_core STATIC
+    src/adapter_config.c
     src/demo_timing.c
     src/external_device.c
     src/ethercat_layer.c
@@ -62,3 +66,21 @@ add_custom_target(tidy
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     VERBATIM
 )
+
+if(BUILD_TESTING)
+    add_executable(example_soem_adapter_config_tests tests/test_adapter_config.c)
+    target_link_libraries(example_soem_adapter_config_tests PRIVATE example_soem_core)
+    target_link_options(example_soem_adapter_config_tests PRIVATE "-Wl,--wrap=ecx_SDOwrite")
+    add_test(NAME example_soem_adapter_config_tests COMMAND example_soem_adapter_config_tests)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(example_soem_demo_startup_tests tests/test_demo_startup.c)
+    target_link_libraries(example_soem_demo_startup_tests PRIVATE example_soem_core)
+    target_link_options(example_soem_demo_startup_tests PRIVATE "-Wl,--wrap=ec_master_open_with_configs")
+    target_link_options(example_soem_demo_startup_tests PRIVATE "-Wl,--wrap=ec_master_cycle")
+    target_link_options(example_soem_demo_startup_tests PRIVATE "-Wl,--wrap=ec_master_send_packet")
+    target_link_options(example_soem_demo_startup_tests PRIVATE "-Wl,--wrap=ec_master_close")
+    target_link_options(example_soem_demo_startup_tests PRIVATE "-Wl,--wrap=demo_wait_until_next_cycle")
+    add_test(NAME example_soem_demo_startup_tests COMMAND example_soem_demo_startup_tests)
+endif()

@@ -103,3 +103,42 @@ SOEM 在原上下文中执行 SAFE_OP+ERROR 确认、SAFE_OP 到 OP 请求、从
 示例保持原有 5000 周期运行时长，首次就绪后发送一次命令。已发送的命令不会在
 重连后自动重放；应用需要持续控制时，应在就绪后提交新的业务命令。
 新增 recovery 测试使用模拟主站接口，不需要硬件；真实网线拔插恢复仍需上机验证。
+
+## 通过 SDO 配置 CAN 时序（v4 网关）
+
+`examples/main.c` 的 `main()` 中使用 `adapterConfigs` 数组逐通道配置。例如：
+
+```c
+const EcAdapterConfig adapterConfigs[] = {
+    {.slave_id = 0, .bus_id = 0, .bitrate = 1000000, .dbitrate = 5000000,
+     .sample_point = 0.75, .dsample_point = 0.875},
+    {.slave_id = 0, .bus_id = 1, .bitrate = 500000, .dbitrate = 2000000,
+     .sample_point = 0.80, .dsample_point = 0.875},
+};
+```
+
+从站和 CAN 通道编号均从 0 开始；波特率单位为 bit/s，采样点为 `(0, 1)`
+内的小数，写入时四舍五入为千分比整数。每项须填写全部四个时序参数，
+同一从站的同一通道不能重复。未列出的通道不会收到时序 SDO。
+
+该功能默认关闭：`main()` 中 `enableAdapterConfig = false`，电机控制和 IMU 监控
+均不下发 CAN 时序 SDO，保留网关原配置。`adapterConfigs` 仅作为配置示例，
+使用前须按自己的 EC 转 CAN 型号、接线及设备参数修改。
+
+确认型号及固件支持 CAN 时序 SDO 后，将 `enableAdapterConfig` 改为 `true` 并重新编译。
+并非所有 EC 转 CAN 都支持此功能；v3 或其他不支持该对象字典的固件应保持关闭。
+SDO 失败时程序会提示检查 EC 转 CAN 型号及固件版本；版本过低或不支持时，
+请关闭该开关并重新编译后使用。关闭配置不会恢复先前已写入的时序参数。
+
+`ec_master_open_with_configs()` 在初始化期间调用 `ec_master_configure_adapters()`：
+先校验整组配置及目标通道，再依次写入 `0x2300 + bus_id` 的子索引 1–4
+（仲裁段波特率、数据段波特率、仲裁段采样点、数据段采样点，均为 32 位），
+最后写子索引 5（8 位值 1，Apply）。不支持初始化完成后的运行时配置。
+失败不会回滚已写入的配置；应用应关闭主站并检查错误，不继续业务发送。
+
+SOEM 在确认 SAFE_OP 后、首次过程数据发送及 OP 请求之前同步写入 SDO。
+任一写入失败，初始化立即失败并关闭连接。应用层 PDO 循环启动前已完成配置。
+断联恢复沿用现有流程，不额外重放时序 SDO；如果网关断电丢失配置，需重新初始化主站。
+
+无硬件测试 `*_adapter_config_tests` 校验目标映射、写入顺序和长度、采样点换算、
+非法及重复配置，以及各步骤失败时停止下发。实际固件参数生效仍需硬件验证。
