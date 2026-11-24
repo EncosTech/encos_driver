@@ -1,0 +1,29 @@
+Checks: >-
+  -*,
+  bugprone-misleading-indentation,
+  bugprone-suspicious-semicolon,
+  bugprone-use-after-move,
+  modernize-use-bool-literals,
+  modernize-use-nullptr,
+  performance-for-range-copy,
+  performance-move-const-arg,
+  readability-avoid-const-params-in-decls,
+  readability-container-size-empty,
+  readability-delete-null-pointer
+WarningsAsErrors: >-
+  bugprone-misleading-indentation,
+  bugprone-suspicious-semicolon,
+  bugprone-use-after-move,
+  modernize-use-bool-literals,
+  modernize-use-nullptr,
+  performance-for-range-copy,
+  performance-move-const-arg,
+  readability-avoid-const-params-in-decls,
+  readability-container-size-empty,
+  readability-delete-null-pointer
+HeaderFilterRegex: '^(include|src|plugins|tests)/'
+FormatStyle: file
+CheckOptions:
+  - key: readability-implicit-bool-conversion.AllowIntegerConditions
+    value: '1'
+

@@ -1,0 +1,13 @@
+example_igh is licensed under the GNU General Public License version 2.
+
+This program uses the IgH EtherCAT Master application interface (`ecrt.h`) and
+links against the system-provided IgH userspace library (`libethercat`). The IgH
+EtherCAT Master distribution contains GPL/LGPL components. This example program
+is distributed as GPLv2-only to match the requested licensing policy for the
+IgH-based example.
+
+The full GNU GPLv2 license text is available from:
+
+    https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+SPDX-License-Identifier: GPL-2.0-only

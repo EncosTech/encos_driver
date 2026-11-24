@@ -1,0 +1,47 @@
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++17
+
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 100
+AccessModifierOffset: -4
+
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignEscapedNewlines: Left
+AlignOperands: Align
+AlignTrailingComments: true
+
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: Empty
+AllowShortLoopsOnASingleLine: false
+
+BinPackArguments: true
+BinPackParameters: true
+BreakBeforeBraces: Attach
+BreakConstructorInitializers: BeforeColon
+BreakInheritanceList: BeforeColon
+
+Cpp11BracedListStyle: true
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^".*\\.h"$'
+    Priority: 1
+  - Regex: '^<.*>$'
+    Priority: 2
+
+NamespaceIndentation: None
+SortIncludes: true
+SortUsingDeclarations: true
+SpaceAfterCStyleCast: true
+SpaceBeforeParens: ControlStatements
+

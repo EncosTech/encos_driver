@@ -1,0 +1,6 @@
+/build*
+/install
+/Testing
+/build-tests
+motor_model_generated.*
+__pycache__
