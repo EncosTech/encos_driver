@@ -39,12 +39,31 @@ sudo setcap cap_net_raw,cap_net_admin+ep ./build/example_soem_demo
 
 ## 支持的 PDO 网关格式
 
-EtherCAT 层根据从站输出 PDO 字节数识别网关类型：
+EtherCAT 层根据 PDO 字节数识别网关类型。
 
 - `86` 字节：classic CAN，2 路 bus，每路 3 个槽位
 - `336` 字节：CAN FD，3 路 bus，每路 8 个槽位
+- `420` 字节：CAN FD，3 路 bus，每路 10 个槽位，双向均需为 420 字节
 - `896` 字节：CAN FD，8 路 bus，每路 8 个槽位
 - `1120` 字节：CAN FD，8 路 bus，每路 10 个槽位
+
+四种 CAN FD 布局共用同一种分片格式。每槽 14 字节，包括 4 字节小端 CAN ID、
+1 字节 FRAME、1 字节整帧长度和 8 字节数据。FRAME 的 bit0～3 分别表示 EXT、
+FD、BRS、RTR。超过 8 字节时设置 bit4，并在 bit5～7 填入从 0 开始的分片索引。
+例如标准 FD+BRS 的 20 字节帧使用三个槽，FRAME 为 `0x16/0x36/0x56`，
+三个槽的长度字段均为 20，末槽的后 4 个数据字节填零。
+
+`ec_master_send_can_frame()` 将完整的 `EcCanFrame` 提交给主站队列，支持
+1～64 字节。调用时只设置低四位标志。每路按提交顺序发送，每帧的全部分片占用
+同一 PDO 中的连续槽。队首整帧放不下时，该路后续报文一起顺延。主站队列最多存放
+64 帧，返回成功表示已入队。原有 `ec_master_send_packet()` 仍使用指定电机槽位
+提交最多 8 字节的报文。两种发送接口混用时，队列使用固定电机槽之外的连续空槽。
+
+`ec_master_cycle_with_can_handler()` 接收 CAN FD 布局上的完整帧，并将从站编号、
+总线编号和包括 FD、BRS 在内的报文标志传给回调。应用需传入实际使用的循环周期
+（微秒）。分片 0 开始重组，同键分片可在当前和下一 PDO 集齐，最长等待两倍周期。
+收到坏 WKC 或离开 OP 时丢弃尚未完成的重组。原有 `ec_master_cycle()` 使用
+1 ms 周期，继续处理短电机、IMU 和电池报文。
 
 ## Demo 用法
 

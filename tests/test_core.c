@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <string.h>
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
 
 #include "example_soem/demo_timing.h"
 #include "example_soem/ethercat_layer.h"
@@ -33,6 +35,23 @@ static int test_pdo_identification(void) {
     CHECK(layout.format == EC_SLAVE_FORMAT_CAN_FD_8_BUS);
     CHECK(layout.bus_count == 8);
     CHECK(layout.slots_per_bus == 8);
+
+    CHECK(ec_identify_pdo_layout(1120, &layout));
+    CHECK(layout.format == EC_SLAVE_FORMAT_CAN_FD_8_BUS_10_SLOTS);
+    CHECK(layout.bus_count == 8);
+    CHECK(layout.slots_per_bus == 10);
+
+    CHECK(!ec_identify_pdo_layout(420, &layout));
+    CHECK(!ec_identify_pdo_layout_sizes(420, 336, &layout));
+    CHECK(ec_identify_pdo_layout_sizes(420, 420, &layout));
+    CHECK(layout.format == EC_SLAVE_FORMAT_CAN_FD_3_BUS_10_SLOTS);
+    CHECK(layout.bus_count == 3);
+    CHECK(layout.slots_per_bus == 10);
+    CHECK(layout.pdo_size == 420);
+    CHECK(ec_motor_slot_offset(&layout, 0, 0) == 0);
+    CHECK(ec_motor_slot_offset(&layout, 1, 0) == 140);
+    CHECK(ec_motor_slot_offset(&layout, 2, 0) == 280);
+    CHECK(ec_motor_slot_offset(&layout, 2, 9) + sizeof(MotorPackMsg) == 420);
 
     CHECK(!ec_identify_pdo_layout(340, &layout));
     return 0;
@@ -72,6 +91,21 @@ static int test_write_packet_offset(void) {
     CHECK(copied.frame_flags == packet.frame_flags);
     CHECK(copied.len == packet.len);
     CHECK(copied.data[0] == packet.data[0]);
+    return 0;
+}
+
+static int test_motor_packet_keeps_single_slot(void) {
+    EcSlavePdoLayout layout;
+    uint8_t pdo[336] = {0};
+    MotorPackMsg packet = {.id = 0x123, .frame_flags = MOTOR_CAN_FLAG_FD_MASK, .len = 20};
+
+    CHECK(ec_identify_pdo_layout(sizeof(pdo), &layout));
+    CHECK(!ec_write_motor_packet(pdo, &layout, 0, 0, &packet));
+    pdo[0] = 0x23;
+    pdo[1] = 0x01;
+    pdo[4] = 0x16;
+    pdo[5] = 20;
+    CHECK(!ec_read_motor_packet(pdo, &layout, 0, 0, &packet));
     return 0;
 }
 
@@ -186,6 +220,7 @@ int main(void) {
     CHECK(test_pdo_identification() == 0);
     CHECK(test_validate_and_offset() == 0);
     CHECK(test_write_packet_offset() == 0);
+    CHECK(test_motor_packet_keeps_single_slot() == 0);
     CHECK(test_motor_encoding() == 0);
     CHECK(test_motor_config_flags() == 0);
     CHECK(test_timespec_add_us_normalizes_nsec() == 0);

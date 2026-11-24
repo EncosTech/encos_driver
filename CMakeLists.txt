@@ -20,6 +20,7 @@ endif()
 
 add_library(example_soem_core STATIC
     src/adapter_config.c
+    src/can_fd_pdo.c
     src/demo_timing.c
     src/external_device.c
     src/ethercat_layer.c
@@ -53,6 +54,7 @@ if(BUILD_TESTING)
     target_link_options(example_soem_recovery_tests PRIVATE "-Wl,--wrap=ecx_statecheck")
     target_link_options(example_soem_recovery_tests PRIVATE "-Wl,--wrap=ecx_reconfig_slave")
     target_link_options(example_soem_recovery_tests PRIVATE "-Wl,--wrap=ecx_recover_slave")
+    target_link_options(example_soem_recovery_tests PRIVATE "-Wl,--wrap=clock_gettime")
     add_test(NAME example_soem_recovery_tests COMMAND example_soem_recovery_tests)
 endif()
 
