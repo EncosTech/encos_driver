@@ -4,8 +4,10 @@
 #include <cstring>
 #include <gtest/gtest.h>
 
+#include "ethernet/can_statistics.h"
 #include "ethernet/ethernet_tx_queue.h"
 #include "ethernet/management_heartbeat.h"
+#include "ethernet/network_diagnostics.h"
 #include "ethernet/protocol/gateway_payload.h"
 #include "ethernet/protocol/ipv4.h"
 
@@ -220,4 +222,403 @@ TEST(EthernetHeartbeat, PeriodicIdleReportsTolerateOccasionalLoss) {
     }
     EXPECT_TRUE(heartbeat.Online());
 }
+}  // namespace encos::ethernet
+
+namespace encos::ethernet {
+
+TEST(EthernetStatistics, IdleHeartbeatRetainsLastErrorCountersAndValidZero) {
+    BusStatistics bus;
+    CanError event;
+    ApplyCanStatistics(bus, event);
+    EXPECT_FALSE(bus.error_counters);
+
+    event.flags = 1;
+    event.ecr = (37U << 8U) | 12U;
+    ApplyCanStatistics(bus, event);
+    ASSERT_TRUE(bus.error_counters);
+    EXPECT_EQ(bus.error_counters->tx, 12U);
+    EXPECT_EQ(bus.error_counters->rx, 37U);
+    EXPECT_EQ(bus.error_counters->kind, ErrorCounterKind::LastErrorEvent);
+
+    event.flags = 0;
+    event.ecr = 0;
+    ApplyCanStatistics(bus, event);
+    EXPECT_EQ(bus.error_counters->tx, 12U);
+    EXPECT_EQ(bus.error_counters->rx, 37U);
+
+    event.flags = 1;
+    ApplyCanStatistics(bus, event);
+    EXPECT_EQ(bus.error_counters->tx, 0U);
+    EXPECT_EQ(bus.error_counters->rx, 0U);
+    EXPECT_EQ(bus.error_counters->kind, ErrorCounterKind::LastErrorEvent);
+}
+
+TEST(EthernetStatisticsOrder, RejectsOlderPacketsWithoutOverwritingLatestCounters) {
+    CanStatisticsOrder ordering;
+    const CanStatisticsOrder::Clock::time_point start{};
+    CanError event;
+
+    event.sequence = 20;
+    event.uptime = 1000;
+
+    event.flags = 1;
+    event.ecr = 12;
+    BusStatistics bus;
+    ASSERT_EQ(ordering.Observe(event, start), CanStatisticsOrder::Result::Accepted);
+    ApplyCanStatistics(bus, event);
+
+    event.sequence = 19;
+    event.uptime = 900;
+    event.ecr = 33;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(100)),
+              CanStatisticsOrder::Result::Rejected);
+    ASSERT_TRUE(bus.error_counters);
+    EXPECT_EQ(bus.error_counters->tx, 12U);
+
+    event.sequence = 20;
+    event.uptime = 1000;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(200)),
+              CanStatisticsOrder::Result::Rejected);
+
+    event.sequence = 21;
+    event.uptime = 1100;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(200)),
+              CanStatisticsOrder::Result::Accepted);
+}
+
+TEST(EthernetStatisticsOrder, AcceptsSerialSequenceAndUptimeWrap) {
+    CanStatisticsOrder ordering;
+    const CanStatisticsOrder::Clock::time_point start{};
+    CanError event;
+
+    event.sequence = 0xfffffff0U;
+    event.uptime = 0xfffffff0U;
+    EXPECT_EQ(ordering.Observe(event, start), CanStatisticsOrder::Result::Accepted);
+
+    event.sequence = 3;
+    event.uptime = 84;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(100)),
+              CanStatisticsOrder::Result::Accepted);
+
+    event.sequence = 0xfffffff8U;
+    event.uptime = 0xfffffff8U;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(200)),
+              CanStatisticsOrder::Result::Rejected);
+}
+
+TEST(EthernetStatisticsOrder, ConfirmsRebootAfterQuietIntervalAndRejectsPriorBootJump) {
+    CanStatisticsOrder ordering;
+    const CanStatisticsOrder::Clock::time_point start{};
+    CanError event;
+
+    event.sequence = 1000;
+    event.uptime = 50000;
+    ASSERT_EQ(ordering.Observe(event, start), CanStatisticsOrder::Result::Accepted);
+
+    event.sequence = 8;
+    event.uptime = 100;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(100)),
+              CanStatisticsOrder::Result::Rejected);
+
+    event.sequence = 16;
+    event.uptime = 200;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(200)),
+              CanStatisticsOrder::Result::Rejected);
+
+    event.sequence = 24;
+    event.uptime = 500;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(500)),
+              CanStatisticsOrder::Result::Restarted);
+
+    event.sequence = 999;
+    event.uptime = 49900;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(600)),
+              CanStatisticsOrder::Result::Rejected);
+
+    event.sequence = 32;
+    event.uptime = 600;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(600)),
+              CanStatisticsOrder::Result::Accepted);
+}
+
+TEST(EthernetStatisticsOrder, IsolatedOldPacketsDoNotBecomeRebootsWhileCurrentReportsContinue) {
+    CanStatisticsOrder ordering;
+    const CanStatisticsOrder::Clock::time_point start{};
+    CanError event;
+
+    event.sequence = 1000;
+    event.uptime = 50000;
+    ASSERT_EQ(ordering.Observe(event, start), CanStatisticsOrder::Result::Accepted);
+
+    event.sequence = 1;
+    event.uptime = 1;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(100)),
+              CanStatisticsOrder::Result::Rejected);
+
+    event.sequence = 1008;
+    event.uptime = 50100;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(100)),
+              CanStatisticsOrder::Result::Accepted);
+
+    event.sequence = 9;
+    event.uptime = 101;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(600)),
+              CanStatisticsOrder::Result::Rejected);
+}
+
+TEST(EthernetStatisticsOrder, RebootCanCoincideWithSequenceWrapAndLongOutageCanResume) {
+    CanStatisticsOrder ordering;
+    const CanStatisticsOrder::Clock::time_point start{};
+    CanError event;
+
+    event.sequence = 0xfffffff0U;
+    event.uptime = 50000;
+    ASSERT_EQ(ordering.Observe(event, start), CanStatisticsOrder::Result::Accepted);
+
+    event.sequence = 1;
+    event.uptime = 1;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(500)),
+              CanStatisticsOrder::Result::Rejected);
+
+    event.sequence = 9;
+    event.uptime = 101;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(600)),
+              CanStatisticsOrder::Result::Restarted);
+
+    event.sequence = 100;
+    event.uptime = 10101;
+    EXPECT_EQ(ordering.Observe(event, start + std::chrono::milliseconds(10600)),
+              CanStatisticsOrder::Result::Accepted);
+}
+
+}  // namespace encos::ethernet
+
+#include "ethernet/transport/datagram.h"
+#include "utils/emr2/relay_frame.h"
+
+namespace encos::ethernet {
+namespace {
+class CapabilityChannel : public DatagramChannel {
+public:
+    bool available = true;
+    bool wrong_identity = false;
+    bool wrong_request = false;
+    uint32_t budget = 512;
+    uint32_t versions = 3;
+    unsigned requests = 0;
+    std::vector<uint8_t> reply;
+    bool Send(const uint8_t* data, std::size_t size) override {
+        ++requests;
+        EXPECT_EQ(size, 64U);
+        EXPECT_EQ(data[5], GW_CAPABILITIES_GET);
+        if (available) {
+            reply.assign(data, data + size);
+            reply[5] = GW_CAPABILITIES;
+            if (wrong_identity)
+                reply[12] ^= 1;
+            if (wrong_request)
+                reply[8] ^= 1;
+            gw_put32(reply.data() + 28, versions);
+            gw_put32(reply.data() + 32, budget);
+            gw_put32(reply.data() + 36, 7);
+        }
+        return true;
+    }
+    bool Wait(int) override {
+        return !reply.empty();
+    }
+    std::size_t Receive(uint8_t* data, std::size_t) override {
+        const auto size = reply.size();
+        std::copy(reply.begin(), reply.end(), data);
+        reply.clear();
+        return size;
+    }
+};
+}  // namespace
+TEST(EthernetCapabilities, ConfirmsNewPeerAndBoundsLegacyFallback) {
+    std::array<uint8_t, 16> identity{};
+    identity[0] = 42;
+    CapabilityChannel channel;
+    auto caps = ProbeRelayCapabilities(channel, identity);
+    EXPECT_TRUE(caps.emr2);
+    EXPECT_EQ(caps.max_payload, 512U);
+    EXPECT_EQ(caps.features, 7U);
+    EXPECT_EQ(SelectRelayProtocol(RelayProtocolMode::Auto, caps), RelayProtocol::Emr2);
+    channel.available = false;
+    const auto start = std::chrono::steady_clock::now();
+    caps = ProbeRelayCapabilities(channel, identity);
+    EXPECT_FALSE(caps.emr2);
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1));
+    EXPECT_EQ(SelectRelayProtocol(RelayProtocolMode::Auto, caps), RelayProtocol::Emr1);
+}
+TEST(EthernetCapabilities, RechecksDelayedHeartbeatWithoutDowngradingConfirmedPeer) {
+    std::array<uint8_t, 16> identity{};
+    identity[0] = 42;
+    CapabilityChannel channel;
+    const auto confirmed = ProbeRelayCapabilities(channel, identity);
+    ASSERT_TRUE(confirmed.emr2);
+    EXPECT_TRUE(RecheckRelayCapabilities(channel, identity, confirmed, 2000, 1000));
+    EXPECT_EQ(channel.requests, 2U);
+    EXPECT_TRUE(RecheckRelayCapabilities(channel, identity, confirmed, 2000, 2100));
+    EXPECT_TRUE(RecheckRelayCapabilities(channel, identity, confirmed, 0xfffffff0U, 32));
+    EXPECT_EQ(channel.requests, 2U);
+    channel.versions = 1;
+    EXPECT_FALSE(RecheckRelayCapabilities(channel, identity, confirmed, 2000, 1));
+    channel.versions = 3;
+    channel.budget = 256;
+    EXPECT_FALSE(RecheckRelayCapabilities(channel, identity, confirmed, 2000, 1));
+}
+TEST(EthernetCapabilities, RejectsForeignStaleAndOversizedCapabilities) {
+    std::array<uint8_t, 16> identity{};
+    CapabilityChannel channel;
+    channel.wrong_identity = true;
+    EXPECT_FALSE(ProbeRelayCapabilities(channel, identity).emr2);
+    channel.wrong_identity = false;
+    channel.wrong_request = true;
+    EXPECT_FALSE(ProbeRelayCapabilities(channel, identity).emr2);
+    channel.wrong_request = false;
+    channel.budget = 1473;
+    EXPECT_FALSE(ProbeRelayCapabilities(channel, identity).emr2);
+}
+TEST(EthernetProtocol, Emr2BudgetKeepsComplete64ByteRecordsInSeparateDatagrams) {
+    MotorMessage message{};
+    message.bus_idx = 3;
+    message.data.id = 0x123;
+    message.data.frame_flags = kCanFrameFlagFdMask;
+    message.data.len = 64;
+    for (unsigned i = 0; i < 64; ++i)
+        message.data.data[i] = static_cast<uint8_t>(i);
+    RelayWireOptions options;
+    options.protocol = RelayProtocol::Emr2;
+    options.max_payload = 256;
+    const auto packets =
+        EncodeRelayPackets(RelayFrameType::HelperToRelay, MotorMessages(20, message), options);
+    ASSERT_GT(packets.size(), 1U);
+    std::size_t count = 0;
+    for (const auto& packet : packets) {
+        EXPECT_LE(packet.size(), 256U);
+        const auto decoded = DecodePayload(packet.data(), packet.size());
+        ASSERT_TRUE(decoded);
+        for (const auto& result : *decoded) {
+            EXPECT_EQ(result.data.len, 64);
+            EXPECT_EQ(result.data.data[63], 63);
+        }
+        count += decoded->size();
+    }
+    EXPECT_EQ(count, 20U);
+    auto joined = packets[0];
+    joined.insert(joined.end(), packets[1].begin(), packets[1].end());
+    EXPECT_FALSE(DecodePayload(joined.data(), joined.size()));
+}
+}  // namespace encos::ethernet
+
+namespace encos::ethernet {
+TEST(EthernetProtocol, PreservesLegacyConcatenationAnd80RecordLimit) {
+    MotorMessage message{};
+    message.data.id = 1;
+    auto first = EncodePayload(MotorMessages(30, message));
+    auto second = EncodePayload(MotorMessages(40, message));
+    first[4] = 2;
+    second[4] = 2;
+    first.insert(first.end(), second.begin(), second.end());
+    const auto decoded = DecodePayload(first.data(), first.size());
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded->size(), 70U);
+    const auto oversized =
+        EncodeRelayFrames(RelayFrameType::HelperToRelay, MotorMessages(81, message));
+    EXPECT_FALSE(DecodePayload(oversized.data(), oversized.size()));
+}
+}  // namespace encos::ethernet
+
+TEST(EthernetCapabilities, UsesOpcodesOutsideLegacyIpAndCommandRange) {
+    using namespace encos::ethernet;
+    CapabilityChannel channel;
+    std::array<uint8_t, 16> identity{};
+    EXPECT_EQ(GW_CAPABILITIES_GET, 14U);
+    EXPECT_EQ(GW_CAPABILITIES, 15U);
+    EXPECT_TRUE(ProbeRelayCapabilities(channel, identity).emr2);
+}
+
+namespace encos::ethernet {
+
+TEST(EthernetDiagnostics, ValidatesWireIdentityScopeAndReservedFields) {
+    std::array<uint8_t, 16> id{};
+    id[0] = 9;
+    std::array<uint8_t, 64> p{};
+    gw_packet(p.data(), GW_NETWORK_EVENT, 1, id.data());
+    gw_put32(p.data() + 40, 42);
+    auto e = DecodeNetworkDiagnostic(p.data(), p.size(), id);
+    ASSERT_TRUE(e);
+    EXPECT_EQ(e->values[0], 42U);
+    EXPECT_FALSE(DecodeNetworkDiagnostic(p.data(), 63, id));
+    p[12] ^= 1;
+    EXPECT_FALSE(DecodeNetworkDiagnostic(p.data(), 64, id));
+    p[12] ^= 1;
+    gw_put32(p.data() + 36, 3);
+    EXPECT_FALSE(DecodeNetworkDiagnostic(p.data(), 64, id));
+    gw_put32(p.data() + 36, 0);
+    gw_put32(p.data() + 32, 2);
+    gw_put32(p.data() + 60, 1);
+    EXPECT_FALSE(DecodeNetworkDiagnostic(p.data(), 64, id));
+}
+
+TEST(EthernetDiagnostics, ReportsBaselineDeltaWrapAndSuppressesDuplicateAndReordered) {
+    NetworkDiagnosticTracker tracker;
+    NetworkDiagnostic e;
+    e.sequence = 1;
+    e.values[0] = 0xfffffffeU;
+    auto text = tracker.Update(e);
+    ASSERT_TRUE(text);
+    EXPECT_NE(text->find("baseline(since boot)"), std::string::npos);
+    EXPECT_FALSE(tracker.Update(e));
+    e.sequence = 2;
+    EXPECT_FALSE(tracker.Update(e));
+    e.sequence = 3;
+    e.values[0] = 1;
+    text = tracker.Update(e);
+    ASSERT_TRUE(text);
+    EXPECT_NE(text->find("rx_fifo_overflow=1(+3)"), std::string::npos);
+    e.sequence = 2;
+    EXPECT_FALSE(tracker.Update(e));
+    tracker.Reset();
+    e.sequence = 1;
+    EXPECT_TRUE(tracker.Update(e));
+}
+
+TEST(EthernetDiagnostics, QuietHealthyDmaAndReportsFaultAndQueues) {
+    NetworkDiagnosticTracker tracker;
+    NetworkDiagnostic e;
+    e.group = 1;
+    e.sequence = 1;
+    e.values[4] = 0x58;
+    EXPECT_FALSE(tracker.Update(e));
+    e.sequence++;
+    e.values[0] = 1;
+    e.values[2] = 1;
+    auto text = tracker.Update(e);
+    ASSERT_TRUE(text);
+    EXPECT_NE(text->find("timeouts=1(+1)"), std::string::npos);
+    EXPECT_FALSE(tracker.Update(e));
+    e = {};
+    e.sequence = 1;
+    e.group = 3;
+    e.index = 7;
+    e.values[2] = 12;
+    text = tracker.Update(e);
+    ASSERT_TRUE(text);
+    EXPECT_NE(text->find("CAN queue=7"), std::string::npos);
+}
+
+TEST(EthernetDiagnostics, PrintsSignedLwipError) {
+    NetworkDiagnosticTracker tracker;
+    NetworkDiagnostic e;
+    e.sequence = 1;
+    e.group = 2;
+    e.values[2] = 1;
+    e.values[3] = static_cast<uint32_t>(-11);
+    const auto text = tracker.Update(e);
+    ASSERT_TRUE(text);
+    EXPECT_NE(text->find("last_send_error=-11"), std::string::npos);
+}
+
 }  // namespace encos::ethernet

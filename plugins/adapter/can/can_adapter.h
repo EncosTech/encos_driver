@@ -13,6 +13,7 @@
 #include "can_handle.h"
 #include "can_socket_setup.h"
 #include "export.h"
+#include "utils/statistics_wait.h"
 
 namespace encos {
 
@@ -68,6 +69,11 @@ protected:
 private:
     int RequestSocketFromBroker(const can::CanTiming& timing) const;
 
+    StatisticsWait statistics_wait_;
+
+    void StatisticsLoop();
+
+    std::thread statistics_thread_;
     std::thread loop_thread_;               /**< 接收循环线程 */
     std::unique_ptr<CanHandle> can_handle_; /**< CAN 通信句柄 */
     std::atomic<bool> running_{false};      /**< 运行标志 */

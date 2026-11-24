@@ -34,6 +34,132 @@ TEST_F(ResponseWaiterTests, RegistersBeforeSynchronousFeedback) {
     EXPECT_EQ(feedback.error, MotorError::NoError);
 }
 
+TEST_F(ResponseWaiterTests, OrdinaryFeedbackAcceptsEarlyReplyAndRejectsLateReply) {
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    for (const auto delay : {std::chrono::milliseconds(80), std::chrono::milliseconds(320)}) {
+        adapter->ClearCommandRecords();
+        auto response = std::async(std::launch::async, [&] {
+            return motor->SpdControl<1>(1.0F, 1.0F);
+        });
+        ASSERT_TRUE(WaitForCommandCount(adapter, 1));
+        std::this_thread::sleep_for(delay);
+        MotorStatus status{};
+        status.error = MotorError::NoError;
+        adapter->InjectMessage(adapter->MakeFeedbackMessage(0, 1, status));
+        EXPECT_EQ(response.get().error,
+                  delay.count() < 200 ? MotorError::NoError : MotorError::NoResponse);
+    }
+}
+
+class MotorRetryCountGuard {
+public:
+    MotorRetryCountGuard() : previous_(GetMotorRetryCount()) {}
+    ~MotorRetryCountGuard() {
+        SetMotorRetryCount(previous_);
+    }
+
+private:
+    unsigned int previous_;
+};
+
+TEST_F(ResponseWaiterTests, ParameterRetryCountControlsTotalAttempts) {
+    MotorRetryCountGuard guard;
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    for (const unsigned int retries : {0U, 1U, 2U}) {
+        SCOPED_TRACE(retries);
+        SetMotorRetryCount(retries);
+        EXPECT_EQ(GetMotorRetryCount(), retries);
+        adapter->ClearCommandRecords();
+        EXPECT_THROW(motor->GetParameter<MotorParameter::CanTimeout>(), std::runtime_error);
+        EXPECT_EQ(adapter->GetCommandRecords().size(), retries + 1U);
+    }
+}
+
+TEST_F(ResponseWaiterTests, SuccessfulParameterReadDoesNotRetry) {
+    MotorRetryCountGuard guard;
+    SetMotorRetryCount(3);
+    adapter->ClearCommandRecords();
+    EXPECT_NO_THROW(motor->GetParameter<MotorParameter::CanTimeout>());
+    EXPECT_EQ(adapter->GetCommandRecords().size(), 1U);
+}
+
+TEST_F(ResponseWaiterTests, RetryCountChangeDoesNotAffectInflightRead) {
+    MotorRetryCountGuard guard;
+    SetMotorRetryCount(1);
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    auto result = std::async(std::launch::async, [&] {
+        return motor->GetParameter<MotorParameter::CanTimeout>();
+    });
+    ASSERT_TRUE(WaitForCommandCount(adapter, 1));
+    SetMotorRetryCount(0);
+    ASSERT_TRUE(WaitForCommandCount(adapter, 2));
+    adapter->InjectMessage(adapter->MakeParameterReply(0, 1, MotorParameter::CanTimeout, {0, 42}));
+    EXPECT_EQ(result.get(), 42);
+}
+
+TEST_F(ResponseWaiterTests, ParameterReadRetriesAfterOrdinaryTimeout) {
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    auto result = std::async(std::launch::async, [&] {
+        return motor->GetParameter<MotorParameter::CanTimeout>();
+    });
+    ASSERT_TRUE(WaitForCommandCount(adapter, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    EXPECT_EQ(adapter->GetCommandRecords().size(), 2U);
+    adapter->InjectMessage(adapter->MakeParameterReply(0, 1, MotorParameter::CanTimeout, {0, 42}));
+    EXPECT_EQ(result.get(), 42);
+}
+
+TEST_F(ResponseWaiterTests, ParameterAckAcceptsEarlyReplyAndRejectsLateReply) {
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    for (const auto delay : {std::chrono::milliseconds(80), std::chrono::milliseconds(320)}) {
+        adapter->ClearCommandRecords();
+        auto response = std::async(std::launch::async, [&] {
+            return motor->SetCanTimeout(42);
+        });
+        ASSERT_TRUE(WaitForCommandCount(adapter, 1));
+        std::this_thread::sleep_for(delay);
+        adapter->InjectMessage(adapter->MakeWriteAck(0, 1, MotorParameter::CanTimeout, {0, 42}));
+        EXPECT_EQ(response.get(), delay.count() < 200);
+    }
+}
+
+TEST_F(ResponseWaiterTests, PositionConfigurationAckAcceptsEarlyReplyAndRejectsLateReply) {
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    for (const bool reset_zero : {false, true}) {
+        SCOPED_TRACE(reset_zero ? "ResetZeroPos" : "SetPos");
+        for (const auto delay : {std::chrono::milliseconds(80), std::chrono::milliseconds(320)}) {
+            SCOPED_TRACE(delay.count());
+            adapter->ClearCommandRecords();
+            auto response = std::async(std::launch::async, [&] {
+                return reset_zero ? motor->ResetZeroPos(true) : motor->SetPos(0.1);
+            });
+            ASSERT_TRUE(WaitForCommandCount(adapter, 1));
+            std::this_thread::sleep_for(delay);
+            MotorMessage ack{};
+            ack.bus_idx = 0;
+            ack.data.id = 0x7FF;
+            ack.data.len = 4;
+            ack.data.data[1] = 1;
+            ack.data.data[3] = 0x03;
+            adapter->InjectMessage(ack);
+            EXPECT_EQ(response.get(), delay.count() < 200);
+        }
+    }
+}
+
+TEST_F(ResponseWaiterTests, NonControlTransactionsCompleteInSyncModeWithoutCommit) {
+    bus->SetSyncMode(true);
+    motor->SpdControl<0>(1, 1);
+    (void) motor->GetParameter<MotorParameter::CanTimeout>();
+    EXPECT_TRUE(motor->SetCanTimeout(42));
+    EXPECT_EQ(motor->Stop<1>(MotorStopMode::FullBrake, 1).error, MotorError::NoError);
+    EXPECT_TRUE(motor->Brake(true));
+    const auto records = adapter->GetCommandRecords();
+    ASSERT_EQ(records.size(), 4U);
+    bus->Commit();
+    EXPECT_TRUE(WaitForCommandCount(adapter, 5));
+}
+
 TEST_F(ResponseWaiterTests, MatchingWaiterCompletesBeforeBlockingStatusCallback) {
     adapter->SetReplyMode(FakeReplyMode::Manual);
     std::mutex mutex;

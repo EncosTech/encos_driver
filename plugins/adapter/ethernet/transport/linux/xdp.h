@@ -23,6 +23,7 @@ public:
     bool Send(const MotorMessages& messages);
     /** @brief 发送指定slave的本地CAN索引消息。 */
     bool Send(unsigned slave, const MotorMessages& messages);
+    bool SendPayload(unsigned slave, const std::vector<uint8_t>& payload) override;
     /** @brief 读取一批 CAN 消息并回收 RX 缓冲；只能由同一个工作线程调用。 */
     MotorMessages Receive();
     /** @brief 等待 RX 或短暂超时，避免空闲时持续占满 CPU。 */

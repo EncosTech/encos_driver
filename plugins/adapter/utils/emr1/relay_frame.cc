@@ -4,6 +4,7 @@
 #include "utils/emr1/relay_frame.h"
 
 #include <cstring>
+#include <stdexcept>
 
 namespace encos {
 
@@ -62,6 +63,11 @@ int32_t ReadI32Le(const std::vector<uint8_t>& data, std::size_t& offset) {
 
 std::vector<uint8_t> EncodeRelayFrames(RelayFrameType type,
                                        const std::vector<MotorMessage>& records) {
+    for (const auto& message : records) {
+        if (message.data.len > 8) {
+            throw std::invalid_argument("EMR1 payload exceeds 8 bytes");
+        }
+    }
     std::vector<uint8_t> result;
     for (std::size_t base = 0; base < records.size(); base += kMaxRecordsPerFrame) {
         const std::size_t count = std::min(kMaxRecordsPerFrame, records.size() - base);

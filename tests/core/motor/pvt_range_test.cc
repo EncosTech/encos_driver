@@ -225,8 +225,10 @@ TEST_F(PVTRangeTests, FeedbackOneTracksRangeUpdatesInAsyncStatus) {
     EXPECT_FLOAT_EQ(status->current, 35.0f);
 }
 
-TEST_F(PVTRangeTests, SetCurrentRangeUpdatesPvtRangeAndFeedbackUpperBound) {
-    motor->SetCurrentRange(27.0f);
+TEST_F(PVTRangeTests, SetPropertiesUpdatesCurrentRangeAndFeedbackUpperBound) {
+    auto properties = motor->GetProperties();
+    properties.current = {-27.0f, 27.0f};
+    motor->SetProperties(properties);
     const auto ranges = motor->GetProperties();
     EXPECT_FLOAT_EQ(ranges.current.min, -27.0f);
     EXPECT_FLOAT_EQ(ranges.current.max, 27.0f);

@@ -107,7 +107,11 @@ public:
                                     int timeout) {
             lifecycle->state_timeout = timeout;
             if (lifecycle->stall_state_check) {
-                std::this_thread::sleep_for(std::chrono::microseconds(timeout));
+                const auto deadline =
+                    std::chrono::steady_clock::now() + std::chrono::microseconds(timeout);
+                do {
+                    std::this_thread::sleep_until(deadline);
+                } while (std::chrono::steady_clock::now() < deadline);
             }
             lifecycle->events.push_back("check" + std::to_string(slave));
             context->slavelist[slave].state = lifecycle->disconnected ? EC_STATE_NONE : state;
@@ -231,7 +235,15 @@ public:
         handle.CheckState();
     }
     static void Exchange(EthercatHandle& handle) {
-        handle.ExchangeOnce();
+        handle.ExchangeOnce(handle.cycle_period_);
+    }
+    static void SetFragmentedInput(EthercatHandle& handle, uint8_t* input) {
+        const auto bytes = sizeof(EthercatCanFdMsg3x10);
+        handle.slave_configs_ = {EthercatHandle::ClassifyOutputPdoSize(bytes, bytes)};
+        handle.ctx_.slavelist[1].Obytes = bytes;
+        handle.ctx_.slavelist[1].Ibytes = bytes;
+        handle.ctx_.slavelist[1].inputs = input;
+        handle.cycle_period_ = std::chrono::seconds(1);
     }
     static void AddSecondSlave(EthercatHandle& handle, uint16 state) {
         handle.ctx_.slavecount = 2;
@@ -257,7 +269,7 @@ public:
     }
     static bool TakeFrame(EthercatHandle& handle) {
         EthercatHandle::OutputFrame frame;
-        return handle.PrepareNextFrame(frame, 1);
+        return handle.PrepareNextFrame(frame);
     }
 };
 
@@ -457,6 +469,36 @@ TEST(EthercatRecoveryTests, AccumulatesWkcLossesAcrossSuccessfulExchanges) {
     EXPECT_TRUE(handle->Ok());
     EXPECT_EQ(simulation.callbacks, 20U);
 }
+TEST(EthercatRecoveryTests, BadWkcDiscardsAnIncompleteCanFdPdoFrame) {
+    auto handle = EthercatHandleTestAccess::Create();
+    SimulatedLink simulation;
+    EthercatHandleTestAccess::Attach(*handle, simulation);
+    std::array<uint8_t, sizeof(EthercatCanFdMsg3x10)> input{};
+    EthercatHandleTestAccess::SetFragmentedInput(*handle, input.data());
+    encos::MotorMessages received;
+    handle->SetReceiveCallback([&received](const encos::MotorMessages& messages) {
+        received.insert(received.end(), messages.begin(), messages.end());
+    });
+
+    input[0] = 1;
+    input[4] = 0x16;
+    input[5] = 9;
+    EthercatHandleTestAccess::Exchange(*handle);
+    EXPECT_TRUE(received.empty());
+    input[4] = 0x36;
+    EthercatHandleTestAccess::Exchange(*handle);
+    ASSERT_EQ(received.size(), 1U);
+
+    input[4] = 0x16;
+    EthercatHandleTestAccess::Exchange(*handle);
+    simulation.wkc = 0;
+    input[4] = 0x36;
+    EthercatHandleTestAccess::Exchange(*handle);
+    simulation.wkc = 3;
+    EthercatHandleTestAccess::Exchange(*handle);
+    EXPECT_EQ(received.size(), 1U);
+}
+
 TEST(EthercatRecoveryTests, WkcWindowExpiresAfter100Exchanges) {
     SimulatedLink simulation;
     auto handle = EthercatHandleTestAccess::Create();

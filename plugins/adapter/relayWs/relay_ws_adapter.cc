@@ -19,8 +19,8 @@
 #include "platform/delay.h"
 #include "platform/sync.h"
 #include "relayWs/relay_bounded_queue.h"
+#include "relayWs/relay_wire_state.h"
 #include "relayWs/relay_ws_url.h"
-#include "utils/emr1/relay_frame.h"
 #include "utils/thread_priority.h"
 
 #ifdef __EMSCRIPTEN__
@@ -65,6 +65,7 @@ std::string PerformHttpGet(const std::string& url) {
 }  // namespace
 
 struct RelayWsAdapter::Impl {
+    RelayWsWireState wire;
     std::string start_url;
     std::string ws_url;
     std::unique_ptr<RelayWsClient> client;
@@ -95,9 +96,10 @@ struct RelayWsAdapter::Impl {
 };
 
 RelayWsAdapter::RelayWsAdapter(const std::string& interface_name, const std::string& logger_name,
-                               LogLevel log_level)
+                               LogLevel log_level, const std::string& extend_json)
     : BaseAdapter(interface_name, logger_name.empty() ? "RelayWsAdapter" : logger_name, log_level),
       impl_(std::make_unique<Impl>()) {
+    impl_->wire = RelayWsWireState(extend_json);
     impl_->start_url = interface_name;
     impl_->last_flush_time = std::chrono::steady_clock::now();
     impl_->last_reconnect_time = std::chrono::steady_clock::now();
@@ -105,7 +107,12 @@ RelayWsAdapter::RelayWsAdapter(const std::string& interface_name, const std::str
     impl_->client = std::make_unique<RelayWsClient>();
 
     impl_->client->SetOnMessage([this](const std::vector<uint8_t>& data) {
-        const auto frames = DecodeRelayFrames(data);
+        if (const auto capability = DecodeRelayCapability(data)) {
+            platform::LockGuard<platform::Mutex> lock(impl_->send_buffer_mutex);
+            impl_->wire.Receive(*capability);
+            return;
+        }
+        const auto frames = DecodeRelayPackets(data);
         if (!frames.has_value()) {
             return;
         }
@@ -113,12 +120,17 @@ RelayWsAdapter::RelayWsAdapter(const std::string& interface_name, const std::str
             if (frame.type != RelayFrameType::HelperToRelay) {
                 continue;
             }
-            OnMessage(frame.records);
+            MotorMessages messages;
+            messages.reserve(frame.records.size());
+            for (const auto& record : frame.records) {
+                messages.push_back(record.message);
+            }
+            OnMessage(messages);
         }
     });
 
     impl_->client->SetOnClose([this]() {
-        impl_->ok.store(false);
+        ResetWireSession();
         impl_->last_reconnect_time = std::chrono::steady_clock::now();
     });
 
@@ -182,6 +194,11 @@ void RelayWsAdapter::Send(const MotorMessage& message) {
     }
 
     platform::LockGuard<platform::Mutex> lock(impl_->send_buffer_mutex);
+    auto validation = impl_->wire.options;
+    (void) EncodeRelayPackets(RelayFrameType::RelayToHelper, MotorMessages{message}, validation);
+    if (!impl_->ok.load()) {
+        throw std::runtime_error("RelayWs connection is unavailable");
+    }
     impl_->send_buffer.push_back(
         RelayQueuedMessage{message, impl_->bus_generations[message.bus_idx]});
     TrimRelayMessagesToNewest(impl_->send_buffer, kMaxOutgoingMessages);
@@ -196,6 +213,11 @@ void RelayWsAdapter::SendSynchronized(const MotorMessages& messages) {
     }
 
     platform::LockGuard<platform::Mutex> lock(impl_->send_buffer_mutex);
+    auto validation = impl_->wire.options;
+    (void) EncodeRelayPackets(RelayFrameType::RelayToHelper, messages, validation);
+    if (!impl_->ok.load()) {
+        throw std::runtime_error("RelayWs connection is unavailable");
+    }
     std::unordered_set<int> buses;
     for (const auto& message : messages) {
         buses.insert(message.bus_idx);
@@ -248,13 +270,14 @@ void RelayWsAdapter::WorkerLoopIteration() {
             if (now - impl_->last_reconnect_time >= kReconnectInterval) {
                 impl_->last_reconnect_time = now;
                 ++impl_->reconnect_attempts;
+                ResetWireSession();
                 impl_->client->Connect(impl_->ws_url);
             }
         }
     }
 
+    impl_->client->Poll();
     if (impl_->ok.load()) {
-        impl_->client->Poll();
         ReportDroppedIncomingFrames(now);
     }
 
@@ -285,24 +308,39 @@ void RelayWsAdapter::OnTimer(void* arg) {
     }
 }
 
+void RelayWsAdapter::ResetWireSession() {
+    platform::LockGuard<platform::Mutex> lock(impl_->send_buffer_mutex);
+    impl_->ok.store(false);
+    impl_->send_buffer.clear();
+    impl_->bus_generations.clear();
+    impl_->wire.Reset();
+}
+
 void RelayWsAdapter::FlushSendBuffer() {
+    platform::LockGuard<platform::Mutex> lock(impl_->send_buffer_mutex);
     if (!impl_->ok.load()) {
         return;
     }
-
-    std::vector<RelayQueuedMessage> buffer;
-    {
-        platform::LockGuard<platform::Mutex> lock(impl_->send_buffer_mutex);
-        buffer = std::move(impl_->send_buffer);
-        impl_->send_buffer.clear();
+    auto& wire = impl_->wire;
+    if (wire.mode == RelayProtocolMode::Auto && !wire.requested) {
+        RelayCapabilityMessage request;
+        request.request_id = wire.request_id;
+        request.capabilities.emr2 = true;
+        request.capabilities.max_payload = static_cast<std::uint16_t>(wire.configured_max_payload);
+        wire.requested = impl_->client->SendBinary(EncodeRelayCapability(request));
     }
-
-    const auto bytes = EncodeQueuedRelayFrames(RelayFrameType::RelayToHelper, buffer);
-    if (!impl_->client->SendBinary(bytes)) {
-        impl_->ok.store(false);
-        platform::LockGuard<platform::Mutex> lock(impl_->send_buffer_mutex);
-        ReinsertFailedRelayMessages(impl_->send_buffer, std::move(buffer), kMaxOutgoingMessages);
+    const auto packets =
+        EncodeQueuedRelayPackets(RelayFrameType::RelayToHelper, impl_->send_buffer, wire.options);
+    impl_->send_buffer.clear();
+    for (const auto& packet : packets) {
+        if (!impl_->client->SendBinary(packet)) {
+            // 底层失败不能证明数据未发送，整批剩余命令均不重放。
+            impl_->ok.store(false);
+            wire.Reset();
+            return;
+        }
     }
+    wire.ApplyPending();
 }
 
 bool RelayWsAdapter::ConnectSession() {
@@ -340,6 +378,7 @@ bool RelayWsAdapter::ConnectSession() {
         }
     }
 
+    ResetWireSession();
     if (!impl_->client->Connect(impl_->ws_url)) {
         return false;
     }
@@ -398,6 +437,13 @@ bool RelayWsAdapter::WaitForConnection(std::chrono::milliseconds timeout) {
 BaseAdapter* CreateRelayWsAdapterStatic(const std::string& interface_name,
                                         const std::string& logger_name, LogLevel log_level) {
     return new RelayWsAdapter(interface_name, logger_name, log_level);
+}
+
+BaseAdapter* CreateRelayWsAdapterStaticWithExtend(const std::string& interface_name,
+                                                  const std::string& logger_name,
+                                                  LogLevel log_level,
+                                                  const std::string& extend_json) {
+    return new RelayWsAdapter(interface_name, logger_name, log_level, extend_json);
 }
 
 void EnumerateRelayWsInterfaces(AdapterInterfaceEmit emit, void* context) {

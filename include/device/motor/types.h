@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -13,6 +14,11 @@
 #include "motor_model_generated.h"
 
 namespace encos {
+
+namespace detail {
+/** @brief 普通电机反馈、参数与确认响应的统一等待时长 */
+inline constexpr std::chrono::milliseconds kMotorResponseTimeout{200};
+}  // namespace detail
 
 /** @brief 电机停止方式 */
 enum class MotorStopMode {
@@ -58,12 +64,12 @@ enum class MotorParameter : uint8_t {
 };
 
 #pragma pack(push, 1)
-/** @brief 总线传输使用的紧凑 CAN 消息 */
+/** @brief 内部传输使用的 CAN 消息；最多 64 字节，不可直接作为线上协议结构 */
 struct MotorPackMsg {
     uint32_t id;             ///< CAN 标识符
     uint8_t frame_flags{0};  ///< 帧格式标志，见 `kCanFrameFlag*`
     uint8_t len;             ///< 有效载荷长度
-    uint8_t data[8];         ///< 有效载荷字节
+    uint8_t data[64];        ///< 有效载荷字节
 };
 #pragma pack(pop)
 
@@ -73,7 +79,7 @@ inline bool operator==(const MotorPackMsg& lhs, const MotorPackMsg& rhs) {
            std::memcmp(lhs.data, rhs.data, sizeof(lhs.data)) == 0;
 }
 
-static_assert(sizeof(MotorPackMsg) == 14, "MotorPackMsg size changed");
+static_assert(sizeof(MotorPackMsg) == 70, "MotorPackMsg size changed");
 
 constexpr uint8_t kCanFrameFlagEff = 0x01;     ///< 扩展帧标识符标志
 constexpr uint8_t kCanFrameFlagFdBit1 = 0x02;  ///< CAN FD 标志位 1

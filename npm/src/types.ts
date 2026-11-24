@@ -68,6 +68,7 @@ export interface RuntimeOptions {
 }
 
 export interface CreateAdapterOptions<T extends string = string> {
+  extend?: Record<string, unknown>
   type: T
   interfaceName?: string
   loggerName?: string
@@ -87,6 +88,7 @@ export interface BusKey {
 }
 
 export interface ControlCommand {
+  feedback?: number
   feedbackType?: number
 }
 

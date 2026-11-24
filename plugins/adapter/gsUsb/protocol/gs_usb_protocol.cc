@@ -4,6 +4,7 @@
 #include "gs_usb_protocol.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 
@@ -126,6 +127,44 @@ bool EncodeBitTiming(const BitTiming& timing, std::uint8_t out[20]) {
     return true;
 }
 
+namespace {
+constexpr std::array<std::uint8_t, 16> kDlcLengths{0, 1,  2,  3,  4,  5,  6,  7,
+                                                   8, 12, 16, 20, 24, 32, 48, 64};
+}  // namespace
+
+std::optional<std::uint8_t> LengthToDlc(std::uint8_t length) {
+    for (std::size_t dlc = 0; dlc < kDlcLengths.size(); ++dlc) {
+        if (length <= kDlcLengths[dlc]) {
+            return static_cast<std::uint8_t>(dlc);
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint8_t> DlcToLength(std::uint8_t dlc) {
+    if (dlc >= kDlcLengths.size()) {
+        return std::nullopt;
+    }
+    return kDlcLengths[dlc];
+}
+
+std::optional<std::uint8_t> PayloadLength(const Frame& frame) {
+    if ((frame.flags & ~(kFrameFlagFd | kFrameFlagBrs | kFrameFlagEsi)) != 0U ||
+        ((frame.can_id & kCanEff) == 0U && (frame.can_id & kCanExtIdMask) > kCanStdIdMask)) {
+        return std::nullopt;
+    }
+    if ((frame.flags & kFrameFlagFd) != 0U) {
+        if ((frame.can_id & kCanRtr) != 0U) {
+            return std::nullopt;
+        }
+        return DlcToLength(frame.dlc);
+    }
+    if (frame.dlc > 8U || (frame.flags & (kFrameFlagBrs | kFrameFlagEsi)) != 0U) {
+        return std::nullopt;
+    }
+    return frame.dlc;
+}
+
 std::size_t FrameSize(std::uint8_t flags) {
     return (flags & kFrameFlagFd) != 0U ? kFdFrameSize : kClassicFrameSize;
 }
@@ -138,10 +177,8 @@ std::size_t EncodeFrame(const Frame& frame, std::uint8_t* out, std::size_t capac
     if (capacity < size) {
         return 0U;
     }
-    const std::size_t data_size = (frame.flags & kFrameFlagFd) != 0U
-                                      ? static_cast<std::size_t>(frame.dlc)
-                                      : std::min<std::size_t>(frame.dlc, 8U);
-    if (data_size > sizeof(frame.data)) {
+    const auto length = PayloadLength(frame);
+    if (!length.has_value()) {
         return 0U;
     }
     std::memset(out, 0, size);
@@ -150,7 +187,9 @@ std::size_t EncodeFrame(const Frame& frame, std::uint8_t* out, std::size_t capac
     out[8] = frame.dlc;
     out[9] = frame.channel;
     out[10] = frame.flags;
-    std::memcpy(out + 12, frame.data, data_size);
+    if ((frame.can_id & kCanRtr) == 0U) {
+        std::memcpy(out + 12, frame.data, *length);
+    }
     return size;
 }
 
@@ -166,28 +205,20 @@ std::size_t DecodeFrame(const std::uint8_t* data, std::size_t available, Frame* 
     if (available < size) {
         return 0U;
     }
-    const std::uint32_t can_id = ReadLe32(data + 4);
-    const std::uint8_t dlc = data[8];
-    if ((can_id & kCanEff) == 0U && (can_id & kCanExtIdMask) > kCanStdIdMask) {
+    Frame decoded;
+    decoded.echo_id = ReadLe32(data);
+    decoded.can_id = ReadLe32(data + 4);
+    decoded.dlc = data[8];
+    decoded.channel = data[9];
+    decoded.flags = flags;
+    const auto length = PayloadLength(decoded);
+    if (!length.has_value()) {
         return 0U;
     }
-    if ((flags & kFrameFlagFd) != 0U) {
-        if (dlc > 15U || (can_id & kCanRtr) != 0U) {
-            return 0U;
-        }
-    } else if (dlc > 8U || (flags & (kFrameFlagBrs | kFrameFlagEsi)) != 0U) {
-        return 0U;
+    if ((decoded.can_id & kCanRtr) == 0U) {
+        std::memcpy(decoded.data, data + 12, *length);
     }
-    out->echo_id = ReadLe32(data);
-    out->can_id = can_id;
-    out->dlc = dlc;
-    out->channel = data[9];
-    out->flags = flags;
-    out->reserved = 0U;
-    std::memset(out->data, 0, sizeof(out->data));
-    const std::size_t data_size = (flags & kFrameFlagFd) != 0U ? static_cast<std::size_t>(dlc)
-                                                               : std::min<std::size_t>(dlc, 8U);
-    std::memcpy(out->data, data + 12, data_size);
+    *out = decoded;
     return size;
 }
 

@@ -92,15 +92,12 @@ required_variables=(
   GITHUB_RELEASE_REPOSITORY_URL
   GITEA_URL
   GITEA_PACKAGE_OWNER
-  DEBIAN_DISTRIBUTIONS
-  DEBIAN_ARCHITECTURES
 )
 
 for variable_name in "${required_variables[@]}"; do
   [[ -n "${!variable_name:-}" ]] || die "${variable_name} is missing in ${env_file}"
 done
 
-DEBIAN_COMPONENT=${DEBIAN_COMPONENT:-main}
 GIT_USER_NAME=${GIT_USER_NAME:-Encos Release Bot}
 GIT_USER_EMAIL=${GIT_USER_EMAIL:-release-bot@encos.cn}
 GITHUB_API_URL=${GITHUB_API_URL:-https://api.github.com}
@@ -119,8 +116,8 @@ if [[ "${dry_run}" == true ]]; then
   printf '  Main SHA1: %s\n' "${MAIN_SHA1:-<branch head>}"
   printf '  Optional branches: %s\n' "${OPTIONAL_BRANCHES:-<none>}"
   printf '  GitHub: %s\n' "${GITHUB_RELEASE_REPOSITORY}"
-  printf '  Debian distributions: %s\n' "${DEBIAN_DISTRIBUTIONS}"
-  printf '  Debian architectures: %s\n' "${DEBIAN_ARCHITECTURES}"
+  printf '  Package registry: %s/api/packages/%s/generic/encos-driver-linux\n' \
+    "${GITEA_URL%/}" "${GITEA_PACKAGE_OWNER}"
   exit 0
 fi
 
@@ -135,9 +132,6 @@ run_branch() {
     --github-branch "${source_branch}" \
     --gitea-url "${GITEA_URL}" \
     --gitea-package-owner "${GITEA_PACKAGE_OWNER}" \
-    --debian-distributions "${DEBIAN_DISTRIBUTIONS}" \
-    --debian-architectures "${DEBIAN_ARCHITECTURES}" \
-    --debian-component "${DEBIAN_COMPONENT}" \
     --git-user-name "${GIT_USER_NAME}" \
     --git-user-email "${GIT_USER_EMAIL}" \
     --github-api-url "${GITHUB_API_URL}" \

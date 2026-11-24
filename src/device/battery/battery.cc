@@ -118,7 +118,7 @@ BatteryStatus Battery::Impl::GetStatusSnapshot() {
 void Battery::Impl::SendPassiveCommands(const BatteryPassiveCommands& commands) {
     platform::LockGuard<platform::Mutex> lock(command_mutex);
     MotorPackMsg msg{};
-    msg.id = 0x4F4u + idx;
+    msg.id = protocol::BatteryCanId(0x4F4u, idx);
     msg.len = 2;
     SetBit(msg.data[0], 0, commands.allow_shutdown);
     SetBit(msg.data[0], 1, commands.allow_discharge);

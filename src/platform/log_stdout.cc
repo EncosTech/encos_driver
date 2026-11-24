@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Encos
 // SPDX-License-Identifier: MIT
 
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 
@@ -52,7 +53,10 @@ void Logger::LogMessage(LogLevel level, const std::string& message) {
         return;
     }
     std::lock_guard<std::mutex> lock(fallback_log_mutex);
-    auto& stream = level >= LogLevel::Error ? std::cerr : std::cout;
+    const char* output = std::getenv("ENCOS_LOG_OUTPUT");
+    auto& stream = (level >= LogLevel::Error || (output && std::string(output) == "stderr"))
+                       ? std::cerr
+                       : std::cout;
     stream << '[' << LogLevelToString(level) << "] ";
     if (!impl_->name.empty()) {
         stream << impl_->name << ": ";

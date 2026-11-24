@@ -1,6 +1,6 @@
 # Ethernet：Linux AF_XDP / Windows Winsock UDP
 
-Linux/Windows 静态或动态适配器，通过普通以太网 IPv4/UDP 承载与 RelayWs 相同的 EMR1 CAN 记录。
+Linux/Windows 静态或动态适配器，通过普通以太网 IPv4/UDP 承载与 RelayWs 共用的 EMR1/EMR2 CAN 记录。详见 [EMR2 线格式与协商规则](../../../docs/emr2.md)。
 Linux 使用 AF_XDP generic/SKB + copy；Windows 使用 Winsock UDP，不依赖 Npcap。
 两端共用发现、CAN 初始化、聚合排队、心跳和 CAN 错误日志处理。Windows 的延迟指标需要实机测量，不能沿用 Linux AF_XDP 结果。
 
@@ -8,8 +8,8 @@ Linux 使用 AF_XDP generic/SKB + copy；Windows 使用 Winsock UDP，不依赖 
 
 | 层 | 文件 | 职责 |
 | --- | --- | --- |
-| 跨插件协议 | `../utils/emr1/relay_frame.*` | Ethernet与RelayWs共用的EMR1声明、编解码与协议测试 |
-| 网关载荷约束 | `protocol/gateway_payload.*` | 调用共用EMR1编解码，检查80帧上限、CAN0–7、方向和flags |
+| 跨插件协议 | `../utils/emr1/relay_frame.*`、`../utils/emr2/relay_frame.*` | Ethernet与RelayWs共用的协议声明、编解码与协议测试 |
+| 网关载荷约束 | `protocol/gateway_payload.*` | 调用共用双版本编解码，检查EMR1的80帧上限、CAN0–7、方向和flags |
 | 网络报文 | `protocol/ipv4.*` | IPv4地址解析、原始IPv4/UDP帧封装与校验和 |
 | 共用管理协议 | `protocol/gateway_wire.h`、`protocol/management_protocol.*` | EMM1 字段读写、CAN 错误事件校验，无系统 socket 依赖 |
 | 共用业务 | `ethernet_adapter.*`、`ethernet_management.*`、`ethernet_tx_queue.h` | 从站路由、80 帧聚合、有界队列、发现重试、8 路 CAN 初始化、订阅与 logger |
@@ -29,7 +29,7 @@ CMake 的 `EthernetProtocol` 不编译平台通信代码，`EthernetManagement` 
 
 ## Linux 构建和使用
 
-依赖 `libxdp-dev`、`libbpf-dev`、`libelf-dev`、`pkg-config` 和支持 BPF target 的 Clang。
+依赖 `libxdp-dev`、`libbpf-dev`、`libelf-dev`、`libsystemd-dev`、`pkg-config` 和支持 BPF target 的 Clang。
 
 ```sh
 cmake -S . -B build -DENCOS_BUILD_TESTS=ON
@@ -102,7 +102,7 @@ Windows 静态模式直接配置网卡，需要以管理员权限运行最终程
 - flags bit0=EXT、bit1=FD、bit2=BRS、bit3=RTR，复用已有 Relay 编解码器。FD+BRS 为 `0x06`。
 - 默认仲裁段 1 Mbps、数据段 5 Mbps，可通过 `extend` 配置；BRS 决定该帧是否使用数据段速率，flags 不编码任意波特率值。
 - 仅支持 IPv4 直连、无 VLAN、无 IP options、无 IP 分片；绑定网卡队列 0。要求单个RX队列，多队列配置会报错，可使用ethtool将接收队列数设为1。
-- 网关为单客户端，插件每秒发送空 EMR1 心跳；换客户端应留出网关约 5 秒租约过期时间。
+- 网关为单客户端，插件每秒发送当前协议版本的空心跳；换客户端应留出网关约 5 秒租约过期时间。
 - 不提供 UDP 重传或可靠送达保证。主机发送队列有界，队列满时报错。
 - 每个slave暴露 CAN0–7，主机索引为 `(slave_id << 16) | can_id`。
 
@@ -163,21 +163,21 @@ stress 原有 `--drain-delay-ms` 默认为200ms；工作区 emcli 现会显示�
 
 ### 主机网卡自动配置
 
-创建 Ethernet 适配器时，先调用 `EthernetXdpBrokerExecutable --configure-interface <网卡>`，
-将该网卡的主 IPv4 设置为 `192.168.100.254/24`、广播地址 `192.168.100.255`，启用接口，
-最多等待10秒链路就绪，再发现从站、初始化8路CAN和创建AF_XDP。
-`.254` 为主机专用；从站ID范围为0–252。仅指定网卡被配置，不添加默认路由或DNS。
-配置保留到被系统网络服务更改或重启；下次创建适配器会再次应用。
-请将该网卡作为专用电机网络接口，避免DHCP/NetworkManager同时覆盖地址。
+Linux 创建 Ethernet 适配器时，先验证指定的电机专用网卡，再发现从站并初始化 CAN。
+如果已有生效的静态 `192.168.100.254/24`，直接复用。由 NetworkManager 管理的网卡
+处于断开（含手工断开）或获取 DHCP 地址阶段时，SDK 通过 D-Bus 激活临时静态连接。
+该连接随 SDK 的 D-Bus 会话清理，手工禁用的设备级自动连接设置保持生效。承载默认路由、
+现用 SSH 会话或已建立其他连接的网卡不能接管。
 
-辅助进程需要现有的 capability；重新编译会清除可执行文件上的 capability：
+在本地桌面启动时，NetworkManager 可通过桌面 Polkit 代理请求认证。通过 SSH 启动时，
+需要认证的账号应使用 `ssh -t` 分配终端，SDK 会启动 `pkttyagent`。发行包包含对
+sd-bus 和终端认证代理的运行依赖，NetworkManager 由系统自行选用。
 
-```sh
-sudo setcap cap_net_admin,cap_net_raw,cap_bpf+ep build/plugins/EthernetXdpBrokerExecutable
-```
-
-配置失败时终止初始化并报告错误。自动配置只在指定网卡创建适配器时执行，
-全局枚举不会修改所有网卡。独立Python管理工具可使用 `--bind 192.168.100.254`。
+如果网卡由其他服务管理，先在该服务中配置静态地址。NetworkManager 未运行或明确
+不管理指定网卡时，可以用适配器级扩展参数 `{"host_network_exclusive": true}` 将专用
+网卡的配置交给 SDK。NetworkManager 全局禁用、设备暂不可识别或激活失败时会返回错误。
+SDK 按指定网卡和 `.254` 源地址校验到网关的直连路由，因此同网段的 VPN 路由可以继续
+服务普通应用。单独枚举接口时不会修改网卡。
 
 ## Windows 构建和部署
 
@@ -232,3 +232,40 @@ Windows 还会创建 `EthernetWindowsPluginSmoke`，需同时构建该目标；�
 
 SlaveId = IP 最后一段 − 1：`.1` → `0`，`.10` → `9`，`.253` → `252`。
 可分配 IP 和 Flash 中的 IP 配置不变；连接串及 GetBus 使用新的从零编号。
+
+### EMR2 主机协议支持
+
+`extend.protocol` 接受 `auto`（默认）、`emr1`、`emr2`。自动模式在管理握手后发送一次
+只读能力请求，最多等待 200ms；旧固件忽略请求时继续使用 EMR1。显式 `emr1`/`emr2` 跳过能力探测。强制 `emr2` 表示调用方已确认
+网关固件支持该协议；本仓库不包含网关固件升级。EMR1 仍限制每条数据 8 字节、每个数据报最多
+80 条记录。EMR2 支持 0–64 字节 CAN 数据，按完整记录拆成独立 UDP 包，不依赖 IP 分片或接收重组。
+
+`extend.max_payload` 是 UDP 应用载荷预算，默认 1448，范围 128–1472（IPv4 MTU 1500）。
+自动模式另取对端能力上限与本地预算的较小值。`buses` 可覆盖协议和预算，但同一从站的全部实际
+通道必须具有相同的生效值；不同从站可选不同协议。在线更新不支持这两个字段，修改后应重建
+适配器。发送前校验整个调用中的所有从站批次，任何一条非法都不会把有效前缀入队。发送队列
+逐包提交；临时发送失败只保留当前包重试，不重发已成功提交的包。
+
+EMM1 管理能力契约（所有整数为小端，固定 64 字节）：沿用原头部，操作码 14 为请求，15 为响应，
+偏移 8 的 request ID 和偏移 12 的 16 字节设备身份必须与本次请求一致。响应偏移 28 为协议位图
+（bit0 EMR1、bit1 EMR2），32 为最大应用载荷 `uint32`，36 为功能位图 `uint32`，40–63 必须为零。
+请求除头部和身份外全零。已有操作码 1–9 不变。未知功能位只记录，不授权发送必须理解的扩展。
+
+自动确认仅对当前启动会话有效：管理心跳超时或管理线程终止后，能力永久失效，直到重建适配器重新探测。
+uptime 按 32 位串行数比较；回退触发新的身份和请求 ID 关联探测，期间暂停后续发送（已经在途的一次发送不能撤回）。乱序旧心跳在
+能力仍被确认时不会降级；对端能力消失、预算缩小、功能缺失或探测超时则永久失效。失效后未发出的 EMR2 包不转码
+重放；已编码待发包会使数据线程报错停止。UDP 无法在首次观察到断线或重启之前保证识别对端
+状态变化。应用需检查 `Ok()` 并重新创建适配器；库不把未知结果的电机命令自动重试为另一协议。
+
+接收同时识别 EMR1/EMR2；EMR2 每个 UDP 数据报仅允许一个完整协议包。EMR1 保留连续协议包的旧接收行为，但数据报仍限制 1448 字节和总计 80 条记录。公共解码器保留可选 TLV 元数据，
+当前电机回调仍只交付 CAN 消息，Ethernet 不消费时间戳、时钟域或执行时间扩展，也不实现 TSN 调度。
+
+能力查询使用 14/15，避开网关既有的 IP 配置 10/11 与命令 12/13。旧版主机使用 10/11 的 EMR2 自动探测需要同步升级；EMR1 数据与既有管理命令保持兼容。
+
+### 网关运行错误日志
+
+支持诊断事件的固件通过现有订阅发送 `GW_NETWORK_EVENT=16`。管理线程在 warn 级别记录网关 slave/IP、TSW 物理端口或 CAN 队列、累计值与增量，涵盖 FIFO 溢出、收发错误、DMA 超时/隔离、UDP 拒绝和 CAN 软件队列丢弃。初始非零值标为 `baseline(since boot)`，重复快照不刷日志；约 1.3 秒更新一次每组。该事件不参与 CAN 心跳判定。完全断链/DMA 停发时事件可能送不出，仍由已有心跳超时日志报告断联。旧固件不支持该事件时不会因此初始化失败。
+
+每块网关初始化后输出 info 日志 `EMR negotiation`：包含 slave/IP、请求模式、最终 EMR1/EMR2、实际应用载荷预算及来源（能力应答、旧协议回退或显式配置）。`max_payload` 是最终发送预算，不是探测到的路径 MTU。
+
+管理事件只查询已发布的总线，不在构造/注销期间隐式创建总线。管理通道失效后适配器停止并要求重建，不将已协商的 EMR2 静默降级为 EMR1。

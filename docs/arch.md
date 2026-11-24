@@ -99,7 +99,7 @@ bus_idx = (slave_idx << 16) | (bus_idx_in_slave & 0xFF)
 4. 完成参数读取、量程初始化及其他需要同步应答的配置。
 5. 如需周期批量控制，再启用 Bus 或 Adapter 的软同步模式。
 
-需要等待响应的初始化操作应在软同步模式开启前完成，否则请求可能留在待提交队列中并等待超时。
+电机初始化、参数读写、扫描及 ID 管理请求不受软同步限制，可以在开启软同步后执行。Battery、Glove 和自定义 Device 的既有发送策略保持不变。
 
 ### 3.2 命令下发与反馈回传
 
@@ -113,12 +113,14 @@ bus_idx = (slave_idx << 16) | (bus_idx_in_slave & 0xFF)
 
 默认情况下，控制报文在生成后立即提交给 Adapter。该方式链路短、使用简单，适合普通控制和初始化操作。
 
-启用 `SetSyncMode(true)` 后，报文先保留在 Bus 的发送队列中，直到调用 `Commit()` 才作为一个批次交给 Adapter。软同步用于保留控制批次边界，但有两个重要限制：
+启用 `SetSyncMode(true)` 后，五类电机运动控制（PVT、位置、速度、电流、扭矩）报文先保留在 Bus 的发送队列中，直到调用 `Commit()` 才作为一个批次交给 Adapter。IMU、PMS 和电机非 control 指令（包括 Stop、Brake）直接提交，不触发 commit，也不清空已暂存的控制消息。Battery、Glove 和自定义 Device 保持既有策略。软同步用于保留控制批次边界，但有两个重要限制：
 
 - `Commit()` 返回只表示 Adapter 已接收该批次，不表示物理链路已经发出，也不表示电机已经执行；
 - EtherCAT 插件仍按自身周期发送，UsbSerial 插件仍按串口发送机制工作。
 
-EtherCAT 会保留同一 Bus 上不同同步批次的边界，避免它们被合并进同一底层输出包；不同 Bus 的消息仍可共享空闲 PDO 槽位。软同步不保证所有命令送达：EtherCAT 待发帧超过 3 帧时只保留最新完整帧，详见 [EtherCAT 协议](ethercat_protocol.md)。
+EtherCAT 在每个 commit 内先利用之前即时消息所在帧的对应 Bus 空槽，已有槽位不会被同 ID 新消息覆盖。随后封闭该 Bus 的批次，保留同一 Bus 上不同同步批次的边界，避免它们被合并进同一底层输出包；不同 Bus 的消息仍可共享空闲 PDO 槽位。软同步不保证所有命令送达：EtherCAT 待发帧超过 3 帧时只保留最新完整帧，详见 [EtherCAT 协议](ethercat_protocol.md)。
+
+普通电机响应和 ACK 的主机等待时限为 200ms，固件版本探测保留 100ms；电机内部通信看门狗由 `SetCanTimeout` 单独设置。
 
 ### 3.4 反馈消费方式
 

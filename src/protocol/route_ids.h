@@ -12,10 +12,16 @@ namespace encos::protocol {
 /** @brief Battery 四类状态帧的基础 CAN ID */
 inline constexpr std::array<std::uint32_t, 4> kBatteryStatusBaseIds{0x3F4u, 0x2F4u, 0x0F4u, 0x1F4u};
 
+/** @brief 按电池配置 ID 计算 CAN ID，相邻电池的地址步长为 2 */
+constexpr std::uint32_t BatteryCanId(std::uint32_t base_id, std::uint16_t idx) noexcept {
+    return base_id + 2u * idx;
+}
+
 /** @brief 生成指定 Battery 索引的四个状态路由 ID */
 constexpr std::array<std::uint32_t, 4> BatteryStatusIds(std::uint16_t idx) noexcept {
-    return {kBatteryStatusBaseIds[0] + idx, kBatteryStatusBaseIds[1] + idx,
-            kBatteryStatusBaseIds[2] + idx, kBatteryStatusBaseIds[3] + idx};
+    return {
+        BatteryCanId(kBatteryStatusBaseIds[0], idx), BatteryCanId(kBatteryStatusBaseIds[1], idx),
+        BatteryCanId(kBatteryStatusBaseIds[2], idx), BatteryCanId(kBatteryStatusBaseIds[3], idx)};
 }
 
 inline constexpr std::uint32_t kImuPriority = 3u;

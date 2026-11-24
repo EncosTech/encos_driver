@@ -55,12 +55,15 @@ auto Motor::PVTControl(float kp, float kd, float pos, float spd, float torque)
 
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<1>(pack, ranges).has_value();
-        });
+        response = SendAndWait(
+            msg,
+            [idx = impl_->idx.load(std::memory_order_relaxed),
+             ranges = impl_->ranges](const MotorPackMsg& pack) {
+                return pack.id == idx && DecodeFeedback<1>(pack, ranges).has_value();
+            },
+            kWaitTimeout, true);
     } else {
-        SendMessageLocked(msg);
+        SendMessageLocked(msg, true);
     }
     RecordCommand("PVTControl", kp, kd, pos, spd, std::nullopt, torque, std::nullopt, std::nullopt,
                   FeedbackType);
@@ -120,12 +123,15 @@ auto Motor::PosControl(float position, float speed, float current, int feedback)
     msg.data[7] = static_cast<uint8_t>(((cur_int & 0x3F) << 2) | feedback);
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
-        });
+        response = SendAndWait(
+            msg,
+            [idx = impl_->idx.load(std::memory_order_relaxed),
+             ranges = impl_->ranges](const MotorPackMsg& pack) {
+                return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
+            },
+            kWaitTimeout, true);
     } else {
-        SendMessageLocked(msg);
+        SendMessageLocked(msg, true);
     }
     RecordCommand("PosControl", std::nullopt, std::nullopt, position, logged_speed, logged_current,
                   std::nullopt, std::nullopt, std::nullopt, feedback);
@@ -176,12 +182,15 @@ auto Motor::SpdControl(float speed, float current, int feedback)
 
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
-        });
+        response = SendAndWait(
+            msg,
+            [idx = impl_->idx.load(std::memory_order_relaxed),
+             ranges = impl_->ranges](const MotorPackMsg& pack) {
+                return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
+            },
+            kWaitTimeout, true);
     } else {
-        SendMessageLocked(msg);
+        SendMessageLocked(msg, true);
     }
     RecordCommand("SpdControl", std::nullopt, std::nullopt, std::nullopt, speed, current,
                   std::nullopt, std::nullopt, std::nullopt, feedback);
@@ -227,12 +236,15 @@ auto Motor::CurControl(float current, int feedback)
 
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
-        });
+        response = SendAndWait(
+            msg,
+            [idx = impl_->idx.load(std::memory_order_relaxed),
+             ranges = impl_->ranges](const MotorPackMsg& pack) {
+                return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
+            },
+            kWaitTimeout, true);
     } else {
-        SendMessageLocked(msg);
+        SendMessageLocked(msg, true);
     }
     RecordCommand("CurControl", std::nullopt, std::nullopt, std::nullopt, std::nullopt, current,
                   std::nullopt, std::nullopt, std::nullopt, feedback);
@@ -278,12 +290,15 @@ auto Motor::TorControl(float torque, int feedback)
 
     std::optional<MotorPackMsg> response;
     if constexpr (FeedbackType != 0) {
-        response = SendAndWait(msg, [idx = impl_->idx.load(std::memory_order_relaxed),
-                                     ranges = impl_->ranges](const MotorPackMsg& pack) {
-            return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
-        });
+        response = SendAndWait(
+            msg,
+            [idx = impl_->idx.load(std::memory_order_relaxed),
+             ranges = impl_->ranges](const MotorPackMsg& pack) {
+                return pack.id == idx && DecodeFeedback<FeedbackType>(pack, ranges).has_value();
+            },
+            kWaitTimeout, true);
     } else {
-        SendMessageLocked(msg);
+        SendMessageLocked(msg, true);
     }
     RecordCommand("TorControl", std::nullopt, std::nullopt, std::nullopt, std::nullopt,
                   std::nullopt, torque, std::nullopt, std::nullopt, feedback);

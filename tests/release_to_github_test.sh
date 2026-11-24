@@ -81,6 +81,16 @@ mkdir -p "${fake_bin}"
 curl_log="${test_root}/curl.log"
 export CURL_LOG="${curl_log}"
 export TARGET_BARE="${target_bare}"
+export PORTABLE_FIXTURES="${test_root}/portable"
+mkdir -p "${PORTABLE_FIXTURES}"
+for arch in amd64 arm64; do
+  stem="libencosdriver_3.2.0_linux-glibc2.28_${arch}"
+  names=("${stem}.deb" "${stem}.rpm" "${stem}.tar.gz" "verification-${arch}.tar.gz" "elf-audit-${arch}.json")
+  for name in "${names[@]}"; do
+    printf 'fake candidate %s\n' "${name}" >"${PORTABLE_FIXTURES}/${name}"
+  done
+  (cd "${PORTABLE_FIXTURES}" && sha256sum "${names[@]}" >"SHA256SUMS-${arch}")
+done
 
 cat >"${fake_bin}/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -89,6 +99,7 @@ set -euo pipefail
 output=""
 url=""
 method="GET"
+upload_file=""
 while (($#)); do
   case "$1" in
     --output|-o)
@@ -99,7 +110,11 @@ while (($#)); do
       method=$2
       shift 2
       ;;
-    --header|-H|--data|--data-binary)
+    --data-binary)
+      upload_file=${2#@}
+      shift 2
+      ;;
+    --header|-H|--data)
       shift 2
       ;;
     --fail|--fail-with-body|--silent|--show-error|--location)
@@ -117,57 +132,16 @@ done
 
 printf '%s %s\n' "${method}" "${url}" >>"${CURL_LOG}"
 case "${url}" in
-  */dists/jammy/*/binary-amd64/Packages)
-    cat >"${output}" <<'PACKAGES'
-Package: libencosdriver
-Version: 3.2.0
-Architecture: amd64
-Filename: pool/jammy/main/l/libencosdriver/libencosdriver_3.2.0_amd64.deb
-Size: 9
-SHA256: b65ab1ed14ad372bfc5603e921bad94b9843ecfa709b9b988dea6ce4624ee581
-
-PACKAGES
-    ;;
-  */dists/jammy/*/binary-arm64/Packages)
-    if [[ "${MISSING_ARM64:-}" == 1 ]]; then
-      : >"${output}"
-      exit 0
+  https://gitea.test/api/packages/packages/generic/encos-driver-linux/3.2.0/*)
+    name=${url##*/}
+    if [[ "${name}" == SHA256SUMS-arm64 && "${MISSING_ARM64:-}" == 1 ]]; then
+      exit 22
     fi
-    cat >"${output}" <<'PACKAGES'
-Package: libencosdriver
-Version: 3.2.0
-Architecture: arm64
-Filename: pool/jammy/main/l/libencosdriver/libencosdriver_3.2.0_arm64.deb
-Size: 9
-SHA256: b65ab1ed14ad372bfc5603e921bad94b9843ecfa709b9b988dea6ce4624ee581
-
-PACKAGES
-    ;;
-  */dists/noble/*/binary-amd64/Packages)
-    cat >"${output}" <<'PACKAGES'
-Package: libencosdriver
-Version: 3.2.0
-Architecture: amd64
-Filename: pool/noble/main/l/libencosdriver/libencosdriver_3.2.0_amd64.deb
-Size: 9
-SHA256: b65ab1ed14ad372bfc5603e921bad94b9843ecfa709b9b988dea6ce4624ee581
-
-PACKAGES
-    ;;
-  */dists/noble/*/binary-arm64/Packages)
-    if [[ "${MISSING_ARM64:-}" == 1 ]]; then
-      : >"${output}"
-      exit 0
+    if [[ "${name}" == *_arm64.rpm && "${TAMPER_RPM:-}" == 1 ]]; then
+      printf 'corrupted package\n' >"${output}"
+    else
+      cp "${PORTABLE_FIXTURES}/${name}" "${output}"
     fi
-    cat >"${output}" <<'PACKAGES'
-Package: libencosdriver
-Version: 3.2.0
-Architecture: arm64
-Filename: pool/noble/main/l/libencosdriver/libencosdriver_3.2.0_arm64.deb
-Size: 9
-SHA256: b65ab1ed14ad372bfc5603e921bad94b9843ecfa709b9b988dea6ce4624ee581
-
-PACKAGES
     ;;
   */repos/acme/mirror/releases)
     printf '{"id":42,"upload_url":"https://uploads.github.test/repos/acme/mirror/releases/42/assets{?name,label}"}\n'
@@ -180,13 +154,17 @@ PACKAGES
     printf '{"id":42,"draft":false}\n'
     ;;
   *uploads.github.test*/assets*)
-    if [[ "${FAIL_UPLOAD:-}" == 1 ]]; then
+    name=${url##*name=}
+    if [[ "${name}" == *.rpm && "${FAIL_UPLOAD:-}" == 1 ]]; then
       exit 22
     fi
+    if [[ "${name}" == SHA256SUMS ]]; then
+      test "$(wc -l <"${upload_file}")" -eq 6
+      (cd "${PORTABLE_FIXTURES}" && sha256sum -c "${upload_file}" >/dev/null)
+    else
+      cmp "${PORTABLE_FIXTURES}/${name}" "${upload_file}"
+    fi
     printf '{"state":"uploaded"}\n'
-    ;;
-  *.deb)
-    printf 'fake deb\n' >"${output}"
     ;;
   *)
     printf 'unexpected URL: %s\n' "${url}" >&2
@@ -212,8 +190,6 @@ run_release() {
       --github-upload-url https://uploads.github.test \
       --gitea-url https://gitea.test \
       --gitea-package-owner packages \
-      --debian-distributions jammy,noble \
-      --debian-architectures amd64,arm64 \
       "$@"
 }
 
@@ -238,9 +214,13 @@ done
 test ! -e "${mirror_checkout}/external/example/.git"
 test ! -e "${mirror_checkout}/external/example/vendor/leaf/.git"
 test "$(git -C "${mirror_checkout}" log -1 --format=%s)" = "release: 发布v3.2.0"
-test "$(grep -c 'uploads.github.test.*/assets' "${curl_log}")" -eq 4
-grep -q 'name=libencosdriver_3.2.0_amd64_jammy.deb' "${curl_log}"
-grep -q 'name=libencosdriver_3.2.0_amd64_noble.deb' "${curl_log}"
+test "$(grep -c 'uploads.github.test.*/assets' "${curl_log}")" -eq 7
+for arch in amd64 arm64; do
+  for format in deb rpm tar.gz; do
+    grep -Fq "name=libencosdriver_3.2.0_linux-glibc2.28_${arch}.${format}" "${curl_log}"
+  done
+done
+grep -q 'name=SHA256SUMS$' "${curl_log}"
 grep -q 'PATCH https://api.github.test/repos/acme/mirror/releases/42' "${curl_log}"
 
 commit_count_before=$(git --git-dir="${target_bare}" rev-list --count main)
@@ -271,8 +251,6 @@ GITHUB_RELEASE_REPOSITORY=acme/mirror
 GITHUB_RELEASE_REPOSITORY_URL=${target_bare}
 GITEA_URL=https://gitea.test
 GITEA_PACKAGE_OWNER=packages
-DEBIAN_DISTRIBUTIONS=jammy,noble
-DEBIAN_ARCHITECTURES=amd64,arm64
 GITHUB_API_URL=https://api.github.test
 GITHUB_UPLOAD_URL=https://uploads.github.test
 EOF
@@ -335,6 +313,17 @@ missing_status=$?
 set -e
 test "${missing_status}" -ne 0
 test "$(git --git-dir="${target_bare}" rev-list --count main)" = "${commit_count_after}"
+test "$(grep -c 'github.test' "${curl_log}" || true)" -eq 0
+
+: >"${curl_log}"
+set +e
+TAMPER_RPM=1 run_release >"${test_root}/tampered.log" 2>&1
+tampered_status=$?
+set -e
+test "${tampered_status}" -ne 0
+grep -q 'Checksum mismatch: libencosdriver_3.2.0_linux-glibc2.28_arm64.rpm' "${test_root}/tampered.log"
+test "$(git --git-dir="${target_bare}" rev-list --count main)" = "${commit_count_after}"
+test "$(grep -c 'github.test' "${curl_log}" || true)" -eq 0
 
 : >"${curl_log}"
 set +e

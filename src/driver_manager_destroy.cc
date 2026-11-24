@@ -119,6 +119,13 @@ bool EncosDriverManager::DestroyPms(Pms* pms) {
     return DestroyDevice(impl_, pms, DeviceKind::Pms);
 }
 
+bool EncosDriverManager::DestroyDexHand(DexHand* hand) {
+    using driver_manager_internal::DestroyDevice;
+    using driver_manager_internal::DeviceKind;
+
+    return DestroyDevice(impl_, hand, DeviceKind::DexHand);
+}
+
 bool EncosDriverManager::DestroyDevice(Device* device) {
     using driver_manager_internal::DestroyDevice;
     using driver_manager_internal::DeviceKind;

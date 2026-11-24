@@ -95,7 +95,7 @@ struct ChannelState {
 struct Frame {
     std::uint32_t echo_id = kEchoBusFrame;
     std::uint32_t can_id = 0;
-    std::uint8_t dlc = 0;
+    std::uint8_t dlc = 0; /**< 线上 DLC 编码（FD 为 0..15），不是负载字节数 */
     std::uint8_t channel = 0;
     std::uint8_t flags = 0;
     std::uint8_t reserved = 0;
@@ -115,9 +115,16 @@ std::optional<BitTiming> ComputeBitTiming(const BtConstExt& constraints, std::ui
 /** @brief 编码 20 字节位定时请求 */
 bool EncodeBitTiming(const BitTiming& timing, std::uint8_t out[20]);
 
+/** @brief 将 0..64 字节向上映射为 CAN FD DLC；超出范围返回空 */
+std::optional<std::uint8_t> LengthToDlc(std::uint8_t length);
+/** @brief 将 CAN FD DLC 0..15 转换为负载字节数；非法编码返回空 */
+std::optional<std::uint8_t> DlcToLength(std::uint8_t dlc);
+/** @brief 校验帧标志、标识符和 DLC，返回负载字节数（RTR 返回请求长度）；非法返回空 */
+std::optional<std::uint8_t> PayloadLength(const Frame& frame);
+
 /** @brief 根据帧标志返回线上长度（FD 为 76，否则 20） */
 std::size_t FrameSize(std::uint8_t flags);
-/** @brief 编码帧到线上字节，容量不足返回 0 */
+/** @brief 编码帧到线上字节，帧非法或容量不足返回 0 */
 std::size_t EncodeFrame(const Frame& frame, std::uint8_t* out, std::size_t capacity);
 /** @brief 从缓冲解析一帧，返回消耗字节数，数据不足或非法返回 0 */
 std::size_t DecodeFrame(const std::uint8_t* data, std::size_t available, Frame* out);

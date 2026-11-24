@@ -194,6 +194,24 @@ set(ENCOS_PLUGIN_STATIC_FACTORY_EXTEND "encos::MyDevAdapter::CreateWithExtend")
 - **同一概念在不同插件上使用同名同量纲字段**。例如 Can 与 Ethernet 都是 CAN 总线时序，统一用 `bitrate`、`sample_point`、`dbitrate`、`dsample_point`，采样点为 0-1 小数。
 - **配置在 `MakeAdapter` 时传入、不经 `GetBus`**：适配器在构造函数里就配好接口，因此 `GetBus` 保持非虚、签名不变。已存在实例的总线级增量配置走 `BaseAdapter::UpdateBusExtend`，不经 `GetBus`。
 
+### Ethercat / EthercatIGH 通信周期
+
+两种插件均支持适配器级 `cycle_period_us`，单位为微秒，必须为 1–1000000 的整数，
+默认 1000（1 kHz）。例如以下 `extend` 配置请求 500 μs 周期（2 kHz）：
+
+```json
+{"cycle_period_us":500,"bitrate":1000000,"buses":{"1:0":{"bitrate":500000}}}
+```
+
+周期控制整个主站的 PDO 交换循环，不改变 PDO 长度、布局或 CAN 帧格式。
+IGH 在激活主站前也将该周期告知主站库，用于其发送预算和线程调度。
+`bitrate` / `dbitrate` 仍表示网关下游 CAN 位速率，与此周期独立。
+`cycle_period_us` 只能放在顶层，放入 `buses` 会报错；只在创建适配器时生效。
+在线更新或命中缓存的已有实例收到该字段会明确报错，即使值相同；修改时应释放旧实例并重新创建。
+
+配置表示目标周期，不保证操作系统能达到相应实时频率。周期应与从站处理能力及看门狗超时匹配；
+Ethercat 的 `watchdog_timeout_ms` 可单独配置，设置周期不会自动调整它，IGH 也不会自动更改从站看门狗。
+
 ### 3.2 已初始化实例的总线增量更新（`UpdateBusExtend`）
 
 适配器身份只由 `interface_name` 决定，因此同一进程内第二次 `MakeAdapter` 会命中缓存返回上一次
@@ -475,3 +493,29 @@ cmake --build build -j
   `ENCOS_BUILD_TESTS=ON` 时可用（由检查函数门控）。同时开启安装时它们会进入安装/DEB
   产物；发布构建应关闭测试，或显式排除这两个插件。
 - **wasm**：强制静态模式，设备插件经静态注册表提供；适配器插件不受影响。
+
+
+### 64 字节内部消息与传输兼容性
+
+内部 `MotorPackMsg` 支持最多 64 字节负载，`len` 表示字节数；`PortFrame` 同样支持 64 字节。
+这属于 C++ ABI 变更：应用、核心库、适配器及设备插件必须使用相同版本头文件重新编译，
+不能混用旧二进制。设备插件 ABI 版本已提升至 2，描述符结构名 `DeviceDriverDescriptorV1`
+保留，版本字段必须使用 `kDeviceDriverAbiVersion`。
+
+SocketCAN 支持经典 CAN 最多 8 字节、CAN FD 最多 64 字节；CAN FD 的线上长度由
+传输层映射，非标准长度的填充字节为零。Fake 和原始消息接口支持 64 字节内部消息。
+
+EtherCAT / IGH 每槽仍为 14 字节，其中数据区为 8 字节。CAN FD 网关使用固定小槽分片传输
+9–64 字节报文，需要网关固件支持。经典 CAN 和手套布局每条消息最多 8 字节。
+各布局与组包规则见 [EtherCAT 通信协议](ethercat_protocol.md)。
+GsUsb 的 CAN FD 收发支持最多 64 字节，经典 CAN 仍最多 8 字节。DLC 使用标准映射，
+非标准 FD 长度向上补零到 12、16、20、24、32、48 或 64 字节；接收 `len` 为线上长度。
+例如发送 9 字节时 DLC 为 9，接收长度为 12 字节，末尾 3 字节为零。需要设备支持 CAN FD。
+Ethernet / RelayWs 支持 EMR1 与 [EMR2](emr2.md)：默认自动协商，旧设备继续使用 EMR1（最多 8 字节），
+确认支持 EMR2 后可传输最多 64 字节，并按完整记录拆包。UsbSerial 和 SLCAN 仍最多 8 字节。
+不支持的超长消息会被拒绝；内部容量扩大不会自动改变协议或硬件能力。
+
+### 七电机集合设备
+
+Bus 支持高三位子 ID 的 32 位逻辑 CAN 地址，将子命令按 `1 字节 DLC + 8 字节数据` 封装为 6/7 槽 FD 集合包。
+创建接口、同步聚合、反馈拆分及传输限制见 [七电机集合设备说明](submotor.md)。

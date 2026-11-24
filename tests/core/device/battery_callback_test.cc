@@ -14,7 +14,7 @@ namespace {
 MotorMessage MakeBatteryState(uint16_t index, uint8_t soc) {
     MotorMessage message{};
     message.bus_idx = 0;
-    message.data.id = 0x3F4u + index;
+    message.data.id = 0x3F4u + 2u * index;
     message.data.len = 8;
     message.data.data[0] = 1;
     message.data.data[1] = soc;
@@ -30,7 +30,7 @@ MotorMessage MakeBatteryState(uint16_t index, uint8_t soc) {
 MotorMessage MakeBatteryTemp(uint16_t index) {
     MotorMessage message{};
     message.bus_idx = 0;
-    message.data.id = 0x2F4u + index;
+    message.data.id = 0x2F4u + 2u * index;
     message.data.len = 8;
     message.data.data[0] = 0x19;
     message.data.data[1] = 0x00;
@@ -46,7 +46,7 @@ MotorMessage MakeBatteryTemp(uint16_t index) {
 MotorMessage MakeBatteryError(uint16_t index) {
     MotorMessage message{};
     message.bus_idx = 0;
-    message.data.id = 0x0F4u + index;
+    message.data.id = 0x0F4u + 2u * index;
     message.data.len = 2;
     message.data.data[0] = 0x01;
     message.data.data[1] = 0x04;
@@ -56,10 +56,52 @@ MotorMessage MakeBatteryError(uint16_t index) {
 MotorMessage MakeBatteryActiveCommands(uint16_t index) {
     MotorMessage message{};
     message.bus_idx = 0;
-    message.data.id = 0x1F4u + index;
+    message.data.id = 0x1F4u + 2u * index;
     message.data.len = 1;
     message.data.data[0] = 0x3F;
     return message;
+}
+
+TEST_F(MotorTestFixture, BatteryConfiguredIdOneReceivesF6ReportsWithoutUpdatingIdZero) {
+    auto* first = bus->GetBattery(0);
+    auto* second = bus->GetBattery(1);
+    int first_callbacks = 0;
+    int second_callbacks = 0;
+    first->SetOnStatus([&](const BatteryStatus&) {
+        ++first_callbacks;
+    });
+    second->SetOnStatus([&](const BatteryStatus&) {
+        ++second_callbacks;
+    });
+
+    auto state = MakeBatteryState(0, 94);
+    state.data.id = 0x3F6;
+    auto temp = MakeBatteryTemp(0);
+    temp.data.id = 0x2F6;
+    auto error = MakeBatteryError(0);
+    error.data.id = 0x0F6;
+    error.data.data[0] = 0;
+    error.data.data[1] = 0;
+    auto active = MakeBatteryActiveCommands(0);
+    active.data.id = 0x1F6;
+    adapter->InjectMessage(state);
+    adapter->InjectMessage(temp);
+    adapter->InjectMessage(error);
+    adapter->InjectMessage(active);
+
+    const auto status = second->GetStatus();
+    EXPECT_EQ(first_callbacks, 0);
+    EXPECT_EQ(second_callbacks, 4);
+    ASSERT_TRUE(status.state.has_value());
+    EXPECT_FLOAT_EQ(status.state->soc, 0.94f);
+    EXPECT_TRUE(status.temp.has_value());
+    EXPECT_TRUE(status.active_commands.has_value());
+    EXPECT_FALSE(status.error.comm_timeout);
+    EXPECT_FALSE(first->GetStatus().state.has_value());
+
+    state.data.id = 0x3F5;
+    adapter->InjectMessage(state);
+    EXPECT_EQ(second_callbacks, 4);
 }
 
 TEST_F(MotorTestFixture, BatteryCallbackRunsSynchronouslyForEveryValidFrame) {

@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -25,7 +27,7 @@ constexpr std::size_t kMaxCanFdMotorSlots = kMaxCanFdBusCount * kMaxCanFdMotorsP
 constexpr std::size_t kMaxPdoEntriesPerMapping = 255;
 constexpr auto kSlaveStateLogPeriod = std::chrono::milliseconds(50);
 constexpr std::size_t kClassicCan8BusMappedBytes =
-    2 + (kClassicCan8BusMotorSlots * sizeof(MotorPackMsg));  // without reserved[2]
+    2 + (kClassicCan8BusMotorSlots * sizeof(EthercatCanSlot));  // without reserved[2]
 
 const char* al_state_to_string(unsigned int al_state) {
     switch (al_state) {
@@ -87,6 +89,58 @@ std::size_t detect_output_bytes(ec_master_t* master, uint16_t slave_pos, uint8_t
     return (output_bits + 7U) / 8U;
 }
 
+struct FragmentedPdoSyncs {
+    uint8_t output;
+    uint8_t input;
+};
+
+std::optional<FragmentedPdoSyncs> FindFragmentedPdoSyncs(ec_master_t* master, uint16_t slave,
+                                                         uint8_t sync_count) {
+    std::optional<uint8_t> output;
+    std::optional<uint8_t> input;
+    for (uint8_t sync = 0; sync < sync_count; ++sync) {
+        ec_sync_info_t info{};
+        if (ecrt_master_get_sync_manager(master, slave, sync, &info) != 0) {
+            return std::nullopt;
+        }
+        if (info.n_pdos == 0) {
+            continue;
+        }
+        if (info.dir != EC_DIR_OUTPUT && info.dir != EC_DIR_INPUT) {
+            return std::nullopt;
+        }
+        auto& selected = info.dir == EC_DIR_OUTPUT ? output : input;
+        if (selected) {
+            return std::nullopt;
+        }
+
+        std::size_t bits = 0;
+        for (uint16_t pdo = 0; pdo < info.n_pdos; ++pdo) {
+            ec_pdo_info_t mapping{};
+            if (ecrt_master_get_pdo(master, slave, sync, pdo, &mapping) != 0 ||
+                mapping.n_entries == 0) {
+                return std::nullopt;
+            }
+            for (uint16_t i = 0; i < mapping.n_entries; ++i) {
+                ec_pdo_entry_info_t entry{};
+                if (ecrt_master_get_pdo_entry(master, slave, sync, pdo, i, &entry) != 0 ||
+                    entry.bit_length == 0) {
+                    return std::nullopt;
+                }
+                bits += entry.bit_length;
+            }
+        }
+        if (bits != 8 * sizeof(EthercatCanFdMsg3x10)) {
+            return std::nullopt;
+        }
+        selected = sync;
+    }
+    if (!output || !input) {
+        return std::nullopt;
+    }
+    return FragmentedPdoSyncs{*output, *input};
+}
+
 // AX58100 的 0x7010/0x6000 PDO 模式是：
 // [motor_num, can_ide] + N 组电机字段，每组 11 个 subindex：
 // [id(32), frame_flags(8), dlc(8), data0..7(8*8)]。普通 CAN 可以是 6 槽位或 24 槽位。
@@ -145,6 +199,7 @@ EthercatIGHHandle::EthercatIGHHandle(std::string interface_name, LoggerPtr logge
     : EthercatBaseHandle(std::move(logger)),
       interface_name_(std::move(interface_name)),
       extend_(std::move(extend)) {
+    cycle_period_ = encos::ethercat::ExtractCyclePeriod(extend_);
     if (interface_name_.empty() ||
         !std::all_of(interface_name_.begin(), interface_name_.end(), [](unsigned char character) {
             return std::isdigit(character) != 0;
@@ -234,6 +289,11 @@ bool EthercatIGHHandle::Initialize() {
         return false;
     }
 
+    if (ecrt_master_set_send_interval(master_, static_cast<std::size_t>(cycle_period_.count()))) {
+        logger_->error("ecrt_master_set_send_interval failed.");
+        return false;
+    }
+
     // 4) 激活 master 并获取 process data 内存基址
     if (ecrt_master_activate(master_)) {
         logger_->error("ecrt_master_activate failed.");
@@ -246,6 +306,19 @@ bool EthercatIGHHandle::Initialize() {
         return false;
     }
 
+    const auto domain_size = ecrt_domain_size(domain_);
+    constexpr auto bytes = sizeof(EthercatCanFdMsg3x10);
+    for (std::size_t slave = 0; slave < slave_count_; ++slave) {
+        const auto& offsets = slave_offsets_[slave];
+        if (slave_configs_[slave].format == SlaveFormat::CanFd3Bus10Slots &&
+            (domain_size < bytes || offsets.fragmented_input > domain_size - bytes ||
+             offsets.fragmented_output > domain_size - bytes)) {
+            logger_->error("IGH slave {} has a 420-byte PDO outside the process data domain.",
+                           slave);
+            return false;
+        }
+    }
+
     outputs_cleared_ = false;
     in_operational_.store(true);
     running_.store(true);
@@ -253,8 +326,6 @@ bool EthercatIGHHandle::Initialize() {
 }
 
 bool EthercatIGHHandle::ConfigureDomainEntries() {
-    slave_offsets_.clear();
-    slave_offsets_.resize(slave_count_);
     slave_config_handles_.assign(slave_count_, nullptr);
     slave_states_.assign(slave_count_, {});
     slave_reached_operational_.assign(slave_count_, false);
@@ -287,10 +358,23 @@ bool EthercatIGHHandle::ConfigureDomainEntries() {
         }
         slave_config_handles_[slave] = sc;
 
-        const bool is_can_fd = config.format == SlaveFormat::CanFd8Bus ||
-                               config.format == SlaveFormat::CanFd8Bus10Slots ||
-                               config.format == SlaveFormat::CanFd3Bus ||
-                               config.format == SlaveFormat::Glove;
+        if (config.format == SlaveFormat::CanFd3Bus10Slots) {
+            auto& off = slave_offsets_[slave];
+            // 从站的默认 PDO 映射已规定数据区布局，按同步管理器位置注册完整数据区。
+            const int output = ecrt_slave_config_reg_pdo_entry_pos(sc, off.fragmented_output_sync,
+                                                                   0, 0, domain_, nullptr);
+            const int input = ecrt_slave_config_reg_pdo_entry_pos(sc, off.fragmented_input_sync, 0,
+                                                                  0, domain_, nullptr);
+            if (output < 0 || input < 0) {
+                logger_->error("IGH slave {} failed to register 420-byte PDOs.", slave);
+                return false;
+            }
+            off.fragmented_output = static_cast<unsigned int>(output);
+            off.fragmented_input = static_cast<unsigned int>(input);
+            continue;
+        }
+
+        const bool is_can_fd = UsesCanFdSlots(config.format) || config.format == SlaveFormat::Glove;
         const bool is_can_fd3_bus = config.format == SlaveFormat::CanFd3Bus;
         const bool is_classic_can2_bus = config.format == SlaveFormat::ClassicCan2Bus;
         const bool is_classic_can8_bus = config.format == SlaveFormat::ClassicCan8Bus;
@@ -469,6 +553,8 @@ void EthercatIGHHandle::ConfigureSlaveConfigs() {
     // 与 SOEM 路径保持一致：逐个 slave 按各自 PDO 大小建立配置。
     slave_configs_.clear();
     slave_configs_.resize(slave_count_);
+    slave_offsets_.clear();
+    slave_offsets_.resize(slave_count_);
     slave_vendor_ids_.assign(slave_count_, kSlaveVendorId);
     slave_product_codes_.assign(slave_count_, kSlaveProductCode);
     for (std::size_t slave = 0; slave < slave_count_; ++slave) {
@@ -487,7 +573,17 @@ void EthercatIGHHandle::ConfigureSlaveConfigs() {
         const auto layout_bytes = output_bytes == kClassicCan8BusMappedBytes
                                       ? sizeof(EthercatClassicCanMsg8)
                                       : output_bytes;
-        cfg = ClassifyOutputPdoSize(layout_bytes);
+        std::size_t input_bytes = 0;
+        if (layout_bytes == sizeof(EthercatCanFdMsg3x10)) {
+            const auto syncs = FindFragmentedPdoSyncs(master_, static_cast<uint16_t>(slave),
+                                                      slave_info.sync_count);
+            if (syncs) {
+                input_bytes = sizeof(EthercatCanFdMsg3x10);
+                slave_offsets_[slave].fragmented_output_sync = syncs->output;
+                slave_offsets_[slave].fragmented_input_sync = syncs->input;
+            }
+        }
+        cfg = ClassifyOutputPdoSize(layout_bytes, input_bytes);
         if (HasSupportedPdo(cfg)) {
             logger_->info("IGH slave {} configured with {} Buses from {} output bytes.", slave,
                           cfg.bus_count, output_bytes);
@@ -800,19 +896,31 @@ void EthercatIGHHandle::WriteOutputs(const OutputFrame& packets) {
 
         const auto& packet_buf = packets[slave];
         const auto& off = slave_offsets_[slave];
+        if (config.format == SlaveFormat::CanFd3Bus10Slots) {
+            if (packet_buf.size() == sizeof(EthercatCanFdMsg3x10)) {
+                std::memcpy(domain_pd_ + off.fragmented_output, packet_buf.data(),
+                            sizeof(EthercatCanFdMsg3x10));
+            } else {
+                ClearOutput(slave);
+            }
+            continue;
+        }
         const std::size_t motor_slots = off.out_motor.size();
-        if (config.format == SlaveFormat::CanFd8Bus ||
-            config.format == SlaveFormat::CanFd8Bus10Slots ||
-            config.format == SlaveFormat::CanFd3Bus || config.format == SlaveFormat::Glove) {
+        const bool can_fd = UsesCanFdSlots(config.format);
+        if (can_fd || config.format == SlaveFormat::Glove) {
             if (packet_buf.size() < config.message_size) {
                 ClearOutput(slave);
                 continue;
             }
-            const auto* motors = reinterpret_cast<const MotorPackMsg*>(packet_buf.data());
+            const auto* motors = reinterpret_cast<const EthercatCanSlot*>(packet_buf.data());
             for (std::size_t i = 0; i < motor_slots; ++i) {
                 const auto& src = motors[i];
                 const auto& dst = off.out_motor[i];
-                EC_WRITE_U32(domain_pd_ + dst.id, src.id);
+                if (can_fd) {
+                    std::memcpy(domain_pd_ + dst.id, &src, sizeof(src.id));
+                } else {
+                    EC_WRITE_U32(domain_pd_ + dst.id, src.id);
+                }
                 EC_WRITE_U8(domain_pd_ + dst.frame_flags, src.frame_flags);
                 EC_WRITE_U8(domain_pd_ + dst.dlc, src.len);
                 for (std::size_t j = 0; j < sizeof(src.data); ++j) {
@@ -871,8 +979,11 @@ void EthercatIGHHandle::ClearOutput(std::size_t slave) {
     const auto format =
         slave < slave_configs_.size() ? slave_configs_[slave].format : SlaveFormat::None;
 
-    if (format != SlaveFormat::CanFd8Bus && format != SlaveFormat::CanFd8Bus10Slots &&
-        format != SlaveFormat::CanFd3Bus && format != SlaveFormat::Glove) {
+    if (format == SlaveFormat::CanFd3Bus10Slots) {
+        std::memset(domain_pd_ + off.fragmented_output, 0, sizeof(EthercatCanFdMsg3x10));
+        return;
+    }
+    if (!UsesCanFdSlots(format) && format != SlaveFormat::Glove) {
         EC_WRITE_U8(domain_pd_ + off.out_can_ide, 0);
         EC_WRITE_U8(domain_pd_ + off.out_motor_num, 0);
     }
@@ -900,12 +1011,11 @@ void EthercatIGHHandle::ClearOutputs() {
     outputs_cleared_ = true;
 }
 
-MotorMessages EthercatIGHHandle::ReadInputs() {
+MotorMessages EthercatIGHHandle::ReadInputs(std::chrono::microseconds period) {
     // 先从 domain 读出每个 slave 的原始帧，再交给 base 层统一解码为业务消息。
     // 普通 CAN / CAN FD 结构体大小不同，这里按当前 format 分配帧缓存。
     std::vector<std::vector<uint8_t>> raw_frames(slave_count_);
-    std::vector<const uint8_t*> inputs;
-    inputs.reserve(slave_count_);
+    std::vector<const uint8_t*> inputs(slave_count_, nullptr);
 
     for (std::size_t slave = 0; slave < slave_count_; ++slave) {
         const auto& off = slave_offsets_[slave];
@@ -914,23 +1024,42 @@ MotorMessages EthercatIGHHandle::ReadInputs() {
         }
 
         const auto& config = slave_configs_[slave];
+        const bool can_fd = UsesCanFdSlots(config.format);
+        if (can_fd) {
+            if (domain_state_.wc_state != EC_WC_COMPLETE || !master_state_.link_up) {
+                continue;
+            }
+            if (master_state_.al_states != EC_AL_STATE_OP) {
+                ec_slave_config_state_t state{};
+                if (ecrt_slave_config_state(slave_config_handles_[slave], &state) != 0 ||
+                    !state.online || !state.operational) {
+                    continue;
+                }
+            }
+        }
+        if (config.format == SlaveFormat::CanFd3Bus10Slots) {
+            inputs[slave] = domain_pd_ + off.fragmented_input;
+            continue;
+        }
         const std::size_t motor_slots = off.in_motor.size();
-        if (config.format == SlaveFormat::CanFd8Bus ||
-            config.format == SlaveFormat::CanFd8Bus10Slots ||
-            config.format == SlaveFormat::CanFd3Bus || config.format == SlaveFormat::Glove) {
+        if (can_fd || config.format == SlaveFormat::Glove) {
             raw_frames[slave].assign(config.message_size, 0);
-            auto* motors = reinterpret_cast<MotorPackMsg*>(raw_frames[slave].data());
+            auto* motors = reinterpret_cast<EthercatCanSlot*>(raw_frames[slave].data());
             for (std::size_t i = 0; i < motor_slots; ++i) {
                 auto& dst = motors[i];
                 const auto& src = off.in_motor[i];
-                dst.id = EC_READ_U32(domain_pd_ + src.id);
+                if (can_fd) {
+                    std::memcpy(&dst, domain_pd_ + src.id, sizeof(dst.id));
+                } else {
+                    dst.id = EC_READ_U32(domain_pd_ + src.id);
+                }
                 dst.frame_flags = EC_READ_U8(domain_pd_ + src.frame_flags);
                 dst.len = EC_READ_U8(domain_pd_ + src.dlc);
                 for (std::size_t j = 0; j < sizeof(dst.data); ++j) {
                     dst.data[j] = EC_READ_U8(domain_pd_ + src.data[j]);
                 }
             }
-            inputs.push_back(raw_frames[slave].data());
+            inputs[slave] = raw_frames[slave].data();
         } else if (config.format == SlaveFormat::ClassicCan8Bus) {
             raw_frames[slave].assign(sizeof(EthercatClassicCanMsg8), 0);
             auto* packet = reinterpret_cast<EthercatClassicCanMsg8*>(raw_frames[slave].data());
@@ -946,7 +1075,7 @@ MotorMessages EthercatIGHHandle::ReadInputs() {
                     dst.data[j] = EC_READ_U8(domain_pd_ + src.data[j]);
                 }
             }
-            inputs.push_back(reinterpret_cast<const uint8_t*>(packet));
+            inputs[slave] = raw_frames[slave].data();
         } else if (config.format == SlaveFormat::ClassicCan2Bus) {
             raw_frames[slave].assign(sizeof(EthercatClassicCanMsg2), 0);
             auto* packet = reinterpret_cast<EthercatClassicCanMsg2*>(raw_frames[slave].data());
@@ -962,13 +1091,11 @@ MotorMessages EthercatIGHHandle::ReadInputs() {
                     dst.data[j] = EC_READ_U8(domain_pd_ + src.data[j]);
                 }
             }
-            inputs.push_back(reinterpret_cast<const uint8_t*>(packet));
-        } else {
-            inputs.push_back(nullptr);
+            inputs[slave] = raw_frames[slave].data();
         }
     }
 
-    return DecodeInputs(inputs, slave_count_);
+    return DecodeInputs(inputs, slave_count_, period);
 }
 
 void EthercatIGHHandle::Send(const MotorMessage& message) {
@@ -1000,6 +1127,10 @@ void EthercatIGHHandle::SendSynchronized(const MotorMessages& messages) {
 }
 
 void EthercatIGHHandle::Loop(std::chrono::microseconds period) {
+    if (period.count() <= 0) {
+        throw std::invalid_argument("EtherCAT loop period must be positive");
+    }
+    ResetInputFragments();
     // 主循环顺序：
     // receive -> process -> (可选写输出) -> queue -> Send -> decode回调
     auto next_wake = std::chrono::steady_clock::now();
@@ -1019,7 +1150,7 @@ void EthercatIGHHandle::Loop(std::chrono::microseconds period) {
         {
             ENCOS_TRACY_ZONE("EtherCAT::BuildFrame");
             OutputFrame frame;
-            if (PrepareNextFrame(frame, slave_count_)) {
+            if (PrepareNextFrame(frame)) {
                 WriteOutputs(frame);
             } else {
                 ClearOutputs();
@@ -1036,7 +1167,9 @@ void EthercatIGHHandle::Loop(std::chrono::microseconds period) {
             ENCOS_TRACY_ZONE("EtherCAT::MessageCallback");
             auto cb = CopyReceiveCallback();
             if (cb) {
-                cb(ReadInputs());
+                cb(ReadInputs(period));
+            } else {
+                ResetInputFragments();
             }
         }
 

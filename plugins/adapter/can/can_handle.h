@@ -5,7 +5,6 @@
 
 #include <atomic>
 #include <functional>
-#include <linux/can.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
 #include <string>
@@ -14,6 +13,7 @@
 #include <unistd.h>
 
 #include "bus/bus.h"
+#include "can_linux_compat.h"
 
 namespace encos {
 

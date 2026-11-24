@@ -66,12 +66,74 @@ void ExpectCompleteFrame(const PortFrame& frame) {
     EXPECT_EQ(frame.len, 8U);
 }
 
+TEST(PortPayloadTests, Preserves64BytePayloadThroughOverwrite) {
+    ASSERT_EQ(sizeof(MotorPackMsg::data), 64U);
+    ASSERT_EQ(PortFrame{}.data.size(), 64U);
+    Port<3, MotorPackMsg> port;
+    for (uint8_t sequence = 0; sequence < 5; ++sequence) {
+        MotorPackMsg message{};
+        message.id = sequence;
+        message.len = 64;
+        message.frame_flags = kCanFrameFlagFdMask;
+        for (std::size_t i = 0; i < sizeof(message.data); ++i) {
+            message.data[i] = static_cast<uint8_t>(sequence + i);
+        }
+        port.Push(message);
+    }
+    for (uint8_t sequence = 2; sequence < 5; ++sequence) {
+        const auto message = port.Pop();
+        ASSERT_TRUE(message.has_value());
+        EXPECT_EQ(message->id, sequence);
+        EXPECT_EQ(message->len, 64);
+        for (std::size_t i = 0; i < sizeof(message->data); ++i) {
+            EXPECT_EQ(message->data[i], static_cast<uint8_t>(sequence + i));
+        }
+    }
+    EXPECT_FALSE(port.Pop().has_value());
+}
+
 TEST(PortTests, StoresImmutableCanIdAndStartsEmpty) {
     InstrumentedPort<3> port(0x123U);
     const BasePort& base = port;
 
     EXPECT_EQ(base.GetCanId(), 0x123U);
+    EXPECT_FALSE(base.IsAnyCanId());
     EXPECT_FALSE(port.Pop().has_value());
+}
+
+TEST(PortTests, FullWidthCanIdIsDistinctFromDefaultAndExplicitWildcard) {
+    Port<3> exact(std::numeric_limits<std::uint32_t>::max());
+    Port<3> default_wildcard;
+    Port<3> explicit_wildcard(BasePort::kAnyCanId);
+
+    EXPECT_EQ(exact.GetCanId(), 0xFFFFFFFFU);
+    EXPECT_FALSE(exact.IsAnyCanId());
+    EXPECT_TRUE(default_wildcard.IsAnyCanId());
+    EXPECT_TRUE(explicit_wildcard.IsAnyCanId());
+}
+
+TEST(PortTests, FullWidthCanIdAndWildcardPreserveCallbacksAndMessages) {
+    std::size_t exact_calls = 0U;
+    std::size_t wildcard_calls = 0U;
+    const PortFrame frame{{42U}, 0U, 1U};
+    Port<3> exact(0xFFFFFFFFU, [&](const PortFrame& message) {
+        EXPECT_EQ(message, frame);
+        ++exact_calls;
+    });
+    Port<3> wildcard(BasePort::kAnyCanId, [&](const PortFrame& message) {
+        EXPECT_EQ(message, frame);
+        ++wildcard_calls;
+    });
+
+    exact.Push(frame);
+    wildcard.Push(frame);
+
+    EXPECT_FALSE(exact.IsAnyCanId());
+    EXPECT_TRUE(wildcard.IsAnyCanId());
+    EXPECT_EQ(exact_calls, 1U);
+    EXPECT_EQ(wildcard_calls, 1U);
+    ASSERT_TRUE(exact.Pop().has_value());
+    ASSERT_TRUE(wildcard.Pop().has_value());
 }
 
 TEST(PortTests, ProducerAndConsumerHotStateUseDistinctCacheLines) {

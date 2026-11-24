@@ -212,7 +212,7 @@ TEST_F(DriverManagerHotPathTest, AdapterReceiveDoesNotWaitForManagerSlowPathLock
 
     MotorMessage message{};
     message.bus_idx = 3;
-    message.data.id = 0x3F9;
+    message.data.id = 0x3FE;
     message.data.len = 8;
     message.data.data[1] = 1;
     auto receive = std::async(std::launch::async, [&] {
@@ -273,7 +273,7 @@ TEST_F(DriverManagerHotPathTest, RetiringDeviceDoesNotBlockIndependentObjects) {
     });
     MotorMessage independent_message{};
     independent_message.bus_idx = 3;
-    independent_message.data.id = 0x3FA;
+    independent_message.data.id = 0x400;
     independent_message.data.len = 8;
     independent_message.data.data[1] = 1;
     auto independent_receive = std::async(std::launch::async, [&] {
@@ -511,7 +511,7 @@ TEST_F(DriverManagerTest, DirectBatteryRouteOwnsEveryReportId) {
     ASSERT_NE(battery, nullptr);
 
     std::atomic<unsigned> deliveries{0};
-    const std::vector<std::uint32_t> ids{0x3F6, 0x2F6, 0x0F6, 0x1F6};
+    const std::vector<std::uint32_t> ids{0x3F8, 0x2F8, 0x0F8, 0x1F8};
     battery->SetOnStatus([&deliveries](const BatteryStatus&) {
         deliveries.fetch_add(1, std::memory_order_relaxed);
     });
@@ -545,7 +545,7 @@ TEST_F(DriverManagerTest, CallbackCanDeleteAnUnrelatedSiblingDevice) {
 
     MotorMessage message{};
     message.bus_idx = 3;
-    message.data.id = 0x3F5;
+    message.data.id = 0x3F6;
     message.data.len = 8;
     message.data.data[1] = 1;
     adapter_->SimulateOnMessage({message});
@@ -556,7 +556,7 @@ TEST_F(DriverManagerTest, CallbackCanDeleteAnUnrelatedSiblingDevice) {
 TEST_F(DriverManagerTest, CallbackExceptionDoesNotEscapeDispatch) {
     auto* battery = EncosDriverManager::Instance().CreateBattery(bus_, 8);
     ASSERT_NE(battery, nullptr);
-    const std::vector<std::uint32_t> ids{0x3FC, 0x2FC, 0x0FC, 0x1FC};
+    const std::vector<std::uint32_t> ids{0x404, 0x304, 0x104, 0x204};
     battery->SetOnStatus([](const BatteryStatus&) {
         throw std::runtime_error("expected callback failure");
     });
@@ -822,12 +822,12 @@ TEST_F(DriverManagerTest, CrossCallbackDeletionCycleIsRejectedWithoutDeadlock) {
 
     MotorMessage first_message{};
     first_message.bus_idx = 3;
-    first_message.data.id = 0x3F4u + 20u;
+    first_message.data.id = 0x3F4u + 2u * 20u;
     first_message.data.len = 8;
     first_message.data.data[1] = 1;
     MotorMessage second_message{};
     second_message.bus_idx = 0;
-    second_message.data.id = 0x3F4u + 21u;
+    second_message.data.id = 0x3F4u + 2u * 21u;
     second_message.data.len = 8;
     second_message.data.data[1] = 1;
 
@@ -850,7 +850,7 @@ TEST_F(DriverManagerTest, AdapterOnMessageRoutesRegisteredFramesSerially) {
     auto& manager = EncosDriverManager::Instance();
     auto* battery = manager.CreateBattery(bus_, 9);
     ASSERT_NE(battery, nullptr);
-    const std::vector<std::uint32_t> ids{0x3FD, 0x2FD, 0x0FD, 0x1FD};
+    const std::vector<std::uint32_t> ids{0x406, 0x306, 0x106, 0x206};
 
     std::atomic<unsigned> deliveries{0};
     std::atomic<unsigned> active_callbacks{0};
@@ -997,7 +997,7 @@ TEST_F(DriverManagerTest, DuplicateReceiveIdIsRejectedWithoutChangingExistingRou
     auto& manager = EncosDriverManager::Instance();
     auto* battery = manager.CreateBattery(bus_, 11);
     ASSERT_NE(battery, nullptr);
-    const std::vector<std::uint32_t> ids{0x3FF, 0x2FF, 0x0FF, 0x1FF};
+    const std::vector<std::uint32_t> ids{0x40A, 0x30A, 0x10A, 0x20A};
     std::atomic<unsigned> first_deliveries{0};
     battery->SetOnStatus([&first_deliveries](const BatteryStatus&) {
         first_deliveries.fetch_add(1, std::memory_order_relaxed);
@@ -1352,11 +1352,14 @@ TEST_F(DriverManagerTest, NewlyPublishedBusInheritsConcurrentAdapterDefaultMode)
     DriverManagerTestAccess::SetCreationHook(manager, {});
     auto* motor = manager.CreateMotor(bus, 1, MotorModel::EC_A4310_P2);
 
+    const auto initialized = adapter_->GetSentMessages();
+    ASSERT_EQ(initialized.size(), 1U);
+    EXPECT_EQ(initialized.front().data.data[1],
+              static_cast<std::uint8_t>(MotorParameter::FirmwareVersion));
     motor->SpdControl<0>(1.0F, 2.0F);
-    EXPECT_TRUE(adapter_->GetSentMessages().empty());
+    EXPECT_EQ(adapter_->GetSentMessages().size(), initialized.size());
 
     bus->Commit();
-    // 软同步模式下构造期的固件版本查询同样排队，因此与本次控制命令一起提交。
     const auto sent = adapter_->GetSentMessages();
     ASSERT_EQ(sent.size(), 2U);
     EXPECT_EQ(sent.front().data.len, 2);
@@ -1440,7 +1443,7 @@ TEST_F(DriverManagerTest, RejectsUnknownMismatchedAndCallbackOwnedDeletion) {
 
     auto* callback_battery = manager.CreateBattery(bus_, 5);
     ASSERT_NE(callback_battery, nullptr);
-    const std::vector<std::uint32_t> callback_ids{0x3F9, 0x2F9, 0x0F9, 0x1F9};
+    const std::vector<std::uint32_t> callback_ids{0x3FE, 0x2FE, 0x0FE, 0x1FE};
     std::atomic<bool> rejected_self{false};
     std::atomic<bool> rejected_bus{false};
     std::atomic<bool> rejected_adapter{false};
@@ -1465,7 +1468,7 @@ TEST_F(DriverManagerTest, DeletionDrainsDirectBatteryCallbacksWithoutHoldingGlob
     auto& manager = EncosDriverManager::Instance();
     auto* battery = manager.CreateBattery(bus_, 6);
     ASSERT_NE(battery, nullptr);
-    const std::vector<std::uint32_t> ids{0x3FA, 0x2FA, 0x0FA, 0x1FA};
+    const std::vector<std::uint32_t> ids{0x400, 0x300, 0x100, 0x200};
     std::atomic<bool> callback_entered{false};
     std::atomic<bool> release_callback{false};
     battery->SetOnStatus([&callback_entered, &release_callback](const BatteryStatus&) {

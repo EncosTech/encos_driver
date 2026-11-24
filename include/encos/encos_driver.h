@@ -10,6 +10,7 @@
 #include "bus/bus.h"
 #include "device/battery/battery.h"
 #include "device/device.h"
+#include "device/dex_hand/dex_hand.h"
 #include "device/glove/glove.h"
 #include "device/imu/imu.h"
 #include "device/motor/motor.h"
@@ -121,6 +122,9 @@ ENCOS_API bool DeleteImu(Imu* imu);
 
 /** @brief 删除管理器拥有的电源管理设备 */
 ENCOS_API bool DeletePms(Pms* pms);
+
+/** @brief 删除管理器拥有的灵巧手管理设备 */
+ENCOS_API bool DeleteDexHand(DexHand* hand);
 
 /**
  * @brief 删除管理器拥有的外部设备插件设备

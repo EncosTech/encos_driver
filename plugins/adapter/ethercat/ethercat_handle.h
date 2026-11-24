@@ -17,10 +17,11 @@
 
 #include "ethercat_base_handle.h"
 #include "ethercat_can_timing.h"
+#include "ethercat_cycle_options.h"
 
 class EthercatHandle final : public EthercatBaseHandle {
 public:
-    static constexpr auto kDefaultLoopPeriod = std::chrono::microseconds(1000);
+    static constexpr auto kDefaultLoopPeriod = encos::ethercat::kDefaultCyclePeriod;
 
     /**
      * @brief 构造并立即初始化主站
@@ -34,7 +35,12 @@ public:
     void Send(const MotorMessage& message);
     void Send(const MotorMessages& messages);
     void SendSynchronized(const MotorMessages& messages);
-    void Loop(std::chrono::microseconds period = kDefaultLoopPeriod);
+    /** @brief 使用构造时配置的通信周期运行 */
+    void Loop() {
+        Loop(cycle_period_);
+    }
+    /** @brief 使用显式指定的正数周期运行 */
+    void Loop(std::chrono::microseconds period);
 
     EthercatHandle(const EthercatHandle&) = delete;
     EthercatHandle& operator=(const EthercatHandle&) = delete;
@@ -97,7 +103,7 @@ private:
     void CloseContext();
     bool TransitionToOperational();
     void CheckState();
-    void ExchangeOnce();
+    void ExchangeOnce(std::chrono::microseconds period);
     void DegradedHandler();
     void LogBadWkc();
 
@@ -105,10 +111,11 @@ private:
     bool OpenPort();
 
     void WriteOutputs(const OutputFrame& packets);
-    MotorMessages ReadInputs();
+    MotorMessages ReadInputs(std::chrono::microseconds period);
 
     std::string ifname_;
     AdapterExtend extend_;
+    std::chrono::microseconds cycle_period_{encos::ethercat::kDefaultCyclePeriod};
     ecx_contextt ctx_{};
     std::vector<char> io_map_;
     std::atomic<int> expected_wkc_{0};

@@ -3,9 +3,9 @@
 
 #pragma once
 
-#include <linux/can.h>
 #include <sys/types.h>
 
+#include "can_linux_compat.h"
 #include "device/motor/types.h"
 
 namespace encos {

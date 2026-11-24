@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Encos
 // SPDX-License-Identifier: MIT
 
+import { NumericBuffer } from './backend.js'
+import type { FakeMotorSnapshot, FakeSeedOptions, FakeReplyRecord, DecodedFakeCommandRecord, MotorMessage, MotorStatus, StatusCallback } from './native-types.js'
 import { FakeCommandKind } from './constants.js'
 import { allocU32, assertOk, getI32 } from './native.js'
 import type {
@@ -9,19 +11,25 @@ import type {
   FakeFeedbackInput,
   FakeRawMessageRecord,
 } from './types.js'
-import type { FakeAdapterWrapper } from './adapter.js'
+import type { AdapterWrapper } from './adapter.js'
 
 export class FakeTools {
-  adapter: FakeAdapterWrapper
-  runtime: FakeAdapterWrapper['runtime']
+  adapter: AdapterWrapper
+  runtime: AdapterWrapper['runtime']
 
-  constructor(adapter: FakeAdapterWrapper) {
+  constructor(adapter: AdapterWrapper) {
     this.adapter = adapter
     this.runtime = adapter.runtime
   }
 
-  seedMotor(busIndex: number, motorIndex: number, model: number): void {
+  seedMotor(busIndex: number, motorIndex: number, modelOrSnapshot: number | FakeMotorSnapshot, options: FakeSeedOptions = {}): void {
     this.adapter._assertLiveForChild()
+    if (this.runtime.backend.kind === 'native') {
+      this.#invoke('seedMotor', { busIndex, motorIndex, ...(typeof modelOrSnapshot === 'number' ? { model: modelOrSnapshot, options } : { snapshot: modelOrSnapshot }) })
+      return
+    }
+    if (typeof modelOrSnapshot !== 'number' || options.replyFrameFlags !== undefined) throw new Error('snapshot seeding is only supported by the native runtime')
+    const model = modelOrSnapshot
     const code = this.runtime.calls.fakeSeedMotor(this.adapter.handle, busIndex, motorIndex, model)
     assertOk(this.runtime, code, 'failed to seed fake motor')
   }
@@ -40,15 +48,15 @@ export class FakeTools {
 
   injectFeedback(busIndex: number, motorIndex: number, status: FakeFeedbackInput): void {
     this.adapter._assertLiveForChild()
-    const values = this.runtime.module._malloc(5 * 8)
-    const meta = this.runtime.module._malloc(4)
+    const values = new NumericBuffer('double', 5)
+    const meta = new NumericBuffer('i32', 1)
     try {
-      this.runtime.module.setValue(values, status.position ?? Number.NaN, 'double')
-      this.runtime.module.setValue(values + 8, status.speed ?? Number.NaN, 'double')
-      this.runtime.module.setValue(values + 16, status.current ?? Number.NaN, 'double')
-      this.runtime.module.setValue(values + 24, status.motorTemperature ?? Number.NaN, 'double')
-      this.runtime.module.setValue(values + 32, status.mosTemperature ?? Number.NaN, 'double')
-      this.runtime.module.setValue(meta, status.error ?? 0, 'i32')
+      values.set(0, status.position ?? Number.NaN)
+      values.set(1, status.speed ?? Number.NaN)
+      values.set(2, status.current ?? Number.NaN)
+      values.set(3, status.motorTemperature ?? Number.NaN)
+      values.set(4, status.mosTemperature ?? Number.NaN)
+      meta.set(0, status.error ?? 0)
       const code = this.runtime.calls.fakeInjectFeedback(
         this.adapter.handle,
         busIndex,
@@ -61,8 +69,8 @@ export class FakeTools {
       )
       assertOk(this.runtime, code, 'failed to inject fake feedback')
     } finally {
-      this.runtime.module._free(values)
-      this.runtime.module._free(meta)
+      values.release()
+      meta.release()
     }
   }
 
@@ -80,10 +88,10 @@ export class FakeTools {
 
   injectRawMessage(busIndex: number, canId: number, data: number[], frameFlags = 0): void {
     this.adapter._assertLiveForChild()
-    const payload = this.runtime.module._malloc(data.length)
+    const payload = new NumericBuffer('i8', data.length)
     try {
       for (let i = 0; i < data.length; i += 1) {
-        this.runtime.module.setValue(payload + i, data[i] ?? 0, 'i8')
+        payload.set(i, data[i] ?? 0)
       }
       const code = this.runtime.calls.fakeInjectRawMessage(
         this.adapter.handle,
@@ -95,14 +103,15 @@ export class FakeTools {
       )
       assertOk(this.runtime, code, 'failed to inject fake raw message')
     } finally {
-      this.runtime.module._free(payload)
+      payload.release()
     }
   }
 
-  getMotorSnapshot(busIndex: number, motorIndex: number) {
+  getMotorSnapshot(busIndex: number, motorIndex: number): FakeMotorSnapshot {
     this.adapter._assertLiveForChild()
-    const values = this.runtime.module._malloc(21 * 8)
-    const meta = this.runtime.module._malloc(6 * 4)
+    if (this.runtime.backend.kind === 'native') return this.#invoke('getMotorSnapshot', { busIndex, motorIndex })
+    const values = new NumericBuffer('double', 21)
+    const meta = new NumericBuffer('i32', 6)
     try {
       const code = this.runtime.calls.fakeGetMotorSnapshot(
         this.adapter.handle,
@@ -115,7 +124,7 @@ export class FakeTools {
       )
       assertOk(this.runtime, code, 'failed to read fake motor snapshot')
       return {
-        model: this.runtime.module.getValue(meta, 'i32'),
+        model: meta.get(0),
         ranges: {
           kp: { min: this.#doubleAt(values, 0), max: this.#doubleAt(values, 1) },
           kd: { min: this.#doubleAt(values, 2), max: this.#doubleAt(values, 3) },
@@ -133,27 +142,27 @@ export class FakeTools {
         mosTempC: this.#doubleAt(values, 18),
         acceleration: this.#doubleAt(values, 19),
         kt: this.#doubleAt(values, 20),
-        canTimeoutMs: this.runtime.module.getValue(meta + 4, 'i32'),
-        replyFrameFlags: this.runtime.module.getValue(meta + 8, 'i32'),
-        communicationMode: this.runtime.module.getValue(meta + 12, 'i32'),
-        error: this.runtime.module.getValue(meta + 16, 'i32'),
-        brakeEnabled: this.runtime.module.getValue(meta + 20, 'i32') !== 0,
-      }
+        canTimeoutMs: meta.get(1),
+        replyFrameFlags: meta.get(2),
+        communicationMode: meta.get(3),
+        error: meta.get(4),
+        brakeEnabled: meta.get(5) !== 0,
+      } as FakeMotorSnapshot
     } finally {
-      this.runtime.module._free(values)
-      this.runtime.module._free(meta)
+      values.release()
+      meta.release()
     }
   }
 
   getCommandRecords(): FakeCommandRecord[] {
     this.adapter._assertLiveForChild()
-    const out = allocU32(this.runtime.module)
+    const out = allocU32()
     try {
       const code = this.runtime.calls.fakeGetCommandCount(this.adapter.handle, out)
       assertOk(this.runtime, code, 'failed to read fake commands')
-      return Array.from({ length: getI32(this.runtime.module, out) }, (_, index) => this.#commandAt(index))
+      return Array.from({ length: getI32(out) }, (_, index) => this.#commandAt(index))
     } finally {
-      this.runtime.module._free(out)
+      out.release()
     }
   }
 
@@ -164,21 +173,51 @@ export class FakeTools {
 
   getRawMessageRecords(): FakeRawMessageRecord[] {
     this.adapter._assertLiveForChild()
-    const out = allocU32(this.runtime.module)
+    const out = allocU32()
     try {
       const code = this.runtime.calls.fakeGetRawMessageCount(this.adapter.handle, out)
       assertOk(this.runtime, code, 'failed to read fake raw messages')
-      return Array.from({ length: getI32(this.runtime.module, out) }, (_, index) =>
+      return Array.from({ length: getI32(out) }, (_, index) =>
         this.#rawMessageAt(index),
       )
     } finally {
-      this.runtime.module._free(out)
+      out.release()
     }
   }
 
   getLastRawCommand(): FakeRawMessageRecord | null {
     const records = this.getRawMessageRecords()
     return records.length === 0 ? null : records[records.length - 1]
+  }
+
+  createSnapshot(model: number): FakeMotorSnapshot { return this.#invoke('createSnapshot', { model }) }
+  disableAutoCreateMotor(): void { this.#invoke('disableAutoCreateMotor') }
+  enableCommandRecording(enabled = true): void { this.#invoke('enableCommandRecording', { enabled }) }
+  enablePositionError(enabled = true): void { this.#invoke('enablePositionError', { enabled }) }
+  setDecodedCommandObserver(callback: StatusCallback<DecodedFakeCommandRecord>): void {
+    this.adapter._assertLiveForChild()
+    this.runtime._subscribe('fake.decodedCommand', { handle: this.adapter.handle }, callback)
+  }
+  clearDecodedCommandObserver(): void { this.setDecodedCommandObserver(null) }
+  getDecodedCommandRecords(): DecodedFakeCommandRecord[] { return this.#invoke('getDecodedCommandRecords') }
+  getLastDecodedCommand(): DecodedFakeCommandRecord | null { return this.getDecodedCommandRecords().at(-1) ?? null }
+  getFormattedSentCommands(): string[] { return this.#invoke('getFormattedSentCommands') }
+  getReplyRecords(): FakeReplyRecord[] { return this.#invoke('getReplyRecords') }
+  getRawSentMessages(): MotorMessage[] { return this.#invoke('getRawSentMessages') }
+  clearCommandRecords(): void { this.#invoke('clearCommandRecords') }
+  injectMessage(message: MotorMessage): void { this.#invoke('injectMessage', { message }) }
+  makeFeedbackMessage(busIndex: number, motorIndex: number, status: MotorStatus, feedbackType = 1): MotorMessage {
+    return this.#invoke('makeFeedbackMessage', { busIndex, motorIndex, status, feedbackType })
+  }
+  makeParameterReply(busIndex: number, motorIndex: number, parameter: number, payload: number[], frameFlags = 0): MotorMessage {
+    return this.#invoke('makeParameterReply', { busIndex, motorIndex, parameter, payload, frameFlags })
+  }
+  makeWriteAck(busIndex: number, motorIndex: number, parameter: number, payload: number[], frameFlags = 0): MotorMessage {
+    return this.#invoke('makeWriteAck', { busIndex, motorIndex, parameter, payload, frameFlags })
+  }
+  #invoke<T>(name: string, args: Record<string, unknown> = {}): T {
+    this.adapter._assertLiveForChild()
+    return this.runtime._invoke(`fake.${name}`, { handle: this.adapter.handle, ...args })
   }
 
   #commandAt(index: number): FakeCommandRecord {
@@ -249,18 +288,18 @@ export class FakeTools {
   }
 
   #intCommandField(fn: CFunction, index: number): number {
-    const out = allocU32(this.runtime.module)
+    const out = allocU32()
     try {
       const code = fn(this.adapter.handle, index, out)
       assertOk(this.runtime, code, 'failed to read fake command')
-      return getI32(this.runtime.module, out)
+      return getI32(out)
     } finally {
-      this.runtime.module._free(out)
+      out.release()
     }
   }
 
   #numberField(index: number, fieldId: number): number {
-    const out = this.runtime.module._malloc(8)
+    const out = new NumericBuffer('double', 1, false)
     try {
       const code = this.runtime.calls.fakeGetCommandNumberField(
         this.adapter.handle,
@@ -269,14 +308,14 @@ export class FakeTools {
         out,
       )
       assertOk(this.runtime, code, 'failed to read fake command number field')
-      return this.runtime.module.getValue(out, 'double')
+      return out.get(0)
     } finally {
-      this.runtime.module._free(out)
+      out.release()
     }
   }
 
   #intField(index: number, fieldId: number): number {
-    const out = allocU32(this.runtime.module)
+    const out = allocU32()
     try {
       const code = this.runtime.calls.fakeGetCommandIntField(
         this.adapter.handle,
@@ -285,25 +324,25 @@ export class FakeTools {
         out,
       )
       assertOk(this.runtime, code, 'failed to read fake command int field')
-      return getI32(this.runtime.module, out)
+      return getI32(out)
     } finally {
-      this.runtime.module._free(out)
+      out.release()
     }
   }
 
   #intRawField(fn: CFunction, index: number): number {
-    const out = allocU32(this.runtime.module)
+    const out = allocU32()
     try {
       const code = fn(this.adapter.handle, index, out)
       assertOk(this.runtime, code, 'failed to read fake raw message field')
-      return getI32(this.runtime.module, out)
+      return getI32(out)
     } finally {
-      this.runtime.module._free(out)
+      out.release()
     }
   }
 
   #rawByte(index: number, byteIndex: number): number {
-    const out = allocU32(this.runtime.module)
+    const out = allocU32()
     try {
       const code = this.runtime.calls.fakeGetRawMessageDataByte(
         this.adapter.handle,
@@ -312,13 +351,13 @@ export class FakeTools {
         out,
       )
       assertOk(this.runtime, code, 'failed to read fake raw message byte')
-      return getI32(this.runtime.module, out)
+      return getI32(out)
     } finally {
-      this.runtime.module._free(out)
+      out.release()
     }
   }
 
-  #doubleAt(ptr: number, index: number): number {
-    return this.runtime.module.getValue(ptr + index * 8, 'double')
+  #doubleAt(ptr: NumericBuffer, index: number): number {
+    return ptr.get(index)
   }
 }

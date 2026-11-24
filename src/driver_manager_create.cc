@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Encos
 // SPDX-License-Identifier: MIT
 
+#include "device/dex_hand/dex_hand.h"
 #include "driver_manager_impl.h"
 #include "utils/scope_exit.h"
 
@@ -286,17 +287,24 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorModel model
     using driver_manager_internal::CreateDeviceWithRoutes;
     using driver_manager_internal::DeviceKind;
 
+    const bool query_firmware =
+        model != MotorModel::EC_DEXTEROUS_HAND || CanSubId(static_cast<CanId>(motor_idx)) == 0;
     return CreateDeviceWithRoutes<Motor>(
         impl_, bus, DeviceKind::Motor, motor_idx, OperationKind::Motor,
         {static_cast<std::uint32_t>(motor_idx)},
         [this, bus, motor_idx, model, frame_flags, canfd]() {
-            auto writer = impl_->MakeWriter(bus);
-            return new Motor(bus, static_cast<std::uint16_t>(motor_idx), model, bus->impl_->logger_,
-                             writer, frame_flags, canfd);
+            auto writer = impl_->MakeWriter(bus, true);
+            auto control_writer = impl_->MakeWriter(bus);
+            auto* motor = new Motor(bus, static_cast<std::uint32_t>(motor_idx), model,
+                                    bus->impl_->logger_, writer, frame_flags, canfd);
+            motor->impl_->control_writer = std::move(control_writer);
+            return motor;
         },
         Impl::BindMotor,
-        [](Motor* motor) {
-            motor->QueryFirmwareVersion();
+        [query_firmware](Motor* motor) {
+            if (query_firmware) {
+                motor->QueryFirmwareVersion();
+            }
         },
         [this, bus, motor_idx](Motor* motor) {
             ApplyMotorStatusConfigurationLocked(bus, motor_idx, motor);
@@ -317,9 +325,12 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, MotorProperties 
         impl_, bus, DeviceKind::Motor, motor_idx, OperationKind::Motor,
         {static_cast<std::uint32_t>(motor_idx)},
         [this, bus, motor_idx, ranges, frame_flags, canfd]() {
-            auto writer = impl_->MakeWriter(bus);
-            return new Motor(bus, static_cast<std::uint16_t>(motor_idx), ranges,
-                             bus->impl_->logger_, writer, frame_flags, canfd);
+            auto writer = impl_->MakeWriter(bus, true);
+            auto control_writer = impl_->MakeWriter(bus);
+            auto* motor = new Motor(bus, static_cast<std::uint32_t>(motor_idx), ranges,
+                                    bus->impl_->logger_, writer, frame_flags, canfd);
+            motor->impl_->control_writer = std::move(control_writer);
+            return motor;
         },
         Impl::BindMotor,
         [](Motor* motor) {
@@ -342,9 +353,12 @@ Motor* EncosDriverManager::CreateMotor(Bus* bus, int motor_idx, uint8_t frame_fl
         impl_, bus, DeviceKind::Motor, motor_idx, OperationKind::Motor,
         {static_cast<std::uint32_t>(motor_idx)},
         [this, bus, motor_idx, frame_flags, canfd]() {
-            auto writer = impl_->MakeWriter(bus);
-            return new Motor(bus, static_cast<std::uint16_t>(motor_idx), bus->impl_->logger_,
-                             writer, frame_flags, canfd);
+            auto writer = impl_->MakeWriter(bus, true);
+            auto control_writer = impl_->MakeWriter(bus);
+            auto* motor = new Motor(bus, static_cast<std::uint32_t>(motor_idx), bus->impl_->logger_,
+                                    writer, frame_flags, canfd);
+            motor->impl_->control_writer = std::move(control_writer);
+            return motor;
         },
         Impl::BindMotor,
         [](Motor* motor) {
@@ -410,7 +424,7 @@ Pms* EncosDriverManager::CreatePms(Bus* bus) {
         impl_, bus, DeviceKind::Pms, 0, OperationKind::Pms,
         {protocol::kPmsStatusIds.begin(), protocol::kPmsStatusIds.end()},
         [this, bus]() {
-            auto writer = impl_->MakeWriter(bus);
+            auto writer = impl_->MakeWriter(bus, true);
             return new Pms(bus, bus->impl_->logger_, writer);
         },
         [](Pms* pms) {
@@ -420,6 +434,28 @@ Pms* EncosDriverManager::CreatePms(Bus* bus) {
                                                         {}};
         },
         [](Pms*) {}, [](Pms*) {});
+}
+
+DexHand* EncosDriverManager::CreateDexHand(Bus* bus, int base_id) {
+    if (base_id < 0 || base_id > 247) {
+        throw std::invalid_argument("DexHand request ID must be in [0, 247]");
+    }
+    const auto request_id = static_cast<uint32_t>(base_id);
+    return CreateDeviceWithRoutes<DexHand>(
+        impl_, bus, DeviceKind::DexHand, base_id, OperationKind::DexHand, {request_id},
+        [this, bus, request_id]() {
+            return new DexHand(request_id, impl_->MakeWriter(bus, true));
+        },
+        [](DexHand* hand) {
+            return DeviceRoute{[hand](const MotorPackMsg& message) {
+                                   hand->OnMessage(message);
+                               },
+                               [hand]() {
+                                   hand->CancelWaiters();
+                               },
+                               &DexHand::IsReplyFrame};
+        },
+        [](DexHand*) {}, [](DexHand*) {});
 }
 
 Glove* EncosDriverManager::CreateGlove(BaseAdapter* adapter, int slave_id) {

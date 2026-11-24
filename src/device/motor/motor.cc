@@ -34,6 +34,17 @@ uint8_t WithCanFdFlag(uint8_t frame_flags, bool canfd) {
     return static_cast<uint8_t>(frame_flags & static_cast<uint8_t>(~kCanFrameFlagFdMask));
 }
 
+uint8_t AddressFrameFlags(uint32_t motor_idx, uint8_t frame_flags) {
+    frame_flags = SanitizeCanFrameFlags(frame_flags);
+    if (CanSubId(motor_idx) != 0) {
+        frame_flags = static_cast<uint8_t>(frame_flags | kCanFrameFlagFdMask);
+    }
+    if (PhysicalCanId(motor_idx) > 0x7FFU) {
+        frame_flags = static_cast<uint8_t>(frame_flags | kCanFrameFlagEff);
+    }
+    return frame_flags;
+}
+
 float MedianStatusValue(const std::deque<float>& values) {
     std::vector<float> sorted_values(values.begin(), values.end());
     std::sort(sorted_values.begin(), sorted_values.end());
@@ -73,49 +84,49 @@ float FilterStatusValue(float value, float& last_accepted_value, std::deque<floa
 
 }  // namespace
 
-Motor::Motor(Bus* bus, uint16_t motor_idx, MotorModel model, LoggerPtr logger,
+Motor::Motor(Bus* bus, uint32_t motor_idx, MotorModel model, LoggerPtr logger,
              std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags) {
     impl_ = std::make_unique<Impl>();
     impl_->idx.store(motor_idx, std::memory_order_relaxed);
-    impl_->frame_flags.store(SanitizeCanFrameFlags(frame_flags), std::memory_order_relaxed);
+    impl_->frame_flags.store(AddressFrameFlags(motor_idx, frame_flags), std::memory_order_relaxed);
     impl_->bus = bus;
     impl_->writer = std::move(writer);
     impl_->logger_ = std::move(logger);
     impl_->ranges = GetMotorModelRanges(model);
 }
 
-Motor::Motor(Bus* bus, uint16_t motor_idx, MotorModel model, LoggerPtr logger,
+Motor::Motor(Bus* bus, uint32_t motor_idx, MotorModel model, LoggerPtr logger,
              std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags, bool canfd)
     : Motor(bus, motor_idx, model, std::move(logger), std::move(writer),
             WithCanFdFlag(frame_flags, canfd)) {}
 
-Motor::Motor(Bus* bus, uint16_t motor_idx, MotorProperties ranges, LoggerPtr logger,
+Motor::Motor(Bus* bus, uint32_t motor_idx, MotorProperties ranges, LoggerPtr logger,
              std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags) {
     impl_ = std::make_unique<Impl>();
     impl_->idx.store(motor_idx, std::memory_order_relaxed);
-    impl_->frame_flags.store(SanitizeCanFrameFlags(frame_flags), std::memory_order_relaxed);
+    impl_->frame_flags.store(AddressFrameFlags(motor_idx, frame_flags), std::memory_order_relaxed);
     impl_->ranges = ranges;
     impl_->bus = bus;
     impl_->writer = std::move(writer);
     impl_->logger_ = std::move(logger);
 }
 
-Motor::Motor(Bus* bus, uint16_t motor_idx, MotorProperties ranges, LoggerPtr logger,
+Motor::Motor(Bus* bus, uint32_t motor_idx, MotorProperties ranges, LoggerPtr logger,
              std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags, bool canfd)
     : Motor(bus, motor_idx, ranges, std::move(logger), std::move(writer),
             WithCanFdFlag(frame_flags, canfd)) {}
 
-Motor::Motor(Bus* bus, uint16_t motor_idx, LoggerPtr logger,
+Motor::Motor(Bus* bus, uint32_t motor_idx, LoggerPtr logger,
              std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags) {
     impl_ = std::make_unique<Impl>();
     impl_->idx.store(motor_idx, std::memory_order_relaxed);
-    impl_->frame_flags.store(SanitizeCanFrameFlags(frame_flags), std::memory_order_relaxed);
+    impl_->frame_flags.store(AddressFrameFlags(motor_idx, frame_flags), std::memory_order_relaxed);
     impl_->bus = bus;
     impl_->writer = std::move(writer);
     impl_->logger_ = std::move(logger);
 }
 
-Motor::Motor(Bus* bus, uint16_t motor_idx, LoggerPtr logger,
+Motor::Motor(Bus* bus, uint32_t motor_idx, LoggerPtr logger,
              std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags, bool canfd)
     : Motor(bus, motor_idx, std::move(logger), std::move(writer),
             WithCanFdFlag(frame_flags, canfd)) {}
@@ -124,7 +135,7 @@ bool Motor::SendAndWaitErased(const MotorPackMsg& message,
                               std::function<bool(const MotorPackMsg&)> checker,
                               std::shared_ptr<void> content,
                               std::function<void(const MotorPackMsg&, void*)> writer,
-                              std::chrono::milliseconds timeout) {
+                              std::chrono::milliseconds timeout, bool control) {
     auto waiter = std::make_shared<Impl::Waiter>();
     waiter->checker = std::move(checker);
     waiter->content = std::move(content);
@@ -167,7 +178,7 @@ bool Motor::SendAndWaitErased(const MotorPackMsg& message,
     }
 
     try {
-        SendMessageLocked(message);
+        SendMessageLocked(message, control);
     } catch (...) {
         unregister();
         throw;
@@ -187,13 +198,13 @@ bool Motor::SendAndWaitErased(const MotorPackMsg& message,
 }
 std::optional<MotorPackMsg> Motor::SendAndWait(const MotorPackMsg& message,
                                                std::function<bool(const MotorPackMsg&)> checker,
-                                               std::chrono::milliseconds timeout) {
+                                               std::chrono::milliseconds timeout, bool control) {
     return SendAndWaitTyped<MotorPackMsg>(
         message, std::move(checker),
         [](const MotorPackMsg& received, MotorPackMsg& result) {
             result = received;
         },
-        timeout);
+        timeout, control);
 }
 bool Motor::SendParameterAndWait(const MotorPackMsg& message, uint8_t parameter_id,
                                  std::vector<uint8_t> expected_payload) {
@@ -439,6 +450,9 @@ void Motor::EnableCanFd() {
 void Motor::DisableCanFd() {
     auto operation = EncosDriverManager::Instance().AcquireDeviceOperation(this);
     platform::LockGuard<platform::RecursiveMutex> lock(impl_->motor_mutex);
+    if (CanSubId(impl_->idx.load(std::memory_order_relaxed)) != 0) {
+        return;
+    }
     impl_->frame_flags.fetch_and(static_cast<uint8_t>(~kCanFrameFlagFdMask),
                                  std::memory_order_relaxed);
 }
@@ -459,6 +473,9 @@ void Motor::EnableCanEff() {
 void Motor::DisableCanEff() {
     auto operation = EncosDriverManager::Instance().AcquireDeviceOperation(this);
     platform::LockGuard<platform::RecursiveMutex> lock(impl_->motor_mutex);
+    if (PhysicalCanId(impl_->idx.load(std::memory_order_relaxed)) > 0x7FFU) {
+        return;
+    }
     impl_->frame_flags.fetch_and(static_cast<uint8_t>(~kCanFrameFlagEff),
                                  std::memory_order_relaxed);
 }
@@ -469,10 +486,14 @@ bool Motor::IsCanEffEnabled() const {
     platform::LockGuard<platform::RecursiveMutex> lock(impl_->motor_mutex);
     return CanFrameFlagsUseExtendedId(impl_->frame_flags.load(std::memory_order_relaxed));
 }
-void Motor::SendMessageLocked(const MotorPackMsg& msg) {
+void Motor::SendMessageLocked(const MotorPackMsg& msg, bool control) {
     MotorPackMsg packet = msg;
     packet.frame_flags = SanitizeCanFrameFlags(impl_->frame_flags.load(std::memory_order_relaxed));
-    impl_->writer(packet);
+    if (control && impl_->control_writer) {
+        impl_->control_writer(packet);
+    } else {
+        impl_->writer(packet);
+    }
 }
 std::optional<MotorStatus> Motor::GetStatus(int life_cycle_deduction) {
     auto operation = EncosDriverManager::Instance().AcquireDeviceOperation(this);

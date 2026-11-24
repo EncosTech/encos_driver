@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "adapter/adapter_statistics.h"
 #include "device/motor/types.h"
 #include "encos/export.h"
 #include "platform/log.h"
@@ -101,22 +102,26 @@ public:
      */
     virtual FakeAdapterControl* GetFakeAdapterControl();
 
+    /** @brief 返回线程安全值快照；不支持统计的适配器返回空。读取不执行 IO。 */
+    std::optional<AdapterStatistics> GetStatistics() const;
+
     virtual ~BaseAdapter();
 
     /**
      * @brief 提交所有总线当前保留的消息并进入软同步模式
      *
      * 本函数只等待具体 Adapter 接收该批次，不等待物理链路发送或设备响应完成。
-     * @warning 必须先完成 Bus 扫描、Motor/Battery/Pms 创建、设备初始化及同线程
-     * 请求响应配置，再调用本函数进入软同步模式。本函数不会为这些操作自动提交。
+     * 电机五类运动 Control 等待提交；Stop、Brake、参数、扫描、ID 管理、IMU 和 PMS 即时发送。
+     * Battery、Glove 与自定义 Device 保持原有发送策略。
      */
     void Commit();
 
     /**
      * @brief 批量设置所有总线的软同步发送模式
-     * @param enabled true 时消息等待对应 Bus 或 Adapter Commit；false 时恢复直接提交
-     * @warning 设置为 true 前必须完成 Bus 扫描、Motor/Battery/Pms 创建、设备初始化
-     * 及同线程请求响应配置；软同步模式不会为这些操作自动提交。
+     * @param enabled true 时运动控制等待对应 Bus 或 Adapter Commit；false 时恢复直接提交
+     * PVTControl、PosControl、SpdControl、CurControl、TorControl
+     * 等待提交，带反馈的调用也不会自动提交。 Stop、Brake、参数、扫描、ID 管理、IMU 和 PMS
+     * 即时发送；其他设备保持原有策略。
      */
     void SetSyncMode(bool enabled);
 
@@ -190,6 +195,12 @@ public:
     void SetOnStatus(int bus_idx, int motor_idx, std::function<void(const MotorStatus&)> callback);
 
 protected:
+    /** @brief 初始化有界统计槽；仅在启动来源线程前调用。 */
+    void InitializeStatistics(const AdapterStatistics& statistics, std::uint64_t stale_after_ms);
+
+    /** @brief 更新已初始化总线槽；自动记录单调采样时间，未知总线被忽略。 */
+    void UpdateStatistics(const BusStatistics& statistics);
+
     /**
      * @brief 构造适配器基类
      * @param interface_name 传输接口名称
@@ -241,9 +252,9 @@ protected:
     std::unordered_map<int, Bus*> GetKnownBusesSnapshot();
 
 private:
-    std::function<void(const MotorPackMsg&)> MakeDeviceWriter(Bus* bus);
+    std::function<void(const MotorPackMsg&)> MakeDeviceWriter(Bus* bus, bool immediate = false);
     void InitializeBusSyncMode(Bus* bus, std::function<void()> publish);
-    void SubmitDeviceMessage(Bus* bus, void* channel, const MotorMessage& message);
+    void SubmitDeviceMessage(Bus* bus, void* channel, const MotorMessage& message, bool immediate);
     void SubmitBusMessages(Bus* bus, const MotorMessages& messages, bool immediate = false);
     void CommitBus(Bus* bus);
     void SetBusSyncMode(Bus* bus, bool enabled);

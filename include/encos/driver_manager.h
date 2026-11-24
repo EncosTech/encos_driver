@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "device/motor/can_address.h"
 #include "device/motor/types.h"
 #include "encos/export.h"
 #include "external/json.hpp"
@@ -30,6 +31,7 @@ class Imu;
 class Motor;
 class OperationGate;
 class Pms;
+class DexHand;
 class DriverManagerTestAccess;
 
 /**
@@ -51,6 +53,7 @@ class EncosDriverManager {
     friend class Imu;
     friend class Motor;
     friend class Pms;
+    friend class DexHand;
     friend class DriverManagerTestAccess;
 
 public:
@@ -161,12 +164,41 @@ public:
     ENCOS_BASE_API Motor* CreateMotor(Bus* bus, int motor_idx, uint8_t frame_flags = 0);
     /** @brief 获取或创建并按明确 CAN FD 属性从固件初始化电机 */
     ENCOS_BASE_API Motor* CreateMotor(Bus* bus, int motor_idx, uint8_t frame_flags, bool canfd);
+    /** @brief 按完整 32 位逻辑 CAN 地址获取或创建电机，保留旧整数接口的位模式。 */
+    Motor* CreateMotor(Bus* bus, uint32_t motor_idx, MotorModel model, uint8_t frame_flags = 0) {
+        return CreateMotor(bus, LegacyCanIdBits(motor_idx), model, frame_flags);
+    }
+    /** @brief 按完整 32 位逻辑 CAN 地址获取或创建电机，保留旧整数接口的位模式。 */
+    Motor* CreateMotor(Bus* bus, uint32_t motor_idx, MotorModel model, uint8_t frame_flags,
+                       bool canfd) {
+        return CreateMotor(bus, LegacyCanIdBits(motor_idx), model, frame_flags, canfd);
+    }
+    /** @brief 按完整 32 位逻辑 CAN 地址获取或创建电机，保留旧整数接口的位模式。 */
+    Motor* CreateMotor(Bus* bus, uint32_t motor_idx, MotorProperties ranges,
+                       uint8_t frame_flags = 0) {
+        return CreateMotor(bus, LegacyCanIdBits(motor_idx), ranges, frame_flags);
+    }
+    /** @brief 按完整 32 位逻辑 CAN 地址获取或创建电机，保留旧整数接口的位模式。 */
+    Motor* CreateMotor(Bus* bus, uint32_t motor_idx, MotorProperties ranges, uint8_t frame_flags,
+                       bool canfd) {
+        return CreateMotor(bus, LegacyCanIdBits(motor_idx), ranges, frame_flags, canfd);
+    }
+    /** @brief 按完整 32 位逻辑 CAN 地址获取或创建电机，保留旧整数接口的位模式。 */
+    Motor* CreateMotor(Bus* bus, uint32_t motor_idx, uint8_t frame_flags = 0) {
+        return CreateMotor(bus, LegacyCanIdBits(motor_idx), frame_flags);
+    }
+    /** @brief 按完整 32 位逻辑 CAN 地址获取或创建电机，保留旧整数接口的位模式。 */
+    Motor* CreateMotor(Bus* bus, uint32_t motor_idx, uint8_t frame_flags, bool canfd) {
+        return CreateMotor(bus, LegacyCanIdBits(motor_idx), frame_flags, canfd);
+    }
     /** @brief 获取或创建电池设备 */
     ENCOS_BASE_API Battery* CreateBattery(Bus* bus, int battery_idx);
     /** @brief 获取或创建惯导设备 */
     ENCOS_BASE_API Imu* CreateImu(Bus* bus, int imu_idx);
     /** @brief 获取或创建电源管理设备 */
     ENCOS_BASE_API Pms* CreatePms(Bus* bus);
+    /** @brief 获取或创建绑定到指定请求地址的灵巧手管理设备 */
+    ENCOS_BASE_API DexHand* CreateDexHand(Bus* bus, int base_id);
     /** @brief 获取或创建指定从站的手套整手视图 */
     ENCOS_BASE_API Glove* CreateGlove(BaseAdapter* adapter, int slave_id);
     /**
@@ -184,6 +216,10 @@ public:
 
     /** @brief 查询已存在的电机且不创建对象 */
     ENCOS_BASE_API Motor* FindMotor(Bus* bus, int motor_idx) const;
+    /** @brief 按完整 32 位逻辑 CAN 地址查询已存在的电机。 */
+    Motor* FindMotor(Bus* bus, uint32_t motor_idx) const {
+        return FindMotor(bus, LegacyCanIdBits(motor_idx));
+    }
     /** @brief 获取总线下电机的非拥有快照 */
     ENCOS_BASE_API std::unordered_map<int, Motor*> GetMotors(Bus* bus) const;
     /** @brief 获取适配器下总线的非拥有快照 */
@@ -206,6 +242,8 @@ public:
     ENCOS_BASE_API bool DestroyImu(Imu* imu);
     /** @brief 删除电源管理设备 */
     ENCOS_BASE_API bool DestroyPms(Pms* pms);
+    /** @brief 销毁灵巧手管理设备并取消正在等待的请求 */
+    ENCOS_BASE_API bool DestroyDexHand(DexHand* hand);
     /** @brief 删除外部设备插件提供的设备 */
     ENCOS_BASE_API bool DestroyDevice(Device* device);
     /**
@@ -292,6 +330,7 @@ private:
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(Battery* device);
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(Imu* device);
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(Pms* device);
+    ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(DexHand* device);
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(Device* device);
     ENCOS_BASE_API DeviceOperation TryAcquireGloveOperation(Glove* glove) noexcept;
     ENCOS_BASE_API DeviceOperation AcquireDeviceOperation(GloveEncoder* device);

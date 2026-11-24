@@ -13,10 +13,18 @@ endif()
 
 add_library(CanPlatformSupport STATIC
     can_socket_setup.cc
+    can_link_statistics.cc
 )
-target_link_libraries(CanPlatformSupport PUBLIC
-    EncosMotorDriverBase
-)
+if(ENCOS_PORTABLE_LINUX)
+    target_include_directories(CanPlatformSupport PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../../include
+    )
+    target_compile_definitions(CanPlatformSupport PUBLIC
+        ENCOS_ENABLE_SPDLOG=$<BOOL:${ENCOS_ENABLE_SPDLOG}>
+    )
+else()
+    target_link_libraries(CanPlatformSupport PUBLIC EncosMotorDriverBase)
+endif()
 target_include_directories(CanPlatformSupport PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -47,6 +55,7 @@ if(ENCOS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     encos_register_plugin_tests(
         SOURCES
             ${CMAKE_CURRENT_SOURCE_DIR}/test/can_socket_setup_test.cc
+            ${CMAKE_CURRENT_SOURCE_DIR}/test/can_link_statistics_test.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/test/can_virtual_interface_test.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/test/can_frame_decode_test.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/test/can_handle_test.cc
@@ -71,10 +80,12 @@ if(NOT ENCOS_STATIC_MODE)
     add_executable(CanFdBrokerExecutable
         can_fd_broker_executable.cc
     )
-    target_link_libraries(CanFdBrokerExecutable PRIVATE
-        CanPlatformSupport
-        EncosMotorDriverBase
-    )
+    target_link_libraries(CanFdBrokerExecutable PRIVATE CanPlatformSupport)
+    if(ENCOS_PORTABLE_LINUX)
+        target_link_libraries(CanFdBrokerExecutable PRIVATE FdBrokerStandaloneLog)
+    else()
+        target_link_libraries(CanFdBrokerExecutable PRIVATE EncosMotorDriverBase)
+    endif()
     target_include_directories(CanFdBrokerExecutable PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../utils/fdBroker
     )

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Encos
 // SPDX-License-Identifier: MIT
 
+#include "bus/submotor_packet.h"
+#include "device/motor/can_address.h"
 #include "driver_manager_impl.h"
 #include "utils/scope_exit.h"
 
@@ -180,12 +182,13 @@ bool EncosDriverManager::HasRegisteredExternalDevice(Bus* bus) const {
         impl_->deleting.count(parent->second.adapter) != 0) {
         return false;
     }
-    return std::any_of(impl_->devices.begin(), impl_->devices.end(),
-                       [this, bus](const auto& entry) {
-                           return entry.first.bus == bus &&
-                                  entry.first.kind != driver_manager_internal::DeviceKind::Motor &&
-                                  impl_->deleting.count(entry.second) == 0;
-                       });
+    return std::any_of(
+        impl_->devices.begin(), impl_->devices.end(), [this, bus](const auto& entry) {
+            return entry.first.bus == bus &&
+                   entry.first.kind != driver_manager_internal::DeviceKind::Motor &&
+                   entry.first.kind != driver_manager_internal::DeviceKind::DexHand &&
+                   impl_->deleting.count(entry.second) == 0;
+        });
 }
 
 bool EncosDriverManager::IsBusRegistered(BaseAdapter* adapter, int raw_bus_idx) const {
@@ -253,7 +256,13 @@ bool EncosDriverManager::RegisterReceiveRoutes(void* device, BaseAdapter* adapte
 bool EncosDriverManager::DispatchReceive(BaseAdapter* adapter, int raw_bus_idx,
                                          const MotorPackMsg& message) {
     auto& domain = adapter->impl_->route_domain;
-    if (message.id == 0x7FFu) {
+    const bool grouped = CanFrameFlagsUseCanFd(message.frame_flags) &&
+                         !CanFrameFlagsUseRtr(message.frame_flags) &&
+                         (message.frame_flags & ~kCanFrameFlagMask) == 0 &&
+                         (message.len == kSixSubMotorPayloadSize ||
+                          message.len == kSevenSubMotorPayloadSize || message.len == 64) &&
+                         CanSubId(message.id) == 0;
+    if (message.id == 0x7FFu && !grouped) {
         std::vector<std::shared_ptr<RouteRecord>> system_routes;
         {
             platform::LockGuard<platform::Mutex> lock(domain.mutex);
@@ -264,7 +273,8 @@ bool EncosDriverManager::DispatchReceive(BaseAdapter* adapter, int raw_bus_idx,
                     continue;
                 }
                 platform::LockGuard<platform::Mutex> route_lock(route->mutex);
-                if (route->retiring || !route->callback) {
+                if (route->retiring || !route->callback ||
+                    (route->accepts && !route->accepts(message))) {
                     continue;
                 }
                 ++route->in_flight;
@@ -293,45 +303,69 @@ bool EncosDriverManager::DispatchReceive(BaseAdapter* adapter, int raw_bus_idx,
         return false;
     }
 
-    std::shared_ptr<RouteRecord> route;
-    {
-        platform::LockGuard<platform::Mutex> lock(domain.mutex);
-        const auto found = domain.routes.find(
-            MakeReceiveUniqueId(raw_bus_idx, static_cast<std::uint32_t>(message.id)));
-        if (found != domain.routes.end()) {
+    const auto deliver = [&](const MotorPackMsg& packet) {
+        std::shared_ptr<RouteRecord> route;
+        {
+            platform::LockGuard<platform::Mutex> lock(domain.mutex);
+            const auto found = domain.routes.find(MakeReceiveUniqueId(raw_bus_idx, packet.id));
+            if (found == domain.routes.end()) {
+                return false;
+            }
             route = found->second;
             platform::LockGuard<platform::Mutex> route_lock(route->mutex);
-            if (route->retiring || !route->callback) {
-                route = nullptr;
-            } else {
-                ++route->in_flight;
+            if (route->retiring || !route->callback ||
+                (route->accepts && !route->accepts(packet))) {
+                return false;
+            }
+            ++route->in_flight;
+        }
+        const auto previous = driver_manager_internal::callback_context;
+        driver_manager_internal::callback_context =
+            driver_manager_internal::CallbackContext{route->device, route->bus, route->adapter};
+        try {
+            route->callback(packet);
+        } catch (...) {}
+        driver_manager_internal::callback_context = previous;
+        {
+            platform::LockGuard<platform::Mutex> lock(route->mutex);
+            --route->in_flight;
+            if (route->in_flight == 0) {
+                route->condition.notify_all();
             }
         }
+        return true;
+    };
+
+    bool consumed = deliver(message);
+    const auto slot_count = grouped ? message.len / kSubMotorSlotSize : 0;
+    bool valid_slots = grouped;
+    for (std::size_t slot = 0; slot < slot_count; ++slot) {
+        if (message.data[slot * kSubMotorSlotSize] > 8) {
+            valid_slots = false;
+            break;
+        }
     }
-    if (route == nullptr) {
+    if (valid_slots) {
+        for (std::uint8_t sub_id = 1; sub_id <= slot_count; ++sub_id) {
+            const auto offset = (sub_id - 1U) * kSubMotorSlotSize;
+            const auto dlc = message.data[offset];
+            if (dlc == 0) {
+                continue;
+            }
+            MotorPackMsg child{};
+            child.id = MakeCanAddress(message.id, sub_id);
+            child.frame_flags = message.frame_flags;
+            child.len = dlc;
+            std::copy_n(message.data + offset + 1, dlc, child.data);
+            // 每次回调完成后重新查路由，允许前一个设备回调删除尚未派发的子设备。
+            consumed = deliver(child) || consumed;
+        }
+    }
+    if (!consumed) {
         // 未被其它设备路由命中：交给本总线认领设备（若有），并仍进入未知邮箱。
         DeliverToClaimRoute(adapter, raw_bus_idx, message);
-        return false;
     }
-
-    const auto previous = driver_manager_internal::callback_context;
-    driver_manager_internal::callback_context =
-        driver_manager_internal::CallbackContext{route->device, route->bus, route->adapter};
-    try {
-        if (route->callback) {
-            route->callback(message);
-        }
-    } catch (...) {}
-    driver_manager_internal::callback_context = previous;
-
-    {
-        platform::LockGuard<platform::Mutex> lock(route->mutex);
-        --route->in_flight;
-        if (route->in_flight == 0) {
-            route->condition.notify_all();
-        }
-    }
-    return true;
+    return consumed;
 }
 
 bool EncosDriverManager::DispatchUnknownReceive(BaseAdapter* adapter, int raw_bus_idx,
@@ -592,7 +626,13 @@ bool EncosDriverManager::MigrateMotorIndex(Motor* motor, int new_motor_idx) {
     if (install_callback) {
         motor->SetOnStatusImpl(std::move(callback_to_install));
     }
-    motor->impl_->idx.store(static_cast<uint16_t>(new_motor_idx), std::memory_order_relaxed);
+    const auto logical_id = static_cast<uint32_t>(new_motor_idx);
+    motor->impl_->idx.store(logical_id, std::memory_order_relaxed);
+    uint8_t required_flags = CanSubId(logical_id) != 0 ? kCanFrameFlagFdMask : 0;
+    if (PhysicalCanId(logical_id) > 0x7FFU) {
+        required_flags |= kCanFrameFlagEff;
+    }
+    motor->impl_->frame_flags.fetch_or(required_flags, std::memory_order_relaxed);
     if (device_reservation != impl_->motor_index_reservations.end()) {
         impl_->motor_index_reservations.erase(device_reservation);
     }

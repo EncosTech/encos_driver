@@ -2,55 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 import type { CFunction, WasmModule } from './types.js'
+import type { RuntimeBackend } from './backend.js'
+import { NumericBuffer } from './backend.js'
 
-export class EncosWasmError extends Error {
-  code: number
-
-  constructor(module: WasmModule, code: number, fallback: string) {
-    const message = module.UTF8ToString(module._encos_get_last_error_message?.() ?? 0) || fallback
-    super(message)
-    this.name = 'EncosWasmError'
-    this.code = code
-  }
-}
-
-export function assertOk(runtime: { module: WasmModule }, code: number, fallback: string): void {
+export function assertOk(runtime: { backend: RuntimeBackend }, code: number, fallback: string): void {
   if (code !== 0) {
-    throw new EncosWasmError(runtime.module, code, fallback)
+    const error = new Error(runtime.backend.lastError || fallback) as Error & { code: number }
+    error.name = runtime.backend.kind === 'wasm' ? 'EncosWasmError' : 'EncosNativeError'
+    error.code = code
+    throw error
   }
 }
 
-export function allocU32(module: WasmModule): number {
-  return module._malloc(4)
-}
+export function allocU32(): NumericBuffer { return new NumericBuffer('i32', 1, false) }
+export function getU32(value: NumericBuffer): number { return value.get(0) >>> 0 }
+export function getI32(value: NumericBuffer): number { return value.get(0) }
 
-export function getU32(module: WasmModule, ptr: number): number {
-  return module.getValue(ptr, 'i32') >>> 0
-}
-
-export function getI32(module: WasmModule, ptr: number): number {
-  return module.getValue(ptr, 'i32')
-}
-
-export function createRuntimeCalls(module: WasmModule): Record<string, CFunction> {
-  let asyncCallActive = false
-  const wrap: WasmModule['cwrap'] = (name, returnType, argTypes, options) => {
-    const call = module.cwrap(name, returnType, argTypes, options)
-    if (!options?.async) {
-      return call
-    }
-    return async (...args: any[]) => {
-      if (asyncCallActive) {
-        throw new Error('another async operation is in progress; await it before starting a new one')
-      }
-      asyncCallActive = true
-      try {
-        return await call(...args)
-      } finally {
-        asyncCallActive = false
-      }
-    }
-  }
+export function createRuntimeCalls(wrap: WasmModule['cwrap']): Record<string, CFunction> {
   return {
     createAdapter: wrap('encos_create_adapter', 'number', [
       'string',

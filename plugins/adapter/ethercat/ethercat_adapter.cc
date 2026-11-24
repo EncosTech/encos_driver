@@ -6,29 +6,16 @@
 #include <stdexcept>
 
 #include "bus/bus.h"
-#include "platform/delay.h"
 #include "platform/os.h"
 #include "utils/adapter_extend_update.h"
 #include "utils/thread_priority.h"
+#include "utils/worker_startup.h"
 
 namespace encos {
 
 namespace {
 
 constexpr auto kStartupReadyTimeout = std::chrono::seconds(2);
-
-void RequireLoopPriority() {
-#if defined(__linux__) && !defined(__EMSCRIPTEN__)
-    bool priority_set = false;
-    std::thread priority_thread([&priority_set]() {
-        priority_set = utils::SetCurrentThreadPriority(50);
-    });
-    priority_thread.join();
-    if (!priority_set) {
-        throw std::runtime_error("Failed to authorize EtherCAT loop thread priority");
-    }
-#endif
-}
 
 }  // namespace
 
@@ -53,6 +40,7 @@ bool EthercatAdapter::UpdateBusExtend(const std::string& extend_json) {
         throw std::runtime_error("Ethercat adapter has no master; bus timing not updated");
     }
     const auto extend = AdapterExtend::Parse(extend_json);
+    ethercat::RejectCyclePeriodUpdate(extend);
     adapter_update::WarnIgnoredCommonFields(extend, Logger());
     return ec_master_->ReconfigureBuses(extend);
 }
@@ -83,30 +71,34 @@ EthercatAdapter::EthercatAdapter(const std::string& interface_name, const std::s
         this->OnMessage(messages);
     });
     bus_sizes_ = ec_master_->GetBusSizes();
-    RequireLoopPriority();
+
     running_.store(true);
-    loop_thread_ = std::thread(&EthercatAdapter::Loop, this);
-    if (!ec_master_->WaitUntilOperational(kStartupReadyTimeout)) {
+
+    try {
+        adapter_worker::Start(
+            loop_thread_,
+            [] {
+                utils::RequireCurrentThreadPriority(50);
+            },
+            [this] {
+                Loop();
+            });
+
+        if (!ec_master_->WaitUntilOperational(kStartupReadyTimeout))
+            throw std::runtime_error("EtherCAT startup did not reach operational state");
+    } catch (...) {
         Stop();
-        throw std::runtime_error("EtherCAT startup did not reach operational state");
+        throw;
     }
 }
 
 void EthercatAdapter::Loop() {
-    if (!utils::SetCurrentThreadPriority(50)) {
-        Logger()->error("Failed to set EtherCAT loop thread priority");
-        ec_master_->RequestStop();
-        return;
-    }
-    if (ec_master_) {
+    if (ec_master_)
         ec_master_->Loop();
-    }
 }
 
 void EthercatAdapter::Stop() {
-    if (!running_.exchange(false)) {
-        return;
-    }
+    running_.store(false);
 
     Logger()->info("Stopping EtherCAT adapter...");
     if (ec_master_) {

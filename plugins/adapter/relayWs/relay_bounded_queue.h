@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "device/motor/types.h"
-#include "utils/emr1/relay_frame.h"
+#include "utils/emr2/relay_frame.h"
 
 namespace encos {
 
@@ -49,6 +49,37 @@ inline std::vector<uint8_t> EncodeQueuedRelayFrames(
         frame_messages.push_back(queued.message);
     }
     flush();
+    return result;
+}
+
+/** @brief 保留总线代际边界，并按载荷预算输出独立 WebSocket 包 */
+inline std::vector<std::vector<uint8_t>> EncodeQueuedRelayPackets(
+    RelayFrameType type, const std::vector<RelayQueuedMessage>& messages,
+    RelayWireOptions& options) {
+    auto next = options;
+    std::vector<std::vector<uint8_t>> result;
+    MotorMessages group;
+    std::unordered_map<int, std::size_t> generations;
+    const auto flush = [&]() {
+        auto packets = EncodeRelayPackets(type, group, next);
+        result.insert(result.end(), std::make_move_iterator(packets.begin()),
+                      std::make_move_iterator(packets.end()));
+        group.clear();
+        generations.clear();
+    };
+    for (const auto& queued : messages) {
+        const auto found = generations.find(queued.message.bus_idx);
+        if (found != generations.end() && found->second != queued.generation) {
+            flush();
+        }
+        generations.emplace(queued.message.bus_idx, queued.generation);
+        group.push_back(queued.message);
+    }
+    if (!group.empty() || messages.empty()) {
+        flush();
+    }
+    ++next.batch_id;
+    options = next;
     return result;
 }
 

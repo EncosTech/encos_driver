@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.18)
-project(encos_driver VERSION 4.0.0)
+project(encos_driver VERSION 4.3.1)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
-set(ENCOS_PLUGIN_INSTALL_LIBDIR "${CMAKE_INSTALL_LIBDIR}/encosPlugins")
+set(ENCOS_PLUGIN_INSTALL_LIBDIR "${CMAKE_INSTALL_LIBDIR}/encosPlugins" CACHE STRING "Plugin installation directory")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -27,7 +27,18 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+option(ENCOS_BUILD_NODE_BINDINGS "Build native Node-API bindings" OFF)
 option(ENCOS_BUILD_TESTS "Build EncosMotorDriver tests" OFF)
+option(ENCOS_PORTABLE_LINUX "Build with private static third-party dependencies for portable Linux packaging" OFF)
+if(ENCOS_PORTABLE_LINUX AND (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ENCOS_STATIC_MODE))
+    message(FATAL_ERROR "ENCOS_PORTABLE_LINUX requires Linux dynamic mode")
+endif()
+if(ENCOS_PORTABLE_LINUX)
+    # 工具链的 nonshared 兼容实现及内联函数不得覆盖消费方的 C++ 运行库。
+    set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+    add_link_options("LINKER:--exclude-libs,ALL")
+endif()
+
 option(ENCOS_BUILD_DOCS "Build EncosDriver LaTeX API documentation" OFF)
 option(ENCOS_ENABLE_RELAY "Build WebSocket relay support" ON)
 option(ENCOS_ENABLE_TSAN "Run Port concurrency tests with ThreadSanitizer" OFF)
@@ -265,7 +276,11 @@ endif()
 set(ENCOS_ZSTD_TARGET "")
 if(NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))
     find_package(zstd CONFIG REQUIRED)
-    foreach(_zstd_candidate zstd::libzstd_shared zstd::libzstd_static zstd::libzstd)
+    set(_encos_zstd_candidates zstd::libzstd_shared zstd::libzstd_static zstd::libzstd)
+    if(ENCOS_PORTABLE_LINUX)
+        set(_encos_zstd_candidates zstd::libzstd_static)
+    endif()
+    foreach(_zstd_candidate IN LISTS _encos_zstd_candidates)
         if(TARGET ${_zstd_candidate})
             set(ENCOS_ZSTD_TARGET ${_zstd_candidate})
             break()
@@ -360,6 +375,7 @@ add_library(${ENCOS_DRIVER_BASE_TARGET} ${_encos_base_library_type}
     src/device/glove/glove_calibrator.cc
     src/device/glove/glove_encoder.cc
     src/device/imu/imu.cc
+    src/device/dex_hand/dex_hand.cc
     src/device/pms/pms.cc
     ${MOTOR_MODEL_GENERATED_SOURCE}
 )
@@ -406,11 +422,24 @@ target_compile_definitions(${ENCOS_DRIVER_BASE_TARGET} PUBLIC
 target_compile_definitions(${ENCOS_DRIVER_BASE_TARGET} PRIVATE
     ENCOS_PLUGIN_INSTALL_PATH="${CMAKE_INSTALL_PREFIX}/${ENCOS_PLUGIN_INSTALL_LIBDIR}"
 )
+set(_encos_logging_visibility PUBLIC)
+if(ENCOS_PORTABLE_LINUX)
+    set(_encos_logging_visibility PRIVATE)
+    set_target_properties(${ENCOS_DRIVER_BASE_TARGET} PROPERTIES INSTALL_RPATH "$ORIGIN")
+    foreach(_dependency fmt::fmt spdlog::spdlog)
+        if(TARGET ${_dependency})
+            get_target_property(_type ${_dependency} TYPE)
+            if(NOT _type STREQUAL "STATIC_LIBRARY")
+                message(FATAL_ERROR "Portable Linux requires a static ${_dependency}")
+            endif()
+        endif()
+    endforeach()
+endif()
 if(ENCOS_ENABLE_SPDLOG)
     if(TARGET spdlog::spdlog)
-        target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PUBLIC spdlog::spdlog fmt::fmt)
+        target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} ${_encos_logging_visibility} spdlog::spdlog fmt::fmt)
     else()
-        target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} PUBLIC spdlog fmt::fmt)
+        target_link_libraries(${ENCOS_DRIVER_BASE_TARGET} ${_encos_logging_visibility} spdlog fmt::fmt)
     endif()
 endif()
 if(ENCOS_ZSTD_TARGET)
@@ -534,6 +563,8 @@ add_custom_target(version-consistency
     VERBATIM
 )
 
+include(EncosNode)
+
 if(ENCOS_BUILD_WASM_BINDINGS)
     if(TARGET FakeAdapterSupport)
         target_compile_options(FakeAdapterSupport PUBLIC "-fexceptions")
@@ -591,6 +622,12 @@ endif()
 if(ENCOS_ENABLE_INSTALL)
     include(CMakePackageConfigHelpers)
 
+    # 版本变化时更新主导出文件，使 CMake 安装器清理旧版本的分配置导出文件。
+    foreach(driver_target IN ITEMS ${ENCOS_DRIVER_TARGET} ${ENCOS_DRIVER_BASE_TARGET})
+        set_property(TARGET ${driver_target} PROPERTY ENCOS_PACKAGE_VERSION "${PROJECT_VERSION}")
+        set_property(TARGET ${driver_target} APPEND PROPERTY EXPORT_PROPERTIES ENCOS_PACKAGE_VERSION)
+    endforeach()
+
     install(TARGETS ${ENCOS_DRIVER_TARGET} ${ENCOS_DRIVER_BASE_TARGET}
         EXPORT encos_driverTargets
         LIBRARY DESTINATION lib
@@ -598,19 +635,6 @@ if(ENCOS_ENABLE_INSTALL)
         RUNTIME DESTINATION bin
         INCLUDES DESTINATION include
     )
-
-    # Windows 运行期依赖：把 spdlog/fmt/zstd 等共享库一并安装到 bin，
-    # 配合写入用户 PATH，消费方无需自行处理依赖 DLL。
-    if(WIN32)
-        foreach(_encos_dep_target spdlog::spdlog fmt::fmt ${ENCOS_ZSTD_TARGET})
-            if(TARGET ${_encos_dep_target})
-                get_target_property(_encos_dep_type ${_encos_dep_target} TYPE)
-                if(_encos_dep_type STREQUAL "SHARED_LIBRARY")
-                    install(FILES "$<TARGET_FILE:${_encos_dep_target}>" DESTINATION bin)
-                endif()
-            endif()
-        endforeach()
-    endif()
 
     install(DIRECTORY include/
         DESTINATION include/encos
@@ -698,29 +722,6 @@ if(ENCOS_ENABLE_INSTALL)
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in"
         "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake" @ONLY)
 
-    # Windows：安装时写入用户级 PATH 与 ENCOS_PLUGIN_PATH。
-    if(WIN32)
-        configure_file(
-            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows_set_env.ps1.in"
-            "${CMAKE_CURRENT_BINARY_DIR}/windows_set_env.ps1" @ONLY)
-        install(CODE "
-            execute_process(
-                COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
-                        \"${CMAKE_CURRENT_BINARY_DIR}/windows_set_env.ps1\"
-                RESULT_VARIABLE _encos_env_result
-                OUTPUT_VARIABLE _encos_env_output
-                ERROR_VARIABLE _encos_env_error
-            )
-            if(_encos_env_output)
-                message(STATUS \"\${_encos_env_output}\")
-            endif()
-            if(NOT _encos_env_result EQUAL 0)
-                message(WARNING
-                    \"Failed to update Windows environment variables: \${_encos_env_error}\")
-            endif()
-        ")
-    endif()
-
     add_custom_target(uninstall
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
 endif()
@@ -766,6 +767,9 @@ if(ENCOS_ENABLE_INSTALL AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         string(APPEND _encos_debian_depends ", libspdlog-dev, libfmt-dev")
     endif()
     string(APPEND _encos_debian_depends ", libstdc++6, libc6")
+    if(TARGET EthernetPlugin)
+        string(APPEND _encos_debian_depends ", libsystemd0, polkitd")
+    endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "${_encos_debian_depends}")
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Encos
 // SPDX-License-Identifier: MIT
 
+import type { ImuStatus, StatusCallback } from './native-types.js'
+import { NumericBuffer } from './backend.js'
 import { assertOk } from './native.js'
 import type { BusWrapper } from './bus.js'
 import type { ImuStatusResult } from './types.js'
@@ -22,15 +24,15 @@ export class ImuWrapper {
 
   getStatus(): ImuStatusResult {
     this.#assertLive()
-    const values = this.runtime.module._malloc(13 * 8)
-    const present = this.runtime.module._malloc(4 * 4)
+    const values = new NumericBuffer('double', 13)
+    const present = new NumericBuffer('i32', 4)
     try {
       const code = this.runtime.calls.imuGetStatus(this.handle, values, 13, present, 4)
       assertOk(this.runtime, code, 'failed to get IMU status')
-      const hasAcceleration = this.runtime.module.getValue(present, 'i32') !== 0
-      const hasAngularVelocity = this.runtime.module.getValue(present + 4, 'i32') !== 0
-      const hasEulerAngle = this.runtime.module.getValue(present + 8, 'i32') !== 0
-      const hasQuaternion = this.runtime.module.getValue(present + 12, 'i32') !== 0
+      const hasAcceleration = present.get(0) !== 0
+      const hasAngularVelocity = present.get(1) !== 0
+      const hasEulerAngle = present.get(2) !== 0
+      const hasQuaternion = present.get(3) !== 0
       return {
         acceleration: hasAcceleration
           ? {
@@ -63,10 +65,24 @@ export class ImuWrapper {
           : undefined,
       }
     } finally {
-      this.runtime.module._free(values)
-      this.runtime.module._free(present)
+      values.release()
+      present.release()
     }
   }
+
+  setOnStatus(callback: StatusCallback<ImuStatus>): void {
+    this.#assertLive()
+    this.runtime._subscribe('imu.onStatus', { handle: this.handle }, callback)
+  }
+  dispose(): void {
+    if (this.disposed) return
+    this.#assertLive()
+    this.runtime._invoke('imu.dispose', { handle: this.handle })
+    this.disposed = true
+    this.bus.imus.delete(this.index)
+  }
+  static nativeUpdateInterval(): number { return 5 }
+  static jsUpdateInterval(): number { return 20 }
 
   #assertLive(): void {
     this.bus.adapter._assertLiveForChild()
@@ -75,7 +91,7 @@ export class ImuWrapper {
     }
   }
 
-  #doubleAt(ptr: number, index: number): number {
-    return this.runtime.module.getValue(ptr + index * 8, 'double')
+  #doubleAt(ptr: NumericBuffer, index: number): number {
+    return ptr.get(index)
   }
 }

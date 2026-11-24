@@ -12,9 +12,14 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+#if defined(__MINGW32__)
+#include <windows.h>
+#endif
 
 #include "platform/sync.h"
 
@@ -100,6 +105,7 @@ enum class OperationKind : std::uint8_t {
     Glove,
     GloveEncoder,
     GloveCalibrator,
+    DexHand,
 };
 
 /** @brief OperationRegistry 进入失败的精确原因 */
@@ -355,9 +361,47 @@ private:
         HazardSlot* slot = nullptr;
     };
 
+#if defined(__MINGW32__)
+    static void NTAPI ReleaseThreadHazard(void* value) {
+        delete static_cast<HazardOwner*>(value);
+    }
+
+    struct HazardFlsKey {
+        HazardFlsKey() : value(FlsAlloc(&ReleaseThreadHazard)) {}
+
+        ~HazardFlsKey() {
+            if (value != FLS_OUT_OF_INDEXES) {
+                FlsFree(value);
+            }
+        }
+
+        DWORD value;
+    };
+#endif
+
     static HazardSlot* ThreadHazard() noexcept {
+#if defined(__MINGW32__)
+        // MinGW emutls 可能先释放 thread_local 存储再调用析构；FLS 独立持有对象。
+        static HazardFlsKey key;
+        if (key.value == FLS_OUT_OF_INDEXES) {
+            return nullptr;
+        }
+        auto* owner = static_cast<HazardOwner*>(FlsGetValue(key.value));
+        if (owner == nullptr) {
+            owner = new (std::nothrow) HazardOwner();
+            if (owner == nullptr) {
+                return nullptr;
+            }
+            if (!FlsSetValue(key.value, owner)) {
+                delete owner;
+                return nullptr;
+            }
+        }
+        return owner->slot;
+#else
         thread_local HazardOwner owner;
         return owner.slot;
+#endif
     }
 
     Snapshot* ProtectSnapshot(HazardSlot* hazard) const noexcept {

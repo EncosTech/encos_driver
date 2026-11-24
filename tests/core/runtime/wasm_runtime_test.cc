@@ -3,11 +3,13 @@
 
 #include "wasm/wasm_runtime.h"
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <type_traits>
 
+#include "base_adapter_test_access.h"
 #include "driver_manager_test_access.h"
 #include "encos/driver_manager.h"
 #include "platform/os.h"
@@ -74,6 +76,79 @@ protected:
         DriverManagerTestAccess::Reset(EncosDriverManager::Instance());
     }
 };
+
+TEST_F(RuntimeStoreTest, AdoptAndRefreshPreserveNegativeLogicalMotorIndexBitPatterns) {
+    RuntimeStore store;
+    auto& manager = EncosDriverManager::Instance();
+    const auto adapter =
+        store.CreateFakeAdapter("runtime-logical-motor-addresses", "", LogLevel::Info);
+    ASSERT_TRUE(adapter.Ok());
+    const auto bus_handle = store.GetBus(adapter.value, -1, 0);
+    ASSERT_TRUE(bus_handle.Ok());
+    const auto bus = store.ResolveBus(bus_handle.value);
+    ASSERT_TRUE(bus.Ok());
+    const auto fake = store.ResolveFakeAdapter(adapter.value);
+    ASSERT_TRUE(fake.Ok());
+    fake.value->SetReplyMode(FakeReplyMode::Manual);
+
+    std::array<std::uint32_t, 2> handles{};
+    const std::array<std::uint32_t, 2> addresses{MakeCanAddress(0x123U, 7), 0xFFFFFFFFU};
+    for (std::size_t i = 0; i < addresses.size(); ++i) {
+        auto* motor = manager.CreateMotor(bus.value->bus, addresses[i], MotorModel::EC_A4310_P2);
+        const auto adopted = store.AdoptMotor(bus_handle.value, motor);
+        ASSERT_TRUE(adopted.Ok()) << adopted.message;
+        handles[i] = adopted.value;
+        const auto duplicate = store.AdoptMotor(bus_handle.value, motor);
+        ASSERT_TRUE(duplicate.Ok());
+        EXPECT_EQ(duplicate.value, handles[i]);
+    }
+
+    store.RefreshMotorIndices();
+    for (std::size_t i = 0; i < addresses.size(); ++i) {
+        const auto motor = store.ResolveMotor(handles[i]);
+        ASSERT_TRUE(motor.Ok());
+        EXPECT_EQ(motor.value->motor_idx, LegacyCanIdBits(addresses[i]));
+        const auto cached = store.GetMotorWithModel(bus_handle.value, LegacyCanIdBits(addresses[i]),
+                                                    MotorModel::EC_A4310_P2);
+        ASSERT_TRUE(cached.Ok());
+        EXPECT_EQ(cached.value, handles[i]);
+    }
+
+    ASSERT_TRUE(manager.DestroyMotor(manager.FindMotor(bus.value->bus, addresses[0])));
+    store.RefreshMotorIndices();
+    EXPECT_FALSE(store.ResolveMotor(handles[0]).Ok());
+    EXPECT_TRUE(store.ResolveMotor(handles[1]).Ok());
+}
+
+TEST_F(RuntimeStoreTest, InjectsFullCanFdPayloadAndRejectsOversizedInput) {
+    RuntimeStore store;
+    const auto handle = store.CreateFakeAdapter("wasm-fd-payload", "", LogLevel::Info);
+    ASSERT_TRUE(handle.Ok());
+    const auto bus = store.GetBus(handle.value, -1, 0);
+    ASSERT_TRUE(bus.Ok());
+    const auto adapter = store.ResolveFakeAdapter(handle.value);
+    ASSERT_TRUE(adapter.Ok());
+    MotorMessages received;
+    BaseAdapterTestAccess::SetRawMessageCallback(adapter.value, [&](const MotorMessages& messages) {
+        received = messages;
+    });
+    std::array<uint8_t, 64> data{};
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        data[i] = static_cast<uint8_t>(i + 1);
+    }
+    EXPECT_EQ(
+        store.InjectFakeRawMessage(handle.value, 0, 0x123, kCanFrameFlagFdMask, data.data(), 64),
+        ErrorCode::Ok);
+    ASSERT_EQ(received.size(), 1U);
+    ASSERT_EQ(received[0].data.len, 64);
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        EXPECT_EQ(received[0].data.data[i], data[i]);
+    }
+    EXPECT_EQ(
+        store.InjectFakeRawMessage(handle.value, 0, 0x123, kCanFrameFlagFdMask, data.data(), 65),
+        ErrorCode::InvalidArgument);
+    BaseAdapterTestAccess::SetRawMessageCallback(adapter.value, {});
+}
 
 TEST_F(RuntimeStoreTest, FakeAdapterHandlesShareManagerObjectUntilLastLeaseDisposes) {
     RuntimeStore store;

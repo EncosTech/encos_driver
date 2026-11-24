@@ -24,6 +24,7 @@
 #include "driver_manager_test_access.h"
 #include "managed_adapter_test.h"
 #include "relayWs/relay_bounded_queue.h"
+#include "relayWs/relay_wire_state.h"
 #include "utils/emr1/relay_frame.h"
 #include "wait_observer.h"
 
@@ -45,7 +46,7 @@ void WriteFloatBe(float value, uint8_t* out) {
 
 class RelayParameterServer {
 public:
-    explicit RelayParameterServer(int port) : port_(port) {
+    explicit RelayParameterServer(int port, bool emr2 = false) : port_(port), emr2_(emr2) {
         ix::initNetSystem();
     }
 
@@ -73,7 +74,18 @@ public:
                     }
 
                     const std::vector<uint8_t> data(msg->str.begin(), msg->str.end());
-                    const auto frames = DecodeRelayFrames(data);
+                    if (auto capability = DecodeRelayCapability(data)) {
+                        if (emr2_) {
+                            capability->response = true;
+                            capability->capabilities.emr2 = true;
+                            capability->capabilities.max_payload = 128;
+                            const auto bytes = EncodeRelayCapability(*capability);
+                            socket->sendBinary(std::string(
+                                reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+                        }
+                        return;
+                    }
+                    const auto frames = DecodeRelayPackets(data);
                     if (!frames.has_value()) {
                         return;
                     }
@@ -85,7 +97,17 @@ public:
                         if (frame.records.empty()) {
                             empty_frame_count_.fetch_add(1);
                         }
-                        for (const auto& request : frame.records) {
+                        if (frame.protocol == RelayProtocol::Emr2) {
+                            emr2_packets_.fetch_add(1);
+                        }
+                        for (const auto& record : frame.records) {
+                            const auto& request = record.message;
+                            if (request.data.len == 64) {
+                                large_records_.fetch_add(1);
+                                if (data.size() > 128) {
+                                    oversized_packets_.fetch_add(1);
+                                }
+                            }
                             if (!IsPositionRead(request)) {
                                 continue;
                             }
@@ -99,8 +121,11 @@ public:
                             reply.data.data[1] = static_cast<uint8_t>(MotorParameter::Position);
                             WriteFloatBe(kExpectedPositionDeg, reply.data.data + 2);
 
-                            const auto bytes =
-                                EncodeRelayFrames(RelayFrameType::HelperToRelay, {reply});
+                            RelayWireOptions options;
+                            options.protocol = frame.protocol;
+                            const auto bytes = EncodeRelayPackets(RelayFrameType::HelperToRelay,
+                                                                  MotorMessages{reply}, options)
+                                                   .front();
                             socket->sendBinary(std::string(
                                 reinterpret_cast<const char*>(bytes.data()), bytes.size()));
                         }
@@ -146,6 +171,16 @@ public:
         return true;
     }
 
+    int LargeRecords() const {
+        return large_records_.load();
+    }
+    int OversizedPackets() const {
+        return oversized_packets_.load();
+    }
+    int Emr2Packets() const {
+        return emr2_packets_.load();
+    }
+
     const std::string& LastError() const {
         return last_error_;
     }
@@ -157,12 +192,22 @@ private:
     }
 
     int port_;
+    bool emr2_;
+    std::atomic<int> large_records_{0};
+    std::atomic<int> oversized_packets_{0};
+    std::atomic<int> emr2_packets_{0};
     std::unique_ptr<ix::WebSocketServer> server_;
     std::atomic<int> request_count_{0};
     std::atomic<int> empty_frame_count_{0};
     std::string last_error_;
     std::mutex socket_mutex_;
     std::weak_ptr<ix::WebSocket> socket_;
+};
+
+class TestRelayWsAdapter : public RelayWsAdapter {
+public:
+    using RelayWsAdapter::RelayWsAdapter;
+    using RelayWsAdapter::SendSynchronized;
 };
 
 }  // namespace
@@ -386,6 +431,128 @@ TEST(RelayWsQueueTests, TaggedFailedBatchReinsertionPreservesGenerations) {
     EXPECT_EQ(current[1].generation, 2U);
     EXPECT_EQ(current[3].message.data.id, 6U);
     EXPECT_EQ(current[3].generation, 3U);
+}
+
+TEST(RelayWsWireTests, AutoFallbackCapabilityCorrelationAndReset) {
+    RelayWsWireState wire;
+    EXPECT_EQ(wire.options.protocol, RelayProtocol::Emr1);
+    RelayCapabilityMessage response;
+    response.response = true;
+    response.request_id = wire.request_id;
+    response.capabilities = {true, 128, 0};
+    wire.Receive(response);
+    wire.ApplyPending();
+    EXPECT_EQ(wire.options.protocol, RelayProtocol::Emr1);
+    wire.requested = true;
+    wire.Receive(response);
+    EXPECT_EQ(wire.options.protocol, RelayProtocol::Emr1);
+    wire.ApplyPending();
+    EXPECT_EQ(wire.options.protocol, RelayProtocol::Emr2);
+    EXPECT_EQ(wire.options.max_payload, 128U);
+    wire.Reset();
+    wire.requested = true;
+    wire.Receive(response);
+    wire.ApplyPending();
+    EXPECT_EQ(wire.options.protocol, RelayProtocol::Emr1);
+    EXPECT_EQ(wire.options.max_payload, 1448U);
+}
+
+TEST(RelayWsWireTests, ExplicitModesAndInvalidConfiguration) {
+    RelayWsWireState forced(R"({"protocol":"emr2","max_payload":128})");
+    EXPECT_EQ(forced.options.protocol, RelayProtocol::Emr2);
+    forced.Reset();
+    EXPECT_EQ(forced.options.protocol, RelayProtocol::Emr2);
+    EXPECT_THROW(RelayWsWireState(R"({"protocol":"unknown"})"), std::invalid_argument);
+    EXPECT_THROW(RelayWsWireState(R"({"max_payload":99})"), std::invalid_argument);
+    EXPECT_THROW(RelayWsWireState(R"({"buses":{"0":{"protocol":"emr2"}}})"), std::invalid_argument);
+}
+
+TEST(RelayWsQueueTests, Emr2PacketsRespectBudgetAndGeneration) {
+    RelayQueuedMessage first{};
+    first.message.data.len = 64;
+    first.message.data.frame_flags = kCanFrameFlagFdMask;
+    first.generation = 1;
+    auto second = first;
+    second.generation = 2;
+    RelayWireOptions options;
+    options.protocol = RelayProtocol::Emr2;
+    options.max_payload = 128;
+    options.batch_id = 17;
+    const auto packets =
+        EncodeQueuedRelayPackets(RelayFrameType::RelayToHelper, {first, first, second}, options);
+    ASSERT_EQ(packets.size(), 3U);
+    EXPECT_EQ(options.batch_id, 18U);
+    for (const auto& packet : packets) {
+        EXPECT_LE(packet.size(), 128U);
+        const auto decoded = DecodeRelayPackets(packet);
+        ASSERT_TRUE(decoded);
+        ASSERT_EQ(decoded->size(), 1U);
+        ASSERT_EQ(decoded->front().records.size(), 1U);
+        EXPECT_EQ(decoded->front().records.front().message.data.len, 64U);
+        EXPECT_EQ(decoded->front().batch_id, 17U);
+    }
+}
+
+TEST(RelayWsQueueTests, InvalidBatchDoesNotAdvanceSequence) {
+    RelayQueuedMessage valid{};
+    auto invalid = valid;
+    invalid.message.data.len = 9;
+    RelayWireOptions options;
+    options.sequence = 42;
+    EXPECT_THROW(EncodeQueuedRelayPackets(RelayFrameType::RelayToHelper, {valid, invalid}, options),
+                 std::invalid_argument);
+    EXPECT_EQ(options.sequence, 42U);
+    EXPECT_EQ(options.batch_id, 0U);
+}
+
+TEST(RelayWsAdapterTests, NegotiatesEmr2AndSendsIndependentBoundedPackets) {
+    const int port = ix::getFreePort();
+    RelayParameterServer server(port, true);
+    ASSERT_TRUE(server.Start()) << server.LastError();
+    const auto url = "ws://127.0.0.1:" + std::to_string(port) + "/ws";
+    ManagedAdapterGuard<BaseAdapter> managed(
+        EncosDriverManager::Instance().CreateAdapterWithFactory(url, [&]() {
+            return new TestRelayWsAdapter(url, "RelayWsEmr2Test", LogLevel::Info);
+        }));
+    auto* adapter = static_cast<TestRelayWsAdapter*>(managed.get());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (server.Emr2Packets() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_GT(server.Emr2Packets(), 0);
+    MotorMessage message{};
+    message.data.len = 64;
+    message.data.frame_flags = kCanFrameFlagFdMask;
+    adapter->SendSynchronized({message, message, message});
+    while (server.LargeRecords() < 3 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    auto* motor = adapter->GetBus(0)->GetMotor(1, MotorModel::EC_A4310_P2);
+    EXPECT_NEAR(motor->GetParameter<MotorParameter::Position>(), kExpectedPositionRad, 0.001f);
+    EXPECT_EQ(server.LargeRecords(), 3);
+    EXPECT_EQ(server.OversizedPackets(), 0);
+}
+
+TEST(RelayWsAdapterTests, LegacyBatchRejectsOversizedRecordBeforeEnqueue) {
+    const int port = ix::getFreePort();
+    RelayParameterServer server(port);
+    ASSERT_TRUE(server.Start()) << server.LastError();
+    const auto url = "ws://127.0.0.1:" + std::to_string(port) + "/ws";
+    ManagedAdapterGuard<BaseAdapter> managed(
+        EncosDriverManager::Instance().CreateAdapterWithFactory(url, [&]() {
+            return new TestRelayWsAdapter(url, "RelayWsInvalidBatchTest", LogLevel::Info);
+        }));
+    auto* adapter = static_cast<TestRelayWsAdapter*>(managed.get());
+    MotorMessage valid{};
+    valid.data.len = 2;
+    valid.data.data[0] = static_cast<uint8_t>(0x07 << 5);
+    valid.data.data[1] = static_cast<uint8_t>(MotorParameter::Position);
+    auto invalid = valid;
+    invalid.data.len = 64;
+    EXPECT_THROW(adapter->SendSynchronized({valid, invalid}), std::invalid_argument);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    EXPECT_EQ(server.RequestCount(), 0);
+    EXPECT_EQ(server.Emr2Packets(), 0);
 }
 
 }  // namespace encos

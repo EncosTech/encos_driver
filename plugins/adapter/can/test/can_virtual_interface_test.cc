@@ -156,21 +156,27 @@ TEST(CanVirtualInterfaceTests, CanFdSendUsesConfiguredDataBitrate) {
     encos::MotorMessage message{};
     message.data.id = 0x321;
     message.data.frame_flags = encos::kCanFrameFlagFdMask;
-    message.data.len = 2;
-    message.data.data[0] = 0x12;
-    message.data.data[1] = 0x34;
+    message.data.len = 64;
+    for (std::size_t i = 0; i < sizeof(message.data.data); ++i) {
+        message.data.data[i] = static_cast<uint8_t>(i + 1);
+    }
     sender.Send(message);
     pollfd descriptor{rx_fd, POLLIN, 0};
     const int ready = poll(&descriptor, 1, 1000);
     canfd_frame frame{};
     const auto bytes = recv(rx_fd, &frame, sizeof(frame), MSG_DONTWAIT);
-    close(rx_fd);
     ASSERT_EQ(ready, 1);
     ASSERT_EQ(bytes, CANFD_MTU);
     EXPECT_EQ(frame.can_id, message.data.id);
     EXPECT_EQ(frame.len, message.data.len);
     EXPECT_EQ(std::memcmp(frame.data, message.data.data, message.data.len), 0);
     EXPECT_NE(frame.flags & CANFD_BRS, 0);
+
+    message.data.len = 65;
+    sender.Send(message);
+    descriptor.revents = 0;
+    EXPECT_EQ(poll(&descriptor, 1, 20), 0);
+    close(rx_fd);
 }
 
 #else

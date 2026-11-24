@@ -4,14 +4,16 @@
 #include "can_adapter.h"
 
 #include <chrono>
+#include <exception>
 #include <stdexcept>
 
 #include "adapter/adapter_extend.h"
 #include "bus/bus.h"
+#include "can_link_statistics.h"
 #include "can_socket_setup.h"
 #include "can_timing.h"
-#include "platform/delay.h"
 #include "utils/thread_priority.h"
+#include "utils/worker_startup.h"
 #ifndef ENCOS_STATIC_MODE
 #include <filesystem>
 
@@ -25,29 +27,12 @@ namespace encos {
 namespace fs = std::filesystem;
 #endif
 
-namespace {
-
-void RequireLoopPriority() {
-#if defined(__linux__) && !defined(__EMSCRIPTEN__)
-    bool priority_set = false;
-    std::thread priority_thread([&priority_set]() {
-        priority_set = utils::SetCurrentThreadPriority(50);
-    });
-    priority_thread.join();
-    if (!priority_set) {
-        throw std::runtime_error("Failed to authorize CAN loop thread priority");
-    }
-#endif
-}
-
-}  // namespace
-
 std::unordered_map<int, Bus*> CanAdapter::GetBuses() {
     return {{0, this->GetBus(0)}};
 }
 
 bool CanAdapter::Ok() {
-    return can_handle_ && can_handle_->Ok();
+    return running_.load() && can_handle_ && can_handle_->Ok();
 }
 
 void CanAdapter::Send(const MotorMessage& message) {
@@ -79,33 +64,63 @@ CanAdapter::CanAdapter(const std::string& interface_name, const std::string& log
         OnMessage(messages);
     });
 
-    RequireLoopPriority();
-    running_.store(true);
-    loop_thread_ = std::thread(&CanAdapter::Loop, this);
-    platform::SleepFor(std::chrono::milliseconds(100));
+    BusStatistics bus;
+    bus.bus_id = 0;
+    InitializeStatistics(AdapterStatistics{{bus}}, 1500);
+
+    statistics_wait_.Start(running_);
+
+    try {
+        adapter_worker::Start(
+            loop_thread_,
+            [] {
+                utils::RequireCurrentThreadPriority(50);
+            },
+            [this] {
+                Loop();
+            });
+
+        if (running_.load())
+            statistics_thread_ = std::thread(&CanAdapter::StatisticsLoop, this);
+    } catch (...) {
+        Stop();
+        throw;
+    }
+}
+
+void CanAdapter::StatisticsLoop() {
+    while (running_.load()) {
+        if (const auto snapshot = can::ReadLinkStatistics(GetInterfaceName()))
+            UpdateStatistics(*snapshot);
+
+        if (!statistics_wait_.Wait(running_))
+            break;
+    }
 }
 
 void CanAdapter::Loop() {
-    if (!utils::SetCurrentThreadPriority(50)) {
-        Logger()->error("Failed to set CAN loop thread priority after authorization");
-        return;
+    try {
+        if (can_handle_)
+            can_handle_->Loop();
+    } catch (const std::exception& error) {
+        Logger()->error("CAN receive loop failed: {}", error.what());
+    } catch (...) {
+        Logger()->error("CAN receive loop failed with an unknown exception");
     }
-    if (can_handle_) {
-        can_handle_->Loop();
-    }
+
+    statistics_wait_.Stop(running_);
 }
 
 void CanAdapter::Stop() {
-    if (!running_.exchange(false)) {
-        return;
-    }
-    Logger()->info("Stopping CAN adapter...");
-    if (can_handle_) {
+    statistics_wait_.Stop(running_);
+
+    if (can_handle_)
         can_handle_->Stop();
-    }
-    if (loop_thread_.joinable()) {
+
+    if (statistics_thread_.joinable())
+        statistics_thread_.join();
+    if (loop_thread_.joinable())
         loop_thread_.join();
-    }
 }
 
 int CanAdapter::RequestSocketFromBroker(const can::CanTiming& timing) const {

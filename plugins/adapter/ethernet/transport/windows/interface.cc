@@ -22,13 +22,13 @@ bool Configured(const WindowsInterface& iface) {
            iface.up;
 }
 }  // namespace
-void ConfigureHostInterface(const std::string& name) {
+std::unique_ptr<HostInterface> ConfigureHostInterface(const std::string& name, bool) {
     unsigned index = 0;
     for (const auto& iface : WindowsInterfaces(true)) {
         if (iface.name != name)
             continue;
         if (Configured(iface))
-            return;
+            return {};
         index = iface.index;
     }
     if (!index)
@@ -67,7 +67,7 @@ void ConfigureHostInterface(const std::string& name) {
     do {
         for (const auto& iface : WindowsInterfaces())
             if (iface.index == index && Configured(iface))
-                return;
+                return {};
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     } while (std::chrono::steady_clock::now() < deadline);
     throw std::runtime_error("Ethernet static address did not become available");

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+
 #include <atomic>
 #include <deque>
 #include <map>
@@ -46,14 +47,29 @@ private:
     friend class EthernetAdapterTestAccess;
     EthernetAdapter() : BaseAdapter("ethernet-test", "ethernet-test", LogLevel::Off) {}
     void Worker();
-    /** @brief 检查编码总线号是否落在已握手的实际通道范围 */
+
+    /**
+     * @brief 查询指定通道的已登记总线是否有电机。
+     * @param slave 从站编号。
+     * @param channel CAN 通道号。
+     * @return 总线已登记且至少有一台电机时返回 `true`。
+     */
+    bool HasKnownMotors(unsigned slave, unsigned channel);
+
+    /** @brief 检查编码总线号是否落在已握手的实际通道范围。 */
     bool IsValidBus(int index) const;
+
+    // 必须在数据通道和管理会话之后释放临时网络连接。
+    std::unique_ptr<ethernet::HostInterface> host_interface_;
     std::unique_ptr<ethernet::Transport> transport_;
     struct Peer {
         unsigned channel_count = 0;
         std::unique_ptr<ethernet::ManagementClient> management;
         ethernet::TransmitQueue pending;
-        MotorMessages outgoing;
+        std::deque<std::vector<uint8_t>> packets;
+        RelayProtocolMode protocol_mode = RelayProtocolMode::Auto;
+        RelayWireOptions wire;
+        std::size_t max_payload = 1448;
         std::chrono::steady_clock::time_point heartbeat{};
     };
     bool multi_ = false;

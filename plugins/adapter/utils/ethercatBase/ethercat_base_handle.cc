@@ -20,7 +20,42 @@ bool CheckedAdd(std::size_t value, std::size_t* total) {
 }
 
 constexpr std::size_t kSendQueueHighLoadThreshold = 3;
-constexpr uint32_t kSystemCommandId = 0x7FF;
+constexpr std::size_t kSlotPayloadSize = sizeof(EthercatCanSlot::data);
+constexpr uint8_t kFragmentFlag = 0x10;
+constexpr unsigned kFragmentIndexShift = 5;
+
+std::size_t SlotsForPayload(std::size_t length) {
+    return (length + kSlotPayloadSize - 1) / kSlotPayloadSize;
+}
+
+bool IsValidCanFdPdoMessage(uint32_t id, uint8_t flags, unsigned length) {
+    const bool fd = (flags & kCanFrameFlagFdBit1) != 0;
+    const auto max_id = CanFrameFlagsUseExtendedId(flags) ? 0x1FFFFFFFU : 0x7FFU;
+    return id != 0 && id <= max_id && length != 0 &&
+           length <= (fd ? sizeof(MotorPackMsg::data) : kSlotPayloadSize) &&
+           (fd ? !CanFrameFlagsUseRtr(flags) : (flags & kCanFrameFlagFdBit2) == 0);
+}
+
+bool IsValidCanFdPdoOutput(const MotorPackMsg& data, bool legacy_short_slots) {
+    if (legacy_short_slots && data.len <= kSlotPayloadSize) {
+        return data.len != 0;
+    }
+    return data.frame_flags == SanitizeCanFrameFlags(data.frame_flags) &&
+           IsValidCanFdPdoMessage(data.id, data.frame_flags, data.len);
+}
+
+uint32_t ReadSlotId(const EthercatCanSlot& slot) {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&slot);
+    return static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8) |
+           (static_cast<uint32_t>(bytes[2]) << 16) | (static_cast<uint32_t>(bytes[3]) << 24);
+}
+
+void WriteSlotId(EthercatCanSlot& slot, uint32_t id) {
+    auto* bytes = reinterpret_cast<uint8_t*>(&slot);
+    for (unsigned i = 0; i < sizeof(id); ++i) {
+        bytes[i] = static_cast<uint8_t>(id >> (8 * i));
+    }
+}
 
 template <typename PacketT>
 struct PacketTraits;
@@ -77,26 +112,13 @@ bool InsertMessageIntoPacket(PacketT& packet, uint16_t bus_idx, const MotorMessa
         static_cast<std::size_t>(bus_idx) * PacketTraits<PacketT>::kMotorsPerBus;
     const std::size_t end = start + PacketTraits<PacketT>::kMotorsPerBus;
 
-    if (message.data.id != kSystemCommandId) {
-        for (std::size_t slot = start; slot < end; ++slot) {
-            auto& target = packet.motor[slot];
-            uint8_t cmd_id = static_cast<uint8_t>(target.data[0] >> 5);
-            if (target.len != 0 && target.id == message.data.id && cmd_id <= 0x03) {
-                target.frame_flags = SanitizeCanFrameFlags(message.data.frame_flags);
-                target.len = message.data.len;
-                std::memcpy(target.data, message.data.data, sizeof(message.data.data));
-                return true;
-            }
-        }
-    }
-
     for (std::size_t slot = start; slot < end; ++slot) {
         auto& target = packet.motor[slot];
         if (target.len == 0) {
             target.id = message.data.id;
             target.frame_flags = SanitizeCanFrameFlags(message.data.frame_flags);
             target.len = message.data.len;
-            std::memcpy(target.data, message.data.data, sizeof(message.data.data));
+            std::memcpy(target.data, message.data.data, sizeof(target.data));
             if constexpr (PacketTraits<PacketT>::kHasMotorNum) {
                 packet.motor_num++;
             }
@@ -105,6 +127,38 @@ bool InsertMessageIntoPacket(PacketT& packet, uint16_t bus_idx, const MotorMessa
     }
 
     return false;
+}
+
+bool InsertCanFdMessage(EthercatOutputBuffer& buffer, std::size_t message_size, uint16_t bus_idx,
+                        std::size_t slots_per_bus, const MotorPackMsg& data) {
+    if (buffer.empty()) {
+        buffer.reset(message_size);
+    }
+    auto* begin = reinterpret_cast<EthercatCanSlot*>(buffer.data()) + bus_idx * slots_per_bus;
+    auto* end = begin + slots_per_bus;
+    auto* target = std::find_if(begin, end, [](const auto& slot) {
+        return slot.len == 0;
+    });
+    const auto count = SlotsForPayload(data.len);
+    if (count > static_cast<std::size_t>(end - target)) {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < count; ++i) {
+        auto& slot = target[i];
+        WriteSlotId(slot, data.id);
+        slot.len = data.len;
+        slot.frame_flags = SanitizeCanFrameFlags(data.frame_flags);
+        if (count > 1) {
+            slot.frame_flags |= static_cast<uint8_t>(kFragmentFlag | (i << kFragmentIndexShift));
+        }
+        if (!CanFrameFlagsUseRtr(data.frame_flags)) {
+            const auto offset = i * kSlotPayloadSize;
+            std::memcpy(slot.data, data.data + offset,
+                        std::min(kSlotPayloadSize, data.len - offset));
+        }
+    }
+    return true;
 }
 
 template <typename PacketT>
@@ -131,11 +185,11 @@ bool TryInsertMessageIntoFrame(EthercatOutputFrame& frame, std::size_t slave, ui
     return InsertMessageIntoPacket(*packet, bus_idx, message);
 }
 
-void ForwardMessages(const MotorPackMsg* motors, std::size_t motor_count, std::size_t slave,
+void ForwardMessages(const EthercatCanSlot* motors, std::size_t motor_count, std::size_t slave,
                      std::size_t bus, MotorMessages& result) {
     for (std::size_t slot = 0; slot < motor_count; ++slot) {
         const auto& motor = motors[slot];
-        if (motor.len == 0) {
+        if (motor.len == 0 || motor.len > sizeof(motor.data)) {
             continue;
         }
         MotorMessage message{};
@@ -234,7 +288,7 @@ void EthercatBaseHandle::SetReceiveCallback(ReceiveCallback callback) {
 }
 
 EthercatBaseHandle::SlaveConfig EthercatBaseHandle::ClassifyOutputPdoSize(
-    std::size_t output_pdo_size) {
+    std::size_t output_pdo_size, std::size_t input_pdo_size) {
     SlaveConfig config;
     config.message_size = output_pdo_size;
     if (output_pdo_size == sizeof(EthercatClassicCanMsg2)) {
@@ -257,6 +311,11 @@ EthercatBaseHandle::SlaveConfig EthercatBaseHandle::ClassifyOutputPdoSize(
         config.format = SlaveFormat::CanFd3Bus;
         config.bus_count = PacketTraits<EthercatCanFdMsg3>::kBusCount;
         config.motors_per_bus = PacketTraits<EthercatCanFdMsg3>::kMotorsPerBus;
+    } else if (output_pdo_size == sizeof(EthercatCanFdMsg3x10) &&
+               input_pdo_size == sizeof(EthercatCanFdMsg3x10)) {
+        config.format = SlaveFormat::CanFd3Bus10Slots;
+        config.bus_count = EthercatCanFdMsg3x10::kBusCount;
+        config.motors_per_bus = EthercatCanFdMsg3x10::kSlotsPerBus;
     } else if (output_pdo_size == sizeof(EthercatGloveSlots)) {
         config.format = SlaveFormat::Glove;
         config.bus_count = PacketTraits<EthercatGloveSlots>::kBusCount;
@@ -267,6 +326,11 @@ EthercatBaseHandle::SlaveConfig EthercatBaseHandle::ClassifyOutputPdoSize(
 
 bool EthercatBaseHandle::HasSupportedPdo(const SlaveConfig& config) {
     return config.format != SlaveFormat::None && config.bus_count != 0;
+}
+
+bool EthercatBaseHandle::UsesCanFdSlots(SlaveFormat format) {
+    return format == SlaveFormat::CanFd3Bus || format == SlaveFormat::CanFd3Bus10Slots ||
+           format == SlaveFormat::CanFd8Bus || format == SlaveFormat::CanFd8Bus10Slots;
 }
 
 std::vector<int> EthercatBaseHandle::GetBusSizes() const {
@@ -280,10 +344,7 @@ std::vector<int> EthercatBaseHandle::GetBusSizes() const {
 void EthercatBaseHandle::QueueMessage(const MotorMessage& message) {
     ENCOS_TRACY_ZONE("EtherCAT::QueueMessage");
     platform::LockGuard<decltype(send_mutex_)> lock(send_mutex_);
-    if (pending_batches_.empty() || pending_batches_.back().synchronized) {
-        pending_batches_.push_back(PendingBatch{});
-    }
-    pending_batches_.back().messages.push_back(message);
+    PackBatchIntoSegmentsLocked({message}, false);
 }
 
 void EthercatBaseHandle::QueueMessages(const MotorMessages& messages) {
@@ -293,7 +354,7 @@ void EthercatBaseHandle::QueueMessages(const MotorMessages& messages) {
 
     ENCOS_TRACY_ZONE("EtherCAT::QueueMessages");
     platform::LockGuard<decltype(send_mutex_)> lock(send_mutex_);
-    AppendPendingMessagesLocked(messages, false);
+    PackBatchIntoSegmentsLocked(messages, false);
 }
 
 void EthercatBaseHandle::QueueSynchronizedMessages(const MotorMessages& messages) {
@@ -303,13 +364,13 @@ void EthercatBaseHandle::QueueSynchronizedMessages(const MotorMessages& messages
 
     ENCOS_TRACY_ZONE("EtherCAT::QueueSynchronizedMessages");
     platform::LockGuard<decltype(send_mutex_)> lock(send_mutex_);
-    AppendPendingMessagesLocked(messages, true);
+    PackBatchIntoSegmentsLocked(messages, true);
 }
 
 std::vector<EthercatBaseHandle::OutputFrame> EthercatBaseHandle::PackMessages(
     const MotorMessages& messages, std::size_t slave_count) const {
     std::deque<QueuedFrame> queue;
-    PackMessagesIntoQueue(messages, slave_count, queue, {});
+    PackMessagesIntoQueue(messages, slave_count, queue);
     std::vector<OutputFrame> frames;
     frames.reserve(queue.size());
     for (auto& queued : queue) {
@@ -320,7 +381,7 @@ std::vector<EthercatBaseHandle::OutputFrame> EthercatBaseHandle::PackMessages(
 
 void EthercatBaseHandle::PackMessagesIntoQueue(
     const MotorMessages& messages, std::size_t slave_count, std::deque<QueuedFrame>& send_queue,
-    const std::unordered_map<int, std::size_t>& bus_generations) const {
+    const std::unordered_map<int, std::size_t>* bus_generations) const {
     if (slave_count == 0) {
         return;
     }
@@ -353,12 +414,35 @@ void EthercatBaseHandle::PackMessagesIntoQueue(
             continue;
         }
 
+        const bool can_fd = UsesCanFdSlots(config.format);
+        const bool legacy_short_slots = config.format != SlaveFormat::CanFd3Bus10Slots;
+        if (can_fd) {
+            if (!IsValidCanFdPdoOutput(msg.data, legacy_short_slots)) {
+                logger_->error(
+                    "Invalid CAN frame for EtherCAT fragmented PDO: ID {}, flags {}, length {}",
+                    msg.data.id, static_cast<unsigned>(msg.data.frame_flags),
+                    static_cast<unsigned>(msg.data.len));
+                continue;
+            }
+        } else if (msg.data.len > kSlotPayloadSize) {
+            logger_->error("EtherCAT PDO payload exceeds 8 bytes: {}",
+                           static_cast<unsigned>(msg.data.len));
+            continue;
+        }
+
         const auto slave = static_cast<std::size_t>(slave_idx - 1);
-        const auto generation = [&bus_generations, encoded]() {
-            const auto found = bus_generations.find(encoded);
-            return found == bus_generations.end() ? std::size_t{0} : found->second;
+        const auto generation = [bus_generations, encoded]() {
+            if (bus_generations == nullptr) {
+                return std::size_t{0};
+            }
+            const auto found = bus_generations->find(encoded);
+            return found == bus_generations->end() ? std::size_t{0} : found->second;
         }();
-        const auto try_insert = [&config, slave, bus_idx, &msg](OutputFrame& frame) {
+        const auto try_insert = [&config, slave, bus_idx, &msg, can_fd](OutputFrame& frame) {
+            if (can_fd) {
+                return InsertCanFdMessage(frame[slave], config.message_size, bus_idx,
+                                          config.motors_per_bus, msg.data);
+            }
             switch (config.format) {
                 case SlaveFormat::ClassicCan2Bus:
                     return TryInsertMessageIntoFrame<EthercatClassicCanMsg2>(
@@ -366,15 +450,6 @@ void EthercatBaseHandle::PackMessagesIntoQueue(
                 case SlaveFormat::ClassicCan8Bus:
                     return TryInsertMessageIntoFrame<EthercatClassicCanMsg8>(
                         frame, slave, bus_idx, msg, config.message_size);
-                case SlaveFormat::CanFd8Bus:
-                    return TryInsertMessageIntoFrame<EthercatCanFdMsg8>(frame, slave, bus_idx, msg,
-                                                                        config.message_size);
-                case SlaveFormat::CanFd8Bus10Slots:
-                    return TryInsertMessageIntoFrame<EthercatCanFdMsg8x10>(
-                        frame, slave, bus_idx, msg, config.message_size);
-                case SlaveFormat::CanFd3Bus:
-                    return TryInsertMessageIntoFrame<EthercatCanFdMsg3>(frame, slave, bus_idx, msg,
-                                                                        config.message_size);
                 case SlaveFormat::Glove:
                     return TryInsertMessageIntoFrame<EthercatGloveSlots>(frame, slave, bus_idx, msg,
                                                                          config.message_size);
@@ -383,14 +458,35 @@ void EthercatBaseHandle::PackMessagesIntoQueue(
                     return false;
             }
         };
+
+        auto first = send_queue.begin();
+        if (can_fd) {
+            const auto last = std::find_if(
+                send_queue.rbegin(), send_queue.rend(),
+                [slave, bus_idx, &config](const auto& queued) {
+                    const auto& buffer = queued.frame[slave];
+                    if (buffer.empty()) {
+                        return false;
+                    }
+                    const auto* slots = reinterpret_cast<const EthercatCanSlot*>(buffer.data());
+                    return slots[bus_idx * config.motors_per_bus].len != 0;
+                });
+            if (last != send_queue.rend()) {
+                first = std::prev(last.base());
+            }
+        }
         bool inserted = false;
-        for (auto& queued : send_queue) {
+        for (auto it = first; it != send_queue.end(); ++it) {
+            auto& queued = *it;
             const auto found = queued.bus_generations.find(encoded);
-            if (found != queued.bus_generations.end() && found->second != generation) {
+            if (bus_generations != nullptr && found != queued.bus_generations.end() &&
+                found->second != generation) {
                 continue;
             }
             if (try_insert(queued.frame)) {
-                queued.bus_generations.emplace(encoded, generation);
+                if (bus_generations != nullptr) {
+                    queued.bus_generations.emplace(encoded, generation);
+                }
                 inserted = true;
                 break;
             }
@@ -407,7 +503,9 @@ void EthercatBaseHandle::PackMessagesIntoQueue(
                           static_cast<int>(bus_idx));
             continue;
         }
-        queued.bus_generations.emplace(encoded, generation);
+        if (bus_generations != nullptr) {
+            queued.bus_generations.emplace(encoded, generation);
+        }
         send_queue.push_back(std::move(queued));
     }
 }
@@ -426,22 +524,37 @@ std::unordered_set<int> EthercatBaseHandle::CollectPackableBuses(const MotorMess
         if (config.bus_count == 0 || bus_idx >= config.bus_count || config.motors_per_bus == 0) {
             continue;
         }
+        if (UsesCanFdSlots(config.format)) {
+            if (!IsValidCanFdPdoOutput(message.data,
+                                       config.format != SlaveFormat::CanFd3Bus10Slots)) {
+                continue;
+            }
+        } else if (message.data.len > kSlotPayloadSize) {
+            continue;
+        }
         buses.insert(encoded);
     }
     return buses;
 }
 MotorMessages EthercatBaseHandle::DecodeInputs(const std::vector<const uint8_t*>& inputs,
-                                               std::size_t slave_count) {
+                                               std::size_t slave_count,
+                                               std::chrono::microseconds cycle_period,
+                                               InputClock::time_point now) {
     MotorMessages result;
 
     for (std::size_t slave = 0; slave < slave_count; ++slave) {
-        if (slave >= slave_configs_.size() || slave >= inputs.size()) {
+        if (slave >= slave_configs_.size()) {
             continue;
         }
 
         const auto& config = slave_configs_[slave];
-        const auto* input = inputs[slave];
+        const auto* input = slave < inputs.size() ? inputs[slave] : nullptr;
         if (!input || config.bus_count == 0 || config.format == SlaveFormat::None) {
+            if (slave < input_fragments_.size()) {
+                for (auto& groups : input_fragments_[slave]) {
+                    groups = {};
+                }
+            }
             continue;
         }
 
@@ -454,13 +567,10 @@ MotorMessages EthercatBaseHandle::DecodeInputs(const std::vector<const uint8_t*>
                 DecodePacketInputs<EthercatClassicCanMsg8>(input, bus_count, slave, result);
                 break;
             case SlaveFormat::CanFd8Bus:
-                DecodePacketInputs<EthercatCanFdMsg8>(input, bus_count, slave, result);
-                break;
             case SlaveFormat::CanFd8Bus10Slots:
-                DecodePacketInputs<EthercatCanFdMsg8x10>(input, bus_count, slave, result);
-                break;
             case SlaveFormat::CanFd3Bus:
-                DecodePacketInputs<EthercatCanFdMsg3>(input, bus_count, slave, result);
+            case SlaveFormat::CanFd3Bus10Slots:
+                DecodeFragmentedInputs(input, slave, cycle_period, now, result);
                 break;
             case SlaveFormat::Glove:
                 DecodePacketInputs<EthercatGloveSlots>(input, bus_count, slave, result);
@@ -474,22 +584,114 @@ MotorMessages EthercatBaseHandle::DecodeInputs(const std::vector<const uint8_t*>
     return result;
 }
 
-void EthercatBaseHandle::FlushPendingMessagesLocked(std::size_t slave_count) {
-    if (pending_batches_.empty()) {
-        return;
+void EthercatBaseHandle::DecodeFragmentedInputs(const uint8_t* input, std::size_t slave,
+                                                std::chrono::microseconds cycle_period,
+                                                InputClock::time_point now, MotorMessages& result) {
+    if (input_fragments_.size() != slave_configs_.size()) {
+        input_fragments_.resize(slave_configs_.size());
     }
+    const auto& config = slave_configs_[slave];
+    auto& slave_fragments = input_fragments_[slave];
+    if (slave_fragments.size() != config.bus_count) {
+        slave_fragments.resize(config.bus_count);
+    }
+    const bool legacy_short_slots = config.format != SlaveFormat::CanFd3Bus10Slots;
+    const auto* slots = reinterpret_cast<const EthercatCanSlot*>(input);
+    for (std::size_t bus = 0; bus < config.bus_count; ++bus) {
+        auto& groups = slave_fragments[bus];
+        for (auto& group : groups) {
+            if (group.from_previous_pdo || now >= group.deadline) {
+                group.received = 0;
+            }
+            group.from_previous_pdo = group.received != 0;
+        }
 
-    while (!pending_batches_.empty()) {
-        auto batch = std::move(pending_batches_.front());
-        pending_batches_.pop_front();
-        PackBatchIntoSegmentsLocked(batch.messages, slave_count, batch.synchronized);
+        const auto bus_idx = static_cast<int>((slave << 16) | bus);
+        for (std::size_t i = 0; i < config.motors_per_bus; ++i) {
+            const auto& slot = slots[bus * config.motors_per_bus + i];
+            const auto flags = SanitizeCanFrameFlags(slot.frame_flags);
+            const auto id = ReadSlotId(slot);
+            if (slot.len == 0 || ((!legacy_short_slots || slot.len > kSlotPayloadSize) &&
+                                  !IsValidCanFdPdoMessage(id, flags, slot.len))) {
+                continue;
+            }
+            const auto normalized_flags = static_cast<uint8_t>(
+                (flags & kCanFrameFlagFdBit1) != 0 ? flags | kCanFrameFlagFdMask : flags);
+            if (slot.len <= kSlotPayloadSize) {
+                if (slot.frame_flags == flags) {
+                    MotorMessage message{bus_idx, {id, normalized_flags, slot.len, {}}};
+                    if (!CanFrameFlagsUseRtr(flags)) {
+                        std::memcpy(message.data.data, slot.data, slot.len);
+                    }
+                    result.push_back(message);
+                }
+                continue;
+            }
+            if ((slot.frame_flags & kFragmentFlag) == 0) {
+                continue;
+            }
+
+            const auto count = SlotsForPayload(slot.len);
+            const auto index = static_cast<unsigned>(slot.frame_flags >> kFragmentIndexShift);
+            auto group = std::find_if(groups.begin(), groups.end(), [&](const auto& entry) {
+                return entry.received != 0 && entry.message.id == id &&
+                       entry.message.frame_flags == flags && entry.message.len == slot.len;
+            });
+            if (index >= count) {
+                if (group != groups.end()) {
+                    group->received = 0;
+                }
+                continue;
+            }
+            if (index == 0) {
+                if (group == groups.end()) {
+                    group = std::find_if(groups.begin(), groups.end(), [](const auto& entry) {
+                        return entry.received == 0;
+                    });
+                    if (group == groups.end()) {
+                        continue;
+                    }
+                }
+                *group = {{id, flags, slot.len, {}}, now + 2 * cycle_period, 0, false};
+            } else if (group == groups.end()) {
+                continue;
+            }
+
+            const auto offset = index * kSlotPayloadSize;
+            const auto size = std::min(kSlotPayloadSize, slot.len - offset);
+            auto* target = group->message.data + offset;
+            const unsigned bit = 1U << index;
+            if ((group->received & bit) != 0) {
+                if (std::memcmp(target, slot.data, size) != 0) {
+                    group->received = 0;
+                }
+                continue;
+            }
+            std::memcpy(target, slot.data, size);
+            group->received |= bit;
+            if (group->received == (1U << count) - 1) {
+                group->message.frame_flags = normalized_flags;
+                result.push_back({bus_idx, group->message});
+                group->received = 0;
+            }
+        }
     }
-    if (queued_frame_count_ > kSendQueueHighLoadThreshold) {
-        const std::size_t discarded_frame_count = queued_frame_count_ - 1U;
+}
+
+void EthercatBaseHandle::ResetInputFragments() {
+    for (auto& slave : input_fragments_) {
+        for (auto& groups : slave) {
+            groups = {};
+        }
+    }
+}
+
+void EthercatBaseHandle::TrimSendQueueLocked() {
+    if (send_frames_.size() > kSendQueueHighLoadThreshold) {
+        const std::size_t discarded_frame_count = send_frames_.size() - 1U;
         auto newest_frame = std::move(send_frames_.back());
         send_frames_.clear();
         send_frames_.push_back(std::move(newest_frame));
-        queued_frame_count_ = 1U;
         if (!send_queue_warnings_suppressed_) {
             logger_->warn("EtherCAT Send Queue high load: discarded {} pending EC frames",
                           discarded_frame_count);
@@ -501,50 +703,28 @@ void EthercatBaseHandle::SetSendQueueWarningsSuppressed(bool suppressed) {
     send_queue_warnings_suppressed_ = suppressed;
 }
 
-void EthercatBaseHandle::AppendPendingMessagesLocked(const MotorMessages& messages,
-                                                     bool synchronized) {
-    if (!synchronized && !pending_batches_.empty() && !pending_batches_.back().synchronized) {
-        auto& pending = pending_batches_.back().messages;
-        pending.insert(pending.end(), messages.begin(), messages.end());
-        return;
-    }
-
-    pending_batches_.push_back(PendingBatch{messages, synchronized});
-}
-
 void EthercatBaseHandle::PackBatchIntoSegmentsLocked(const MotorMessages& messages,
-                                                     std::size_t slave_count, bool synchronized) {
-    if (messages.empty()) {
-        return;
-    }
-    const auto packable_buses = CollectPackableBuses(messages, slave_count);
+                                                     bool synchronized) {
+    const auto slave_count = slave_configs_.size();
+    PackMessagesIntoQueue(messages, slave_count, send_frames_,
+                          synchronized ? &bus_generations_ : nullptr);
     if (synchronized) {
-        for (const int bus : packable_buses) {
+        for (const int bus : CollectPackableBuses(messages, slave_count)) {
             ++bus_generations_[bus];
         }
     }
-    const auto previous_size = send_frames_.size();
-    PackMessagesIntoQueue(messages, slave_count, send_frames_, bus_generations_);
-    queued_frame_count_ += send_frames_.size() - previous_size;
-    if (synchronized) {
-        for (const int bus : packable_buses) {
-            ++bus_generations_[bus];
-        }
-    }
+    TrimSendQueueLocked();
 }
 
-bool EthercatBaseHandle::PrepareNextFrame(OutputFrame& frame, std::size_t slave_count) {
+bool EthercatBaseHandle::PrepareNextFrame(OutputFrame& frame) {
     ENCOS_TRACY_ZONE("EtherCAT::TakePendingSendQueue");
     platform::LockGuard<decltype(send_mutex_)> lock(send_mutex_);
-    FlushPendingMessagesLocked(slave_count);
     if (send_frames_.empty()) {
         frame.clear();
         return false;
     }
-
     frame = std::move(send_frames_.front().frame);
     send_frames_.pop_front();
-    --queued_frame_count_;
     return true;
 }
 EthercatBaseHandle::ReceiveCallback EthercatBaseHandle::CopyReceiveCallback() const {

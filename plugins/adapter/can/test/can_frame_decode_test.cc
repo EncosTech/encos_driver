@@ -11,7 +11,7 @@
 namespace encos {
 namespace {
 
-/** @brief 构造一帧 canfd_frame；flags 为内核投递时携带的 canfd_frame::flags */
+// flags 为内核投递时携带的 canfd_frame::flags。
 canfd_frame MakeFrame(uint32_t can_id, uint8_t len, std::uint8_t flags = 0) {
     canfd_frame frame{};
     frame.can_id = can_id;
@@ -44,13 +44,15 @@ TEST(CanFrameDecodeTests, FdFrameIsMarkedFd) {
     EXPECT_EQ(message.len, 8u);
 }
 
-TEST(CanFrameDecodeTests, LongerFdPayloadIsClampedToTheFixedPayloadSize) {
-    // 内部帧负载固定 8 字节：更长的 FD 帧按 8 字节截断（仓库既有限制，非本次改动引入）
-    const auto frame = MakeFrame(0x123u, 12, CANFD_FDF);
-    const auto message = DecodeCanFrame(frame, CANFD_MTU);
-
-    EXPECT_EQ(message.len, 8u);
-    EXPECT_EQ(message.data[7], 0xA7u);
+TEST(CanFrameDecodeTests, PreservesAllCanFdPayloadLengths) {
+    for (const uint8_t length : {0, 8, 12, 16, 20, 24, 32, 48, 64}) {
+        const auto frame = MakeFrame(0x123u, length, CANFD_FDF);
+        const auto message = DecodeCanFrame(frame, CANFD_MTU);
+        ASSERT_EQ(message.len, length);
+        for (std::size_t i = 0; i < length; ++i) {
+            EXPECT_EQ(message.data[i], frame.data[i]);
+        }
+    }
 }
 
 TEST(CanFrameDecodeTests, ClassicSocketReadsAreNotMarkedFd) {

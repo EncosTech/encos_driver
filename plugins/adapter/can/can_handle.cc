@@ -46,7 +46,8 @@ MotorPackMsg DecodeCanFrame(const struct canfd_frame& frame, ssize_t nbytes) {
         flags |= kCanFrameFlagFdMask;
     }
     msg.frame_flags = SanitizeCanFrameFlags(flags);
-    msg.len = static_cast<uint8_t>(std::min<std::size_t>(frame.len, sizeof(msg.data)));
+    msg.len = static_cast<uint8_t>(std::min<std::size_t>(
+        frame.len, CanFrameFlagsUseCanFd(flags) ? CANFD_MAX_DLEN : CAN_MAX_DLEN));
     if ((msg.frame_flags & kCanFrameFlagRtr) == 0) {
         std::memcpy(msg.data, frame.data, msg.len);
     }
@@ -117,8 +118,9 @@ void CanHandle::Send(const MotorMessage& message) {
         logger->error("Invalid CAN FD flag bits in SocketCAN message: {:#04x}", flags);
         return;
     }
-    if (msg.len > 8) {
-        logger->error("SocketCAN message length exceeds supported payload: {}", msg.len);
+    if (msg.len > (CanFrameFlagsUseCanFd(flags) ? CANFD_MAX_DLEN : CAN_MAX_DLEN)) {
+        logger->error("SocketCAN message length exceeds supported payload: {}",
+                      static_cast<unsigned>(msg.len));
         return;
     }
 
@@ -163,7 +165,7 @@ void CanHandle::Send(const MotorMessage& message) {
         if (rtr) {
             frame.can_id |= CAN_RTR_FLAG;
         }
-        frame.len = msg.len;
+        frame.can_dlc = msg.len;
         if (!rtr) {
             std::memcpy(frame.data, msg.data, msg.len);
         }

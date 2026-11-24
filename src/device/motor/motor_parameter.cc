@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Encos
 // SPDX-License-Identifier: MIT
 
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -19,6 +20,8 @@
 namespace encos {
 
 namespace {
+
+std::atomic<unsigned int> motor_retry_count{1};
 
 template <typename>
 struct AlwaysFalse : std::false_type {};
@@ -137,11 +140,18 @@ void Motor::QueryFirmwareVersion() {
     platform::LockGuard<platform::Mutex> ranges_lock(impl_->feedback_ranges_mutex);
     impl_->ranges.fw_version = version;
 }
-bool Motor::SetId(uint16_t new_idx, bool wait_for_ack) {
+bool Motor::SetId(uint32_t new_idx, bool wait_for_ack) {
+    if (new_idx > 0xFFFFU) {
+        return false;
+    }
     auto operation = EncosDriverManager::Instance().AcquireDeviceOperation(this);
     platform::LockGuard<platform::RecursiveMutex> lock(impl_->motor_mutex);
     if (!impl_->bus)
         throw std::runtime_error("Bus not initialized");
+
+    if (impl_->idx.load(std::memory_order_relaxed) > 0xFFFFU) {
+        return false;
+    }
 
     MotorPackMsg msg{};
     msg.id = 0x7FF;
@@ -192,6 +202,10 @@ bool Motor::SetPos(double now_pos) {
     }
     const int16_t position = static_cast<int16_t>(centidegrees);
 
+    if (impl_->idx.load(std::memory_order_relaxed) > 0xFFFFU) {
+        return false;
+    }
+
     MotorPackMsg msg{};
     msg.id = 0x7FF;
     msg.len = 6;
@@ -203,14 +217,11 @@ bool Motor::SetPos(double now_pos) {
     msg.data[4] = static_cast<uint8_t>(position >> 8);
     msg.data[5] = static_cast<uint8_t>(position & 0xFF);
 
-    const auto res = SendAndWait(
-        msg,
-        [this](const MotorPackMsg& pack) {
-            const auto motor_idx = impl_->idx.load(std::memory_order_relaxed);
-            return pack.data[0] == static_cast<uint8_t>(motor_idx >> 8) &&
-                   pack.data[1] == static_cast<uint8_t>(motor_idx & 0xFF) && pack.data[3] == 0x03;
-        },
-        std::chrono::milliseconds(1000));
+    const auto res = SendAndWait(msg, [this](const MotorPackMsg& pack) {
+        const auto motor_idx = impl_->idx.load(std::memory_order_relaxed);
+        return pack.data[0] == static_cast<uint8_t>(motor_idx >> 8) &&
+               pack.data[1] == static_cast<uint8_t>(motor_idx & 0xFF) && pack.data[3] == 0x03;
+    });
     return res.has_value();
 }
 bool Motor::ResetZeroPos(bool wait_for_ack) {
@@ -218,6 +229,10 @@ bool Motor::ResetZeroPos(bool wait_for_ack) {
     platform::LockGuard<platform::RecursiveMutex> lock(impl_->motor_mutex);
     if (!impl_->bus)
         throw std::runtime_error("Bus not initialized");
+
+    if (impl_->idx.load(std::memory_order_relaxed) > 0xFFFFU) {
+        return false;
+    }
 
     MotorPackMsg msg{};
     msg.id = 0x7FF;
@@ -233,14 +248,11 @@ bool Motor::ResetZeroPos(bool wait_for_ack) {
         return true;
     }
 
-    const auto res = SendAndWait(
-        msg,
-        [this](const MotorPackMsg& pack) {
-            const auto motor_idx = impl_->idx.load(std::memory_order_relaxed);
-            return pack.data[0] == static_cast<uint8_t>(motor_idx >> 8) &&
-                   pack.data[1] == static_cast<uint8_t>(motor_idx & 0xFF) && pack.data[3] == 0x03;
-        },
-        std::chrono::milliseconds(1000));
+    const auto res = SendAndWait(msg, [this](const MotorPackMsg& pack) {
+        const auto motor_idx = impl_->idx.load(std::memory_order_relaxed);
+        return pack.data[0] == static_cast<uint8_t>(motor_idx >> 8) &&
+               pack.data[1] == static_cast<uint8_t>(motor_idx & 0xFF) && pack.data[3] == 0x03;
+    });
     return res.has_value();
 }
 bool Motor::SetPVTKpRange(Range<uint16_t> kp_range, bool wait_for_ack) {
@@ -603,8 +615,17 @@ bool Motor::SetPosPD(float kp, float kd, bool wait_for_ack) {
         {static_cast<uint8_t>(kp_int >> 8), static_cast<uint8_t>(kp_int & 0xFF),
          static_cast<uint8_t>(kd_int >> 8), static_cast<uint8_t>(kd_int & 0xFF)});
 }
+void SetMotorRetryCount(unsigned int retry_count) {
+    motor_retry_count.store(retry_count, std::memory_order_relaxed);
+}
+
+unsigned int GetMotorRetryCount() {
+    return motor_retry_count.load(std::memory_order_relaxed);
+}
+
 template <MotorParameter Param>
 auto Motor::GetParameter() -> MotorParameterRetType<Param> {
+    const auto retry_count = GetMotorRetryCount();
     auto operation = EncosDriverManager::Instance().AcquireDeviceOperation(this);
     platform::LockGuard<platform::RecursiveMutex> lock(impl_->motor_mutex);
     using RawType = MotorParameterRawType<Param>;
@@ -625,7 +646,7 @@ auto Motor::GetParameter() -> MotorParameterRetType<Param> {
     };
 
     auto packet = SendAndWait(msg, checker);
-    if (!packet) {
+    for (unsigned int retry = 0; !packet && retry < retry_count; ++retry) {
         packet = SendAndWait(msg, checker);
     }
 

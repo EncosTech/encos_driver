@@ -4,11 +4,19 @@
 #include <cstdint>
 #include <gtest/gtest.h>
 
+#include "device/device_plugin_validation.h"
 #include "test_claim_device.h"
 #include "test_device.h"
 
 namespace encos {
 namespace {
+
+TEST(DevicePluginIsolationTest, RejectsOldEightByteMessageAbi) {
+    auto descriptor = *MakeTestDeviceDriver();
+    EXPECT_NO_THROW(ValidateDeviceDescriptor("TestDevice", &descriptor));
+    descriptor.abi_version = 1;
+    EXPECT_THROW(ValidateDeviceDescriptor("TestDevice", &descriptor), std::runtime_error);
+}
 
 TEST(DevicePluginIsolationTest, FactoriesKeepIndependentDescriptorsAndRoutes) {
     const auto* first = MakeTestDeviceDriver();

@@ -352,6 +352,8 @@ TEST(BusSoftSyncTests, AdapterModeIsInheritedByNewBuses) {
 
     auto* bus = adapter->GetBus(0);
     auto* motor = bus->GetMotor(1, MotorModel::EC_A4310_P2);
+    ASSERT_EQ(adapter->GetSentMessages().size(), 1U);
+    adapter->ClearSentMessages();
     motor->SpdControl<0>(1.0F, 2.0F);
     EXPECT_TRUE(adapter->GetSentMessages().empty());
 
@@ -432,7 +434,7 @@ TEST(AdapterSoftSyncTests, EmptyCommitIsHarmless) {
     EXPECT_TRUE(EncosDriverManager::Instance().DestroyAdapter(adapter));
 }
 
-TEST(AdapterSoftSyncTests, MotorBatteryAndPmsUseRegistrationOrderInOneBatch) {
+TEST(AdapterSoftSyncTests, PmsIsImmediateWhileMotorAndBatteryKeepRegistrationOrder) {
     auto* adapter = MakeManagedTestAdapter("soft-sync-device-types");
     auto* bus = adapter->GetBus(0);
     auto* motor = bus->GetMotor(1, MotorModel::EC_A4310_P2);
@@ -447,11 +449,38 @@ TEST(AdapterSoftSyncTests, MotorBatteryAndPmsUseRegistrationOrderInOneBatch) {
     adapter->Commit();
 
     const auto batches = adapter->GetSentBatches();
-    ASSERT_EQ(batches.size(), 1U);
-    ASSERT_EQ(batches.front().size(), 3U);
-    EXPECT_EQ(batches.front()[0].data.id, 1U);
-    EXPECT_EQ(batches.front()[1].data.id, 0x4F6U);
-    EXPECT_EQ(batches.front()[2].data.id, 0x18F3FFF2U);
+    ASSERT_EQ(batches.size(), 2U);
+    ASSERT_EQ(batches[0].size(), 1U);
+    EXPECT_EQ(batches[0][0].data.id, 0x18F3FFF2U);
+    ASSERT_EQ(batches[1].size(), 2U);
+    EXPECT_EQ(batches[1][0].data.id, 1U);
+    EXPECT_EQ(batches[1][1].data.id, 0x4F8U);
+    EXPECT_TRUE(EncosDriverManager::Instance().DestroyAdapter(adapter));
+}
+
+TEST(BusSoftSyncTests, OnlyMotionControlsWaitForCommit) {
+    auto* adapter = MakeManagedTestAdapter("soft-sync-command-classification");
+    auto* bus = adapter->GetBus(0);
+    auto* motor = bus->GetMotor(1, MotorModel::EC_A4310_P2);
+    adapter->ClearSentMessages();
+    bus->SetSyncMode(true);
+
+    motor->PVTControl<0>(1, 1, 0, 0, 0);
+    motor->PosControl<0>(0, 1, 1);
+    motor->SpdControl<0>(1, 1);
+    motor->CurControl<0>(1);
+    motor->TorControl<0>(1);
+    EXPECT_TRUE(adapter->GetSentMessages().empty());
+    motor->Stop<0>(MotorStopMode::FullBrake, 0);
+    motor->Brake(true, false);
+    bus->ResetMotorsId(false);
+    EXPECT_TRUE(bus->StartAutoAssignCanId(2));
+    EXPECT_TRUE(bus->StopAutoAssignCanId());
+    EXPECT_EQ(adapter->GetSentMessages().size(), 5U);
+    bus->Commit();
+    const auto batches = adapter->GetSentBatches();
+    ASSERT_EQ(batches.size(), 6U);
+    EXPECT_EQ(batches.back().size(), 5U);
     EXPECT_TRUE(EncosDriverManager::Instance().DestroyAdapter(adapter));
 }
 
@@ -1584,6 +1613,23 @@ TEST(BatteryTests, ClearFaultSendsPassiveCommandFrame) {
     ASSERT_EQ(sent.size(), 1u);
     EXPECT_EQ(sent[0].bus_idx, 0);
     EXPECT_EQ(sent[0].data.id, 0x4F4u);
+    EXPECT_EQ(sent[0].data.len, 2u);
+    EXPECT_EQ(sent[0].data.data[0], 0x80);
+    EXPECT_EQ(sent[0].data.data[1], 0x00);
+}
+
+TEST(BatteryTests, ConfiguredIdOneSendsPassiveCommandTo4F6) {
+    auto* adapter = MakeManagedTestAdapter();
+    auto bus = adapter->GetBus(0);
+    auto battery = bus->GetBattery(1);
+
+    battery->ClearFault();
+
+    ASSERT_TRUE(adapter->WaitForSentCount(1));
+    const auto sent = adapter->GetSentMessages();
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].bus_idx, 0);
+    EXPECT_EQ(sent[0].data.id, 0x4F6u);
     EXPECT_EQ(sent[0].data.len, 2u);
     EXPECT_EQ(sent[0].data.data[0], 0x80);
     EXPECT_EQ(sent[0].data.data[1], 0x00);

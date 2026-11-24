@@ -3,7 +3,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
+#else
+#define EMSCRIPTEN_KEEPALIVE
+#endif
 #include <exception>
 #include <limits>
 #include <string>
@@ -161,10 +165,12 @@ void encos_clear_last_error() {
     encos::wasm::Store().ClearLastError();
 }
 
+#ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE
 const char* encos_get_version() {
     return ENCOS_PROJECT_VERSION;
 }
+#endif
 
 EMSCRIPTEN_KEEPALIVE
 int encos_create_adapter(const char* adapter_type, const char* interface_name,

@@ -151,10 +151,14 @@ function(encos_configure_tests)
     add_executable(${ENCOS_DRIVER_BASE_TEST_TARGET}
         src/wasm/wasm_runtime.cc
         tests/core/test_adapter.cc
+        tests/core/submotor_test.cc
         tests/core/adapter_extend_test.cc
         tests/core/adapter_bus_update_test.cc
         tests/core/adapter_routing_test.cc
+        tests/core/adapter_statistics_test.cc
+        tests/core/adapter_worker_test.cc
         tests/core/device/battery_callback_test.cc
+        tests/core/device/dex_hand_test.cc
         tests/core/bus_port_scan_test.cc
         tests/core/driver_manager_test.cc
         tests/core/plugin/plugin_ownership_test.cc
@@ -240,6 +244,19 @@ function(encos_configure_tests)
              COMMAND EncosMotorLogShutdownTest)
     set_tests_properties(EncosMotorLogShutdownFlushes PROPERTIES TIMEOUT 3)
 
+    # GsUsb 的协议和位时序不依赖 WinUSB，在非 Windows 平台也执行回归测试。
+    if(NOT TARGET GsUsbPluginCore)
+        encos_register_plugin_tests(
+            SOURCES
+                ${CMAKE_CURRENT_SOURCE_DIR}/plugins/adapter/gsUsb/protocol/gs_usb_protocol.cc
+                ${CMAKE_CURRENT_SOURCE_DIR}/plugins/adapter/gsUsb/test/gs_usb_protocol_test.cc
+                ${CMAKE_CURRENT_SOURCE_DIR}/plugins/adapter/gsUsb/test/gs_usb_timing_test.cc
+            INCLUDE_DIRECTORIES
+                ${CMAKE_CURRENT_SOURCE_DIR}/plugins/adapter/gsUsb
+                ${CMAKE_CURRENT_SOURCE_DIR}/plugins/adapter/gsUsb/protocol
+        )
+    endif()
+
     get_property(_plugin_test_sources GLOBAL PROPERTY _ENCOS_PLUGIN_TEST_SOURCES)
     get_property(_plugin_test_libraries GLOBAL PROPERTY _ENCOS_PLUGIN_TEST_LIBRARIES)
     get_property(_plugin_test_include_directories GLOBAL
@@ -309,17 +326,26 @@ function(encos_configure_tests)
         )
     endif()
 
+    set(_gtest_discovery_args)
+    if(WIN32)
+        # Windows 上刚链接的测试程序首次启动可能超过默认的 5 秒。
+        list(APPEND _gtest_discovery_args DISCOVERY_TIMEOUT 60)
+    endif()
+
     if(ENCOS_ENABLE_TSAN)
         gtest_discover_tests(${ENCOS_DRIVER_BASE_TEST_TARGET}
+            ${_gtest_discovery_args}
             DISCOVERY_MODE PRE_TEST
             PROPERTIES ENVIRONMENT "ENCOS_DISABLE_PRIORITY_GUI=1"
         )
     else()
         gtest_discover_tests(${ENCOS_DRIVER_BASE_TEST_TARGET}
+            ${_gtest_discovery_args}
             PROPERTIES ENVIRONMENT "ENCOS_DISABLE_PRIORITY_GUI=1"
         )
     endif()
     gtest_discover_tests(${ENCOS_DRIVER_PLUGINS_TEST_TARGET}
+        ${_gtest_discovery_args}
         PROPERTIES ENVIRONMENT "ENCOS_DISABLE_PRIORITY_GUI=1"
     )
 

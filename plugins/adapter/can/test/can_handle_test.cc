@@ -34,6 +34,18 @@ protected:
     std::thread thread_;
 };
 
+TEST_F(CanHandleTests, RejectsOversizedClassicAndFdMessages) {
+    encos::MotorMessage message{};
+    message.data.id = 1;
+    message.data.len = 9;
+    handle_->Send(message);
+    message.data.frame_flags = encos::kCanFrameFlagFdMask;
+    message.data.len = 65;
+    handle_->Send(message);
+    pollfd descriptor{sockets_[1], POLLIN, 0};
+    EXPECT_EQ(poll(&descriptor, 1, 20), 0);
+}
+
 TEST_F(CanHandleTests, StoppedHandleDoesNotSend) {
     handle_->Stop();
     encos::MotorMessage message{};

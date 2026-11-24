@@ -44,6 +44,7 @@ struct RouteRecord {
     Bus* bus = nullptr;
     BaseAdapter* adapter = nullptr;
     EncosDriverManager::ReceiveCallback callback;
+    bool (*accepts)(const MotorPackMsg&) noexcept = nullptr;
     platform::Mutex mutex;
     std::condition_variable_any condition;
     std::size_t in_flight = 0;
@@ -59,7 +60,8 @@ enum class DeviceKind : std::uint8_t {
     Pms,
     GloveEncoder,
     GloveCalibrator,
-    External
+    External,
+    DexHand
 };
 
 inline uint8_t WithCanFdFlag(uint8_t frame_flags, bool canfd) {
@@ -149,6 +151,8 @@ struct RouteKeyHash {
 struct DeviceRoute {
     EncosDriverManager::ReceiveCallback callback;
     EncosDriverManager::CancellationCallback cancel_waiters;
+    /** @brief 可在路由锁内执行的无状态报文匹配 */
+    bool (*accepts)(const MotorPackMsg&) noexcept = nullptr;
 };
 struct DeviceRecipe {
     DeviceKind kind;
@@ -444,7 +448,7 @@ struct EncosDriverManager::Impl {
         return adapter_status_configs[adapter];
     }
 
-    DeviceWriteFunction MakeWriter(Bus* bus) {
+    DeviceWriteFunction MakeWriter(Bus* bus, bool immediate = false) {
         BaseAdapter* adapter = nullptr;
         {
             platform::LockGuard<platform::Mutex> lock(object_mutex);
@@ -454,7 +458,7 @@ struct EncosDriverManager::Impl {
             }
             adapter = it->second.adapter;
         }
-        return adapter->MakeDeviceWriter(bus);
+        return adapter->MakeDeviceWriter(bus, immediate);
     }
 
     /** @brief 各 Motor 构造重载复用相同的接收与取消能力。 */
@@ -530,6 +534,7 @@ struct EncosDriverManager::Impl {
             record->bus = bus;
             record->adapter = adapter;
             record->callback = binding.callback;
+            record->accepts = binding.accepts;
             registration.routes.push_back({key, std::move(record), false});
         }
         auto inserted = registrations.emplace(device, std::move(registration));

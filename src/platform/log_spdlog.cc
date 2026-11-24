@@ -3,6 +3,7 @@
 
 #include "platform/log.h"
 
+#include <cstdlib>
 #include <spdlog/async.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -70,11 +71,16 @@ Logger::Logger(std::string name, LogLevel level) : impl_(std::make_unique<Impl>(
     }
     auto logger = spdlog::get(impl_->name);
     if (!logger) {
+        const char* output = std::getenv("ENCOS_LOG_OUTPUT");
+        const bool stderr_output = output && std::string(output) == "stderr";
+
 #ifdef _WIN32
-        // A DLL must not join the async logging pool while Windows holds the loader lock.
-        logger = spdlog::stdout_color_mt(impl_->name);
+        // DLL 入口可能持有 Windows 加载器锁，此时使用同步日志。
+        logger = stderr_output ? spdlog::stderr_color_mt(impl_->name)
+                               : spdlog::stdout_color_mt(impl_->name);
 #else
-        logger = spdlog::stdout_color_mt<spdlog::async_factory>(impl_->name);
+        logger = stderr_output ? spdlog::stderr_color_mt<spdlog::async_factory>(impl_->name)
+                               : spdlog::stdout_color_mt<spdlog::async_factory>(impl_->name);
 #endif
     }
     logger->set_level(ToSpdlogLevel(level));

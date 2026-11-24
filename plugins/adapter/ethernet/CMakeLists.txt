@@ -18,6 +18,12 @@ set_target_properties(EthernetAdapterSupport PROPERTIES POSITION_INDEPENDENT_COD
 target_include_directories(EthernetAdapterSupport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
 target_include_directories(EthernetAdapterSupport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 target_link_libraries(EthernetAdapterSupport PUBLIC EthernetManagement)
+
+if(ENCOS_ENABLE_TRACY)
+    target_include_directories(EthernetAdapterSupport PRIVATE ${ENCOS_TRACY_SOURCE_DIR}/public)
+    target_compile_definitions(EthernetAdapterSupport PRIVATE TRACY_ENABLE TRACY_ON_DEMAND)
+endif()
+
 if(WIN32)
     target_sources(EthernetManagement PRIVATE transport/windows/datagram.cc)
     target_compile_definitions(EthernetManagement PUBLIC _WIN32_WINNT=0x0600 WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -36,23 +42,55 @@ else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(XDP REQUIRED IMPORTED_TARGET libxdp)
     pkg_check_modules(BPF REQUIRED IMPORTED_TARGET libbpf)
+    pkg_check_modules(SYSTEMD REQUIRED libsystemd)
     find_program(BPF_CLANG NAMES clang clang-20 clang-19 clang-18 clang-17 clang-16 REQUIRED)
+    set(_ethernet_link_libraries PkgConfig::XDP PkgConfig::BPF)
+    if(ENCOS_PORTABLE_LINUX)
+        pkg_check_modules(ETHERNET_PORTABLE REQUIRED libxdp libbpf libelf zlib libcap)
+        set(_ethernet_link_libraries "")
+        foreach(_library IN LISTS ETHERNET_PORTABLE_STATIC_LIBRARIES)
+            if(_library MATCHES "^(pthread|dl|rt|m)$")
+                list(APPEND _ethernet_link_libraries "${_library}")
+            else()
+                unset(_ethernet_archive CACHE)
+                find_library(_ethernet_archive NAMES "lib${_library}.a"
+                    PATHS ${ETHERNET_PORTABLE_STATIC_LIBRARY_DIRS} NO_DEFAULT_PATH REQUIRED)
+                list(APPEND _ethernet_link_libraries "${_ethernet_archive}")
+            endif()
+        endforeach()
+    endif()
+    set(_ethernet_bpf_includes "")
+    foreach(_include IN LISTS XDP_INCLUDE_DIRS BPF_INCLUDE_DIRS)
+        list(APPEND _ethernet_bpf_includes "-I${_include}")
+    endforeach()
     set(bpf_output "${CMAKE_BINARY_DIR}/plugins/ethernet_xdp.bpf.o")
     add_custom_command(OUTPUT "${bpf_output}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/plugins"
         COMMAND ${BPF_CLANG} -O2 -g -target bpf
             -I/usr/include/${CMAKE_LIBRARY_ARCHITECTURE} -I${CMAKE_CURRENT_SOURCE_DIR}/..
+            ${_ethernet_bpf_includes}
             -c ${CMAKE_CURRENT_SOURCE_DIR}/transport/linux/xdp.bpf.c -o ${bpf_output}
         DEPENDS transport/linux/xdp.bpf.c transport/linux/xdp_shared.h VERBATIM)
     add_custom_target(EthernetXdpFilter DEPENDS "${bpf_output}")
     target_sources(EthernetManagement PRIVATE transport/linux/datagram.cc)
-    target_sources(EthernetAdapterSupport PRIVATE transport/linux/xdp.cc transport/linux/factory.cc)
-    find_library(ETHERNET_CAP_LIBRARY cap REQUIRED)
-    target_link_libraries(EthernetAdapterSupport PRIVATE PkgConfig::XDP ${ETHERNET_CAP_LIBRARY})
+    target_sources(EthernetAdapterSupport PRIVATE transport/linux/xdp.cc transport/linux/factory.cc
+        transport/linux/host_network.cc transport/linux/network_manager.cc)
+    if(ENCOS_PORTABLE_LINUX)
+        find_library(ETHERNET_PORTABLE_CAP_LIBRARY NAMES libcap.a
+            PATHS ${ETHERNET_PORTABLE_STATIC_LIBRARY_DIRS} NO_DEFAULT_PATH REQUIRED)
+        set(ETHERNET_CAP_LIBRARY "${ETHERNET_PORTABLE_CAP_LIBRARY}")
+    else()
+        find_library(ETHERNET_CAP_LIBRARY cap REQUIRED)
+    endif()
+    target_link_libraries(EthernetAdapterSupport PRIVATE ${_ethernet_link_libraries}
+        ${ETHERNET_CAP_LIBRARY} ${SYSTEMD_LIBRARIES})
+    target_include_directories(EthernetAdapterSupport PRIVATE ${SYSTEMD_INCLUDE_DIRS})
+    target_include_directories(EthernetAdapterSupport PRIVATE ${XDP_INCLUDE_DIRS} ${BPF_INCLUDE_DIRS})
     add_library(EthernetXdpSession STATIC transport/linux/xdp_session.cc)
     set_target_properties(EthernetXdpSession PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(EthernetXdpSession PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-    target_link_libraries(EthernetXdpSession PUBLIC PkgConfig::XDP PkgConfig::BPF
+    target_include_directories(EthernetXdpSession PUBLIC ${XDP_INCLUDE_DIRS} ${BPF_INCLUDE_DIRS})
+    target_link_libraries(EthernetXdpSession PUBLIC ${_ethernet_link_libraries}
         ${ETHERNET_CAP_LIBRARY})
     if(ENCOS_STATIC_MODE)
         set(bpf_header "${CMAKE_CURRENT_BINARY_DIR}/ethernet_xdp_embedded.generated.h")
@@ -122,7 +160,9 @@ set(ethernet_tests
 if(WIN32)
     list(APPEND ethernet_tests ${CMAKE_CURRENT_SOURCE_DIR}/test/ethernet_windows_test.cc)
 else()
-    list(APPEND ethernet_tests ${CMAKE_CURRENT_SOURCE_DIR}/test/ethernet_datagram_linux_test.cc)
+    list(APPEND ethernet_tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/ethernet_datagram_linux_test.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/ethernet_host_network_test.cc)
 endif()
 if(ENCOS_BUILD_TESTS)
     set(ethernet_test_libraries EthernetAdapterSupport)

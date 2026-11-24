@@ -13,6 +13,7 @@
 #include "adapter/adapter_extend.h"
 #include "bus/bus.h"
 #include "gs_usb_timing.h"
+#include "protocol/gs_usb_message.h"
 #include "transport/winusb_enumeration.h"
 #include "utils/adapter_extend_update.h"
 
@@ -80,19 +81,48 @@ GsUsbAdapter::GsUsbAdapter(const std::string& interface_name, const std::string&
                        timing.data_sample_point);
     }
 
-    running_.store(true);
-    receiver_ = std::thread(&GsUsbAdapter::ReceiveLoop, this);
-    Logger()->info("gs_usb adapter started: {} channels CAN FD", channels_);
+    AdapterStatistics statistics;
+
+    if ((constraints_.feature & gs_usb::kFeatureGetState) != 0) {
+        for (unsigned channel = 0; channel < channels_; ++channel) {
+            BusStatistics bus;
+            bus.bus_id = static_cast<int>(channel);
+            statistics.buses.push_back(bus);
+        }
+        InitializeStatistics(statistics, 1500);
+    }
+
+    statistics_wait_.Start(running_);
+
+    try {
+        if (!statistics.buses.empty())
+            statistics_thread_ = std::thread(&GsUsbAdapter::StatisticsLoop, this);
+        receiver_ = std::thread(&GsUsbAdapter::ReceiveLoop, this);
+        Logger()->info("gs_usb adapter started: {} channels CAN FD", channels_);
+    } catch (...) {
+        statistics_wait_.Stop(running_);
+        device_->AbortRead();
+        if (receiver_.joinable())
+            receiver_.join();
+        if (statistics_thread_.joinable())
+            statistics_thread_.join();
+        throw;
+    }
 }
 
 GsUsbAdapter::~GsUsbAdapter() {
-    running_.store(false);
+    statistics_wait_.Stop(running_);
+
     if (device_) {
         device_->AbortRead();
     }
     if (receiver_.joinable()) {
         receiver_.join();
     }
+
+    if (statistics_thread_.joinable())
+        statistics_thread_.join();
+
     if (device_) {
         for (unsigned channel = 0; channel < channels_; ++channel) {
             (void) device_->StopChannel(channel);
@@ -175,37 +205,33 @@ bool GsUsbAdapter::WriteBuffer(const std::uint8_t* data, std::size_t size) {
 }
 
 bool GsUsbAdapter::WriteFrame(const MotorMessage& message) {
-    const MotorPackMsg& pack = message.data;
-    const std::uint8_t flags = SanitizeCanFrameFlags(pack.frame_flags);
-    const bool extended = CanFrameFlagsUseExtendedId(flags);
-    const bool rtr = CanFrameFlagsUseRtr(flags);
-    const bool fd = CanFrameFlagsUseCanFd(flags);
-
-    gs_usb::Frame frame;
+    const auto& pack = message.data;
+    if (message.bus_idx < 0 || static_cast<unsigned>(message.bus_idx) >= channels_) {
+        Logger()->error("gs_usb invalid channel: {}", message.bus_idx);
+        return false;
+    }
+    if (CanFrameFlagsUseCanFd(pack.frame_flags) &&
+        (constraints_.feature & gs_usb::kFeatureFd) == 0U) {
+        Logger()->error("gs_usb device does not support CAN FD");
+        return false;
+    }
     // 该固件在 gs_frame_valid 中要求 echo_id < 10，否则会丢弃主机下发的帧。
-    frame.echo_id = (echo_counter_.fetch_add(1, std::memory_order_relaxed) % 9U) + 1U;
-    frame.can_id = pack.id & (extended ? gs_usb::kCanExtIdMask : gs_usb::kCanStdIdMask);
-    if (extended) {
-        frame.can_id |= gs_usb::kCanEff;
+    const auto echo_id = (echo_counter_.fetch_add(1, std::memory_order_relaxed) % 9U) + 1U;
+    const auto frame =
+        gs_usb::EncodeMessage(pack, static_cast<std::uint8_t>(message.bus_idx), echo_id);
+    if (!frame.has_value()) {
+        Logger()->error("gs_usb invalid frame id={:#x} length={} flags={:#x}", pack.id,
+                        static_cast<unsigned>(pack.len), static_cast<unsigned>(pack.frame_flags));
+        return false;
     }
-    if (rtr) {
-        frame.can_id |= gs_usb::kCanRtr;
-    }
-    frame.dlc = static_cast<std::uint8_t>(std::min<std::size_t>(pack.len, 8U));
-    frame.channel = static_cast<std::uint8_t>(message.bus_idx);
-    if (fd) {
-        frame.flags |= gs_usb::kFrameFlagFd | gs_usb::kFrameFlagBrs;
-    }
-    std::memcpy(frame.data, pack.data, frame.dlc);
-
     std::uint8_t buffer[gs_usb::kFdFrameSize] = {};
-    const std::size_t size = gs_usb::EncodeFrame(frame, buffer, sizeof(buffer));
+    const std::size_t size = gs_usb::EncodeFrame(*frame, buffer, sizeof(buffer));
     if (size == 0U) {
         Logger()->error("gs_usb dropped invalid frame id={:#x}", pack.id);
         return false;
     }
     if (!WriteBuffer(buffer, size)) {
-        Logger()->warn("gs_usb write failed id={:#x} channel={}", pack.id, frame.channel);
+        Logger()->warn("gs_usb write failed id={:#x} channel={}", pack.id, frame->channel);
         return false;
     }
     return true;
@@ -233,12 +259,37 @@ void GsUsbAdapter::SendSynchronized(const MotorMessages& messages) {
     Send(messages);
 }
 
+void GsUsbAdapter::StatisticsLoop() {
+    while (running_.load()) {
+        for (unsigned channel = 0; channel < channels_ && running_.load(); ++channel) {
+            gs_usb::ChannelState state;
+            bool valid;
+
+            {
+                std::lock_guard<std::mutex> lock(timing_mutex_);
+                valid = device_->ReadState(channel, &state);
+            }
+
+            if (valid) {
+                BusStatistics bus;
+                bus.bus_id = static_cast<int>(channel);
+                bus.error_counters =
+                    CanErrorCounters{state.tec, state.rec, ErrorCounterKind::Current};
+                UpdateStatistics(bus);
+            }
+        }
+
+        if (!statistics_wait_.Wait(running_))
+            break;
+    }
+}
+
 void GsUsbAdapter::ReceiveLoop() {
     std::vector<std::uint8_t> buffer(4096);
     while (running_.load()) {
         const int size = device_->Read(buffer.data(), buffer.size());
         if (size < 0) {
-            running_.store(false);
+            statistics_wait_.Stop(running_);
             Logger()->error("gs_usb receive failed; adapter unavailable");
             return;
         }
@@ -263,26 +314,13 @@ void GsUsbAdapter::ReceiveLoop() {
             if ((frame.can_id & gs_usb::kCanErr) != 0U) {
                 continue;  // 错误帧暂不映射为电机消息
             }
-            const bool extended = (frame.can_id & gs_usb::kCanEff) != 0U;
-            const bool rtr = (frame.can_id & gs_usb::kCanRtr) != 0U;
+            const auto pack = gs_usb::DecodeMessage(frame);
+            if (!pack.has_value()) {
+                continue;
+            }
             MotorMessage message{};
             message.bus_idx = frame.channel;
-            MotorPackMsg pack{};
-            pack.id = frame.can_id & (extended ? gs_usb::kCanExtIdMask : gs_usb::kCanStdIdMask);
-            std::uint8_t flags = 0;
-            if (extended) {
-                flags |= kCanFrameFlagEff;
-            }
-            if (rtr) {
-                flags |= kCanFrameFlagRtr;
-            }
-            if ((frame.flags & gs_usb::kFrameFlagFd) != 0U) {
-                flags |= kCanFrameFlagFdMask;
-            }
-            pack.frame_flags = SanitizeCanFrameFlags(flags);
-            pack.len = static_cast<std::uint8_t>(std::min<std::size_t>(frame.dlc, 8U));
-            std::memcpy(pack.data, frame.data, pack.len);
-            message.data = pack;
+            message.data = *pack;
             OnMessage(MotorMessages{message});
         }
     }

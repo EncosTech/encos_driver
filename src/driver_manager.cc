@@ -108,6 +108,11 @@ EncosDriverManager::DeviceOperation EncosDriverManager::AcquireDeviceOperation(P
                            true);
 }
 
+EncosDriverManager::DeviceOperation EncosDriverManager::AcquireDeviceOperation(DexHand* device) {
+    return DeviceOperation(
+        TryEnterRequired(impl_->operation_registry, device, OperationKind::DexHand), true);
+}
+
 EncosDriverManager::DeviceOperation EncosDriverManager::AcquireDeviceOperation(Device* device) {
     return DeviceOperation(
         TryEnterRequired(impl_->operation_registry, device, OperationKind::ExternalDevice), true);

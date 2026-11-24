@@ -13,11 +13,24 @@
 #include <type_traits>
 #include <vector>
 
+#include "device/motor/can_address.h"
 #include "device/motor/types.h"
 #include "encos/export.h"
 #include "platform/log.h"
 
 namespace encos {
+
+/**
+ * @brief 设置全局电机参数读取重试次数，线程安全；默认 1，0 表示仅尝试一次。
+ * @param retry_count 首次发送超时后允许的额外尝试次数，每次等待最多 200ms。
+ *
+ * 每次 GetParameter 调用开始时读取一次配置，不影响已开始的调用。
+ * 仅控制参数读取的超时重试，不重复控制、写参数、扫描或日志操作。
+ */
+ENCOS_BASE_API void SetMotorRetryCount(unsigned int retry_count);
+
+/** @brief 获取全局电机参数读取重试次数。 */
+ENCOS_BASE_API unsigned int GetMotorRetryCount();
 
 class Bus;
 class EncosDriverManager;
@@ -39,27 +52,28 @@ class ENCOS_BASE_API Motor {
     friend class wasm::RuntimeStore;
 
 private:
-    explicit Motor(Bus* bus, uint16_t motor_idx, MotorModel model, LoggerPtr logger,
+    explicit Motor(Bus* bus, uint32_t motor_idx, MotorModel model, LoggerPtr logger,
                    std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags = 0);
-    explicit Motor(Bus* bus, uint16_t motor_idx, MotorModel model, LoggerPtr logger,
+    explicit Motor(Bus* bus, uint32_t motor_idx, MotorModel model, LoggerPtr logger,
                    std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags,
                    bool canfd);
-    explicit Motor(Bus* bus, uint16_t motor_idx, MotorProperties ranges, LoggerPtr logger,
+    explicit Motor(Bus* bus, uint32_t motor_idx, MotorProperties ranges, LoggerPtr logger,
                    std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags = 0);
-    explicit Motor(Bus* bus, uint16_t motor_idx, MotorProperties ranges, LoggerPtr logger,
+    explicit Motor(Bus* bus, uint32_t motor_idx, MotorProperties ranges, LoggerPtr logger,
                    std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags,
                    bool canfd);
-    explicit Motor(Bus* bus, uint16_t motor_idx, LoggerPtr logger,
+    explicit Motor(Bus* bus, uint32_t motor_idx, LoggerPtr logger,
                    std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags = 0);
-    explicit Motor(Bus* bus, uint16_t motor_idx, LoggerPtr logger,
+    explicit Motor(Bus* bus, uint32_t motor_idx, LoggerPtr logger,
                    std::function<void(const MotorPackMsg&)> writer, uint8_t frame_flags,
                    bool canfd);
 
     /**
      * @brief 在调用方持有电机事务锁时发送 CAN 报文，并附带当前配置的帧标志
      * @param msg 要发送的电机消息
+     * @param control 是否为等待软同步提交的五类运动控制命令
      */
-    void SendMessageLocked(const MotorPackMsg& msg);
+    void SendMessageLocked(const MotorPackMsg& msg, bool control = false);
 
 public:
     ~Motor();
@@ -136,7 +150,7 @@ public:
     void EnableCanFd();
 
     /**
-     * @brief 后续发送禁用 CAN FD 帧标志
+     * @brief 后续发送禁用 CAN FD 帧标志；子电机保持必需的 FD 标志
      */
     void DisableCanFd();
 
@@ -151,7 +165,7 @@ public:
     void EnableCanEff();
 
     /**
-     * @brief 后续发送禁用 CAN 扩展帧标志
+     * @brief 后续发送禁用 CAN 扩展帧标志；物理 ID 超过 11 位时保持扩展标志
      */
     void DisableCanEff();
 
@@ -166,15 +180,15 @@ public:
     /** @{ */
 
     /**
-     * @brief 将电机 ID 更改为新索引
-     * @param new_idx 要分配的新电机索引
+     * @brief 将电机 ID 更改为新索引；子电机或超出 16 位的地址返回 false
+     * @param new_idx 要分配的新电机索引，仅支持 16 位物理 ID
      * @param wait_for_ack 如果为 true，等待确认包
      * @return 成功返回 true
      */
-    bool SetId(uint16_t new_idx, bool wait_for_ack = true);
+    bool SetId(uint32_t new_idx, bool wait_for_ack = true);
 
     /**
-     * @brief 设置电机当前位置读数
+     * @brief 设置电机当前位置读数；子电机或超出 16 位的地址返回 false
      * @param now_pos 当前物理位置应写入的坐标值（rad）
      * @return 收到确认包返回 true，超时返回 false
      *
@@ -183,7 +197,7 @@ public:
     bool SetPos(double now_pos);
 
     /**
-     * @brief 重置电机的零位（参考）位置
+     * @brief 重置电机的零位（参考）位置；子电机或超出 16 位的地址返回 false
      * @param wait_for_ack 如果为 true，等待确认包
      * @return 成功返回 true
      */
@@ -505,19 +519,20 @@ private:
                            std::function<bool(const MotorPackMsg&)> checker,
                            std::shared_ptr<void> content,
                            std::function<void(const MotorPackMsg&, void*)> writer,
-                           std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+                           std::chrono::milliseconds timeout = detail::kMotorResponseTimeout,
+                           bool control = false);
 
     template <typename Result, typename Checker, typename Writer>
     std::optional<Result> SendAndWaitTyped(
         const MotorPackMsg& message, Checker checker, Writer writer,
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{500}) {
+        std::chrono::milliseconds timeout = detail::kMotorResponseTimeout, bool control = false) {
         auto content = std::make_shared<Result>();
         const bool completed = SendAndWaitErased(
             message, std::move(checker), content,
             [writer = std::move(writer)](const MotorPackMsg& packet, void* raw_content) {
                 writer(packet, *static_cast<Result*>(raw_content));
             },
-            timeout);
+            timeout, control);
         if (!completed) {
             return std::nullopt;
         }
@@ -526,7 +541,7 @@ private:
 
     std::optional<MotorPackMsg> SendAndWait(
         const MotorPackMsg& message, std::function<bool(const MotorPackMsg&)> checker,
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+        std::chrono::milliseconds timeout = detail::kMotorResponseTimeout, bool control = false);
     bool SendParameterAndWait(const MotorPackMsg& message, uint8_t parameter_id,
                               std::vector<uint8_t> expected_payload);
     void UpdateStatusDispatcher();

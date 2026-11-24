@@ -3,6 +3,7 @@
 
 #include "operation_gate.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <gtest/gtest.h>
@@ -99,6 +100,34 @@ TEST(OperationRegistryTest, HazardCapacityExhaustionHasDistinctDiagnostic) {
     }
     condition.notify_all();
     first.join();
+}
+
+TEST(OperationRegistryTest, ExitingThreadsReleaseHazardsForSubsequentWaves) {
+    BasicOperationRegistry<8> registry;
+    auto* object = reinterpret_cast<void*>(0xD00D0);
+    auto* gate = registry.Register(object, OperationKind::Motor);
+    std::atomic<int> admitted{0};
+
+    for (int wave = 0; wave < 64; ++wave) {
+        std::array<std::thread, 8> threads;
+        for (auto& thread : threads) {
+            thread = std::thread([&] {
+                auto* entered = registry.TryEnter(object, OperationKind::Motor);
+                if (entered != nullptr) {
+                    admitted.fetch_add(1, std::memory_order_relaxed);
+                    entered->Leave();
+                }
+            });
+        }
+        for (auto& thread : threads) {
+            thread.join();
+        }
+    }
+
+    EXPECT_EQ(admitted.load(), 64 * 8);
+    EXPECT_EQ(registry.Retire(object, OperationKind::Motor), gate);
+    gate->WaitForDrain();
+    registry.ReclaimRetired(object, OperationKind::Motor);
 }
 
 TEST(OperationRegistryTest, ConcurrentRetireDrainAndAddressReusePublishNewGeneration) {

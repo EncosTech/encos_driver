@@ -10,6 +10,7 @@
 #include "adapter/base_adapter_impl.h"
 #include "adapter/fake_adapter_control.h"
 #include "bus/bus_impl.h"
+#include "bus/submotor_packet.h"
 #include "encos/driver_manager.h"
 #include "utils/tracy.h"
 
@@ -23,6 +24,57 @@ BaseAdapter::BaseAdapter(const std::string& interface_name, const std::string& l
 }
 
 BaseAdapter::~BaseAdapter() = default;
+
+void BaseAdapter::InitializeStatistics(const AdapterStatistics& statistics,
+                                       std::uint64_t stale_after_ms) {
+    platform::LockGuard<platform::Mutex> lock(impl_->statistics_mutex);
+
+    impl_->statistics = statistics;
+    impl_->statistics_times.assign(statistics.buses.size(), std::nullopt);
+    impl_->statistics_stale_ms = stale_after_ms;
+}
+
+void BaseAdapter::UpdateStatistics(const BusStatistics& statistics) {
+    platform::LockGuard<platform::Mutex> lock(impl_->statistics_mutex);
+
+    if (!impl_->statistics)
+        return;
+
+    for (std::size_t i = 0; i < impl_->statistics->buses.size(); ++i) {
+        auto& slot = impl_->statistics->buses[i];
+
+        if (slot.slave_id == statistics.slave_id && slot.bus_id == statistics.bus_id) {
+            slot = statistics;
+            slot.status = StatisticsStatus::Valid;
+            slot.age_ms.reset();
+
+            impl_->statistics_times[i] = std::chrono::steady_clock::now();
+            return;
+        }
+    }
+}
+
+std::optional<AdapterStatistics> BaseAdapter::GetStatistics() const {
+    platform::LockGuard<platform::Mutex> lock(impl_->statistics_mutex);
+    auto result = impl_->statistics;
+    if (!result)
+        return result;
+
+    const auto now = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < result->buses.size(); ++i) {
+        if (!impl_->statistics_times[i])
+            continue;
+
+        auto& bus = result->buses[i];
+        bus.age_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - *impl_->statistics_times[i])
+                .count());
+        if (impl_->statistics_stale_ms != 0 && *bus.age_ms >= impl_->statistics_stale_ms)
+            bus.status = StatisticsStatus::Stale;
+    }
+
+    return result;
+}
 
 FakeAdapterControl::~FakeAdapterControl() = default;
 
@@ -161,7 +213,7 @@ void BaseAdapter::Commit() {
         }
     }
     if (!messages.empty()) {
-        SendSynchronized(messages);
+        SendSynchronized(PackSubMotorMessages(messages, true));
     }
 }
 
@@ -186,11 +238,11 @@ void BaseAdapter::SetSyncMode(bool enabled) {
         }
     }
     if (!messages.empty()) {
-        Send(messages);
+        Send(PackSubMotorMessages(messages, true));
     }
 }
 
-std::function<void(const MotorPackMsg&)> BaseAdapter::MakeDeviceWriter(Bus* bus) {
+std::function<void(const MotorPackMsg&)> BaseAdapter::MakeDeviceWriter(Bus* bus, bool immediate) {
     if (bus == nullptr) {
         throw std::invalid_argument("Bus is null");
     }
@@ -199,8 +251,8 @@ std::function<void(const MotorPackMsg&)> BaseAdapter::MakeDeviceWriter(Bus* bus)
         platform::LockGuard<decltype(bus->impl_->outgoing_mutex)> lock(bus->impl_->outgoing_mutex);
         bus->impl_->send_channels.push_back(channel.get());
     }
-    return [channel = std::move(channel)](const MotorPackMsg& message) {
-        channel->Push(message);
+    return [channel = std::move(channel), immediate](const MotorPackMsg& message) {
+        channel->Push(message, immediate);
     };
 }
 
@@ -213,18 +265,24 @@ void BaseAdapter::InitializeBusSyncMode(Bus* bus, std::function<void()> publish)
     publish();
 }
 
-void BaseAdapter::SubmitDeviceMessage(Bus* bus, void* channel, const MotorMessage& message) {
+void BaseAdapter::SubmitDeviceMessage(Bus* bus, void* channel, const MotorMessage& message,
+                                      bool immediate) {
     ENCOS_TRACY_ZONE("Adapter::SubmitDeviceMessage");
+    ValidateSubMotorMessage(message);
     platform::LockGuard<decltype(impl_->submit_mutex)> submit_lock(impl_->submit_mutex);
     {
         platform::LockGuard<decltype(bus->impl_->outgoing_mutex)> lock(bus->impl_->outgoing_mutex);
-        if (bus->impl_->sync_mode) {
+        if (bus->impl_->sync_mode && !immediate) {
             static_cast<Bus::Impl::SendChannel*>(channel)->port.Push(message);
             return;
         }
     }
     try {
-        Send(message);
+        if (CanSubId(message.data.id) == 0) {
+            Send(message);
+        } else {
+            Send(PackSubMotorMessages({message}, false).front());
+        }
     } catch (const std::exception& exception) {
         if (impl_->logger_) {
             impl_->logger_->error("Direct Bus device submission failed: {}", exception.what());
@@ -241,6 +299,9 @@ void BaseAdapter::SubmitBusMessages(Bus* bus, const MotorMessages& messages, boo
         return;
     }
     ENCOS_TRACY_ZONE("Adapter::SubmitBusMessages");
+    for (const auto& message : messages) {
+        ValidateSubMotorMessage(message);
+    }
     platform::LockGuard<decltype(impl_->submit_mutex)> submit_lock(impl_->submit_mutex);
     {
         platform::LockGuard<decltype(bus->impl_->outgoing_mutex)> lock(bus->impl_->outgoing_mutex);
@@ -250,7 +311,7 @@ void BaseAdapter::SubmitBusMessages(Bus* bus, const MotorMessages& messages, boo
             return;
         }
     }
-    Send(messages);
+    Send(PackSubMotorMessages(messages, false));
 }
 
 void BaseAdapter::CommitBus(Bus* bus) {
@@ -263,7 +324,7 @@ void BaseAdapter::CommitBus(Bus* bus) {
         messages = bus->impl_->DrainOutgoingLocked();
     }
     if (!messages.empty()) {
-        SendSynchronized(messages);
+        SendSynchronized(PackSubMotorMessages(messages, true));
     }
 }
 
@@ -280,7 +341,7 @@ void BaseAdapter::SetBusSyncMode(Bus* bus, bool enabled) {
         }
     }
     if (!messages.empty()) {
-        Send(messages);
+        Send(PackSubMotorMessages(messages, true));
     }
 }
 

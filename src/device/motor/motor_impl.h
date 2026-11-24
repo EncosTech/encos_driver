@@ -21,7 +21,7 @@
 namespace encos {
 
 struct Motor::Impl {
-    std::atomic<uint16_t> idx{0};
+    std::atomic<uint32_t> idx{0};
     std::atomic<uint8_t> frame_flags{0};
     MotorProperties ranges{};
     /** 保护接收线程读取的位置、速度、电流范围与固件版本，不在等待回报时持有。 */
@@ -40,6 +40,7 @@ struct Motor::Impl {
 
     Bus* bus = nullptr;
     std::function<void(const MotorPackMsg&)> writer;
+    std::function<void(const MotorPackMsg&)> control_writer;
     mutable platform::RecursiveMutex motor_mutex;
     /** 只保护日志 writer、恢复状态和重试计数。 */
     mutable platform::Mutex log_mutex;

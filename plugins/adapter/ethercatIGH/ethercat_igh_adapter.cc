@@ -38,6 +38,7 @@ bool EthercatIGHAdapter::UpdateBusExtend(const std::string& extend_json) {
         throw std::runtime_error("EthercatIGH adapter has no master");
     }
     const auto extend = AdapterExtend::Parse(extend_json);
+    ethercat::RejectCyclePeriodUpdate(extend);
     adapter_update::WarnIgnoredCommonFields(extend, Logger());
     if (!ec_master_->ApplyCanTimingUpdates(extend)) {
         throw std::runtime_error("EthercatIGH bus timing update was rejected");

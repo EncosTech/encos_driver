@@ -221,4 +221,67 @@ TEST_F(CanIdTests, ResetZeroPosUsesLegacyResetCommandOnly) {
     EXPECT_TRUE(std::get<FakeResetZeroPosPayload>(commands[0].payload).is_legacy_reset);
 }
 
+TEST_F(CanIdTests, ExtendedPhysicalIdIsNotTruncatedAndRequiresEff) {
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    constexpr uint32_t kPhysicalId = 0x1234567U;
+    auto* extended_motor =
+        EncosDriverManager::Instance().CreateMotor(bus, kPhysicalId, MotorModel::EC_A4310_P2);
+    ASSERT_NE(extended_motor, nullptr);
+    EXPECT_EQ(EncosDriverManager::Instance().FindMotor(bus, kPhysicalId), extended_motor);
+    EXPECT_EQ(EncosDriverManager::Instance().FindMotor(bus, kPhysicalId & 0xFFFFU), nullptr);
+    EXPECT_TRUE(extended_motor->IsCanEffEnabled());
+    extended_motor->DisableCanEff();
+    EXPECT_TRUE(extended_motor->IsCanEffEnabled());
+    adapter->ClearCommandRecords();
+    extended_motor->PVTControl<0>(1.0f, 0.1f, 0.0f, 0.0f, 0.0f);
+    adapter->Commit();
+    const auto messages = adapter->GetRawSentMessages();
+    ASSERT_EQ(messages.size(), 1U);
+    EXPECT_EQ(messages.front().data.id, kPhysicalId);
+    EXPECT_TRUE(CanFrameFlagsUseExtendedId(messages.front().data.frame_flags));
+}
+
+TEST_F(CanIdTests, EverySubIdRetainsItsFullLogicalAddressAndFdContainer) {
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    auto& manager = EncosDriverManager::Instance();
+    for (unsigned int sub_id = 1; sub_id <= 7; ++sub_id) {
+        const auto address = MakeCanAddress(0x12345U, sub_id);
+        auto* child = manager.CreateMotor(bus, address, MotorModel::EC_A4310_P2, 0, false);
+        ASSERT_NE(child, nullptr);
+        EXPECT_EQ(manager.FindMotor(bus, address), child);
+        EXPECT_EQ(manager.FindMotor(bus, LegacyCanIdBits(address)), child);
+        EXPECT_TRUE(child->IsCanFdEnabled());
+        EXPECT_TRUE(child->IsCanEffEnabled());
+        child->DisableCanFd();
+        EXPECT_TRUE(child->IsCanFdEnabled());
+        EXPECT_EQ(child->GetProperties().brake, motor->GetProperties().brake);
+        adapter->ClearCommandRecords();
+        child->PVTControl<0>(1.0f, 0.1f, 0.0f, 0.0f, 0.0f);
+        adapter->Commit();
+        const auto messages = adapter->GetRawSentMessages();
+        ASSERT_EQ(messages.size(), 1U);
+        EXPECT_EQ(messages.front().data.id, 0x12345U);
+        EXPECT_EQ(messages.front().data.len, sub_id == 7 ? 63 : 54);
+        EXPECT_TRUE(CanFrameFlagsUseCanFd(messages.front().data.frame_flags));
+        EXPECT_TRUE(CanFrameFlagsUseExtendedId(messages.front().data.frame_flags));
+    }
+}
+
+TEST_F(CanIdTests, EmbeddedSixteenBitCommandsRejectLogicalAndLargePhysicalAddresses) {
+    adapter->SetReplyMode(FakeReplyMode::Manual);
+    for (const uint32_t address : {0x10000U, MakeCanAddress(1, 1), MakeCanAddress(1, 7)}) {
+        auto* addressed_motor =
+            EncosDriverManager::Instance().CreateMotor(bus, address, MotorModel::EC_A4310_P2);
+        adapter->ClearCommandRecords();
+        EXPECT_FALSE(addressed_motor->SetId(5, false));
+        EXPECT_FALSE(addressed_motor->ResetZeroPos(false));
+        EXPECT_FALSE(addressed_motor->SetPos(0.0));
+        EXPECT_TRUE(adapter->GetRawSentMessages().empty());
+    }
+    adapter->ClearCommandRecords();
+    EXPECT_FALSE(motor->SetId(0x10001U, false));
+    EXPECT_FALSE(motor->SetId(MakeCanAddress(1, 7), false));
+    EXPECT_TRUE(adapter->GetRawSentMessages().empty());
+}
+
 }  // namespace encos

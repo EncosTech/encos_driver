@@ -30,6 +30,7 @@
 #include "ethernet/ethernet_slave.h"
 #include "ethernet/protocol/gateway_payload.h"
 #include "utils/fdBroker/file_capabilities.h"
+#include "utils/tracy.h"
 #include "xdp_shared.h"
 #ifdef ENCOS_STATIC_MODE
 #include "ethernet_xdp_embedded.generated.h"
@@ -246,6 +247,8 @@ struct XdpTransport::Impl {
         memory_fd = fcntl(session->MemoryFd(), F_DUPFD_CLOEXEC, 0);
         Require(memory_fd >= 0, "Duplicate AF_XDP UMEM descriptor");
 #else
+        fd_broker::EnsureFileCapabilities(path, {CAP_NET_RAW, CAP_NET_ADMIN, CAP_BPF},
+                                          "cap_net_raw,cap_net_admin,cap_bpf+ep");
         int pair[2];
         Require(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) == 0, "socketpair");
         control = pair[0];
@@ -398,9 +401,14 @@ bool XdpTransport::Send(const MotorMessages& messages) {
     return Send(0, messages);
 }
 bool XdpTransport::Send(unsigned slave, const MotorMessages& messages) {
+    return SendPayload(slave, EncodePayload(messages));
+}
+
+bool XdpTransport::SendPayload(unsigned slave, const std::vector<uint8_t>& payload) {
+    ENCOS_TRACY_ZONE("Ethernet::SendPayload");
     auto& p = *impl_;
     p.Reap();
-    const auto bytes = EncodePacket(p.routes.at(slave), EncodePayload(messages));
+    const auto bytes = EncodePacket(p.routes.at(slave), payload);
     uint32_t index = 0;
     if (p.free_tx.empty() || xsk_ring_prod__reserve(&p.tx, 1, &index) != 1) {
         p.Kick();
@@ -415,25 +423,36 @@ bool XdpTransport::Send(unsigned slave, const MotorMessages& messages) {
     descriptor->options = 0;
     xsk_ring_prod__submit(&p.tx, 1);
     p.tx_packets++;
-    p.tx_records += messages.size();
-    for (const auto& message : messages)
-        if (message.bus_idx >= 0 && message.bus_idx < 8 && message.data.len == 8 &&
-            (message.data.data[0] & 0xe0) == 0) {
-            if ((p.tx_controls[message.bus_idx] == 0 || p.tx_controls[message.bus_idx] == 1000) &&
-                std::getenv("ENCOS_ETHERNET_STATS") != nullptr) {
-                std::fprintf(stderr, "AF_XDP control #%llu CAN%d id=%u flags=%u data=",
-                             static_cast<unsigned long long>(p.tx_controls[message.bus_idx]),
-                             message.bus_idx, message.data.id, message.data.frame_flags);
-                for (const auto byte : message.data.data)
-                    std::fprintf(stderr, "%02x", byte);
-                std::fprintf(stderr, "\n");
+    const auto frames = DecodeRelayPackets(payload);
+    if (frames) {
+        for (const auto& frame : *frames) {
+            p.tx_records += frame.records.size();
+            for (const auto& record : frame.records) {
+                const auto& message = record.message;
+                if (message.bus_idx >= 0 && message.bus_idx < 8 && message.data.len == 8 &&
+                    (message.data.data[0] & 0xe0) == 0) {
+                    if ((p.tx_controls[message.bus_idx] == 0 ||
+                         p.tx_controls[message.bus_idx] == 1000) &&
+                        std::getenv("ENCOS_ETHERNET_STATS") != nullptr) {
+                        std::fprintf(
+                            stderr, "AF_XDP control #%llu CAN%d id=%u flags=%u data=",
+                            static_cast<unsigned long long>(p.tx_controls[message.bus_idx]),
+                            message.bus_idx, message.data.id, message.data.frame_flags);
+                        for (const auto byte : message.data.data)
+                            std::fprintf(stderr, "%02x", byte);
+                        std::fprintf(stderr, "\n");
+                    }
+                    p.tx_controls[message.bus_idx]++;
+                }
             }
-            p.tx_controls[message.bus_idx]++;
         }
+    }
     p.Kick();
     return true;
 }
+
 MotorMessages XdpTransport::Receive() {
+    ENCOS_TRACY_ZONE("Ethernet::Receive");
     auto& p = *impl_;
     p.Reap();
     p.Kick();
@@ -484,7 +503,9 @@ MotorMessages XdpTransport::Receive() {
     }
     return result;
 }
+
 void XdpTransport::Wait(int milliseconds) {
+    ENCOS_TRACY_ZONE("Ethernet::Wait");
     auto& p = *impl_;
     pollfd descriptors[2] = {{p.socket, POLLIN, 0}, {p.wake, POLLIN, 0}};
     const int result = poll(descriptors, 2, milliseconds);

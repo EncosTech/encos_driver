@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "encos/encos_driver.h"
+#include "ethernet/transport/linux/xdp_session.h"
 #include "ethernet/transport/transport.h"
 #include "ethernet_xdp_embedded.generated.h"
 
@@ -28,7 +29,7 @@ TEST(EthernetStatic, MissingProcessCapabilitiesFailsBeforeNetworkChanges) {
                 _exit(2);
             cap_free(empty);
             try {
-                ConfigureHostInterface("lo");
+                RequireXdpProcessCapabilities();
             } catch (const std::runtime_error& error) {
                 const std::string message = error.what();
                 _exit(message.find("Static Ethernet requires effective") != std::string::npos &&

@@ -935,3 +935,180 @@
 #### Test
 
 - 更新 Fake 与串口测试的初始化固件查询计数，增加固件探测超时、重复创建、销毁竞态和异步调用重叠的回归测试。
+
+### 4.0.1
+
+#### Build / CI
+
+- Windows 构建与消费统一使用 vcpkg 管理依赖，文档提供 MSVC `x64-windows` 和 MinGW-w64 `x64-mingw-dynamic` 配置，以及从私有 registry 安装 `encos-driver` 的方式。
+- 更新 SOEM 子模块，将其构建为内部静态库；该修正随源码提供，无需在 vcpkg port 中重复补丁。
+- `ENCOS_PLUGIN_INSTALL_LIBDIR` 改为可配置的 CMake 缓存变量，便于包管理器调整插件安装位置。
+
+#### Fix
+
+- 修复 Windows 动态库未正确导出 `encos_get_version` 的问题，使版本查询入口与公共声明一致。
+
+#### Breaking Changes
+
+- Windows 源码安装不再复制 fmt、spdlog、zstd 等依赖 DLL，也不再写入用户级 `PATH` 或 `ENCOS_PLUGIN_PATH`。消费项目需使用 vcpkg applocal 部署依赖，并显式配置插件路径；私有 registry 提供的 `encos_deploy_plugins()` 可将插件及 helper 部署到程序旁。
+
+#### Documentation
+
+- 重写 Windows 构建、安装与消费说明，区分源码安装和 vcpkg 包部署职责。
+
+### 4.1.0
+
+#### Breaking Changes
+
+- 调整软同步的消息范围：电机仅 `PVTControl`、`PosControl`、`SpdControl`、`CurControl`、`TorControl` 五类控制指令等待 commit；`Stop`、`Brake`、参数读写、初始化、改 ID、复零，以及 IMU、PMS、总线扫描和 ID 管理请求均即时提交到插件发送路径。Battery、Glove 和自定义 Device 保持原有策略。
+- 普通电机响应和 ACK 的单次等待时限由 500ms 缩短为 **200ms**，`SetPos`、`ResetZeroPos` 原有的 1000ms ACK 等待也统一为 200ms。固件版本探测保留 100ms，参数查询原有重试策略及 `SetCanTimeout` 设置的电机端看门狗不变；带重试的调用总耗时可能超过 200ms。
+- EtherCAT 同 ID 消息不再覆盖已占用槽位，每条消息使用独立空槽。每次 commit 可填充此前普通消息帧中对应 bus 的剩余槽位，满帧后顺延；同一 bus 的不同 commit 保持批次边界。既有高负载队列裁剪和设备端口容量策略保留，不承诺过载时每条消息都发送。
+
+#### Feature
+
+- 新增基于 Node-API 8 的 `.node` 原生后端，沿用现有 JavaScript 高层对象和 Promise 接口，提供 Adapter、Bus、Motor、Battery、Imu、Pms、Glove、Fake、设备管理、状态回调、日志及线程优先级等内置功能；自定义 Device 插件接口不在原生 JS 包本次开放范围内。
+- 新增三个独立原生平台包：`@encos/encos-driver-native-linux-x64-gnu`、`@encos/encos-driver-native-linux-arm64-gnu`、`@encos/encos-driver-native-win32-x64`。包内携带匹配版本的驱动与插件，无需预装系统 EncosDriver；Windows 包包含 Ethercat，实际使用仍需宿主安装兼容的 Npcap。
+- 新增集合包 `@encos/encos-driver-native`，通过精确版本的 `optionalDependencies` 选择平台包，统一导出原生 API 和完整 TypeScript 声明。检查系统、架构、libc 及包版本，不支持的平台或缺失依赖会明确报错，不自动回退 WASM；原 `@encos/encos-driver` 继续作为独立 WASM 包。
+- 原生 npm 包增加 `checkPermissions()` 与 `requestPermissions()`：Linux 检查包内 helper 的 capability，按需通过 `pkexec` 调用授权脚本并复查；Windows 返回无需授权的结果。npm 安装阶段不提权，也不修改 Node 可执行文件权限。
+- Linux 发布增加 glibc 2.28 基线的 amd64、arm64 产物，同一负载生成 DEB、RPM 和 tar.gz。主包统一携带 SDK 与八种适配器插件，不拆分 IGH、Ethernet 插件包；fmt、spdlog、zstd、libcap 及 Ethernet 用户态依赖静态链接，IGH 用户态库随包提供。
+
+#### Fix
+
+- 修复软同步开启后，电机初始化、查询、配置及管理命令滞留到 commit 才发送而导致的超时。
+- 修复 EtherCAT 打包时同 ID 槽位覆盖可能使 Stop 或查询消息被后续消息替换的问题；SOEM 与 IGH 共用此修正。
+- Linux 插件入口按精确 C 符号解析，避免修改 RPATH 后依赖 ELF 节布局枚举符号导致的加载失败。
+- 修复 MinGW 动态库场景下线程退出时 hazard slot 的释放，避免反复创建线程后耗尽槽位。
+- 调整 SocketCAN 构建以兼容较旧 Linux 头文件；权限 broker 独立链接，避免设置 capability 后安全加载模式无法解析相邻驱动共享库。
+
+#### Build / CI
+
+- Linux CI 分为源码检查、基线候选构建、发行版包测试和发布阶段。每个架构构建一次发布负载，Ubuntu 22.04/24.04、AlmaLinux 8/9 安装验证同一份候选；发布复用测试过的原始归档，校验提交来源、SHA256 和包内负载，不重新构建发布包。
+- 测试专用设备插件仅进入源码测试构建，不进入系统包和 npm 发布负载。CI 验证安装、卸载、tar.gz 重定位、全部插件加载、Fake 指令及下游 CMake SDK 消费。
+- 补齐 Windows 原生 runner 的启动、环境与构建脚本，覆盖动态/静态模式、安装检查和包含 Ethercat 的原生 npm 包构建。
+- 原生 npm 平台包复用 Linux 基线驱动及 Windows 原生产物；CI 配置 Node 22/24 的真实归档安装、API 和集合包平台选择测试。发布前校验四个 npm 包的版本、入口、依赖及摘要，先发布三个平台包，最后发布集合包。
+- 仅 main 分支 push、项目版本变化且依赖检查全部通过时发布；PR 和手动验证不发布。系统包与原生 npm 包发布均等待相应候选测试通过。
+- CI 镜像预装编译器、系统测试工具、Node 和锁文件对应的 JS 依赖缓存，AlmaLinux 任务不再临时运行 dnf 安装工具，JS 任务校验锁文件后离线链接依赖。
+- 安装包移除 IGH、Ethernet 依赖的源码归档，保留许可证、依赖版本、源码校验信息及所需重链接材料；第三方源码由独立 GitHub 仓库提供。包元数据不声明 IGH 依赖，权限与网络配置工具按发行版声明为可选依赖。
+
+#### Test
+
+- 增加即时/同步发送分流、软同步下扫描与初始化、200ms 反馈/ACK 以及迟到回复回归；覆盖 Stop、Brake、SetPos 和 ResetZeroPos。
+- 增加 EtherCAT 空槽填充、同 ID 消息保留、溢出顺序、跨发送周期及 bus/slave 隔离测试。
+- 增加 Node 原生接口、64 位整数、回调、对象销毁、Worker 清理、权限函数、包布局和集合包类型声明测试，保留 WASM 单元与浏览器回归。
+
+#### Documentation
+
+- 新增 Linux 可移植发布说明、原生 npm 包使用指南与 API 映射；更新软同步、超时、EtherCAT 打包和日志诊断文档。
+- 明确运行边界：glibc 基线不覆盖 musl/Alpine；IGH 仍需宿主配置匹配的内核主站；Ethernet XDP/BPF 仍依赖内核、网卡及权限。容器插件加载和 Fake 测试不等同于真机通信验证。
+
+### 4.1.1
+
+#### Feature
+
+- 新增全局 C++ 接口 `encos::SetMotorRetryCount(unsigned int)` 与 `encos::GetMotorRetryCount()`，控制所有电机 `GetParameter` 的超时重试次数。默认额外重试 1 次，设为 0 时只发送一次；每次尝试仍最多等待 200ms。配置读写线程安全，每次查询开始时读取一次，不影响已开始的调用，也不为控制、写参数、扫描或日志操作增加重试。
+
+#### Fix
+
+- 调整 SOEM 与 IGH 共用的 EtherCAT 发送队列：即时请求到达时直接打包到待发送帧空槽，不受软同步 commit 代次限制，避免有空槽时仍被推迟到下一帧。commit 填充对应 bus 的剩余槽位，容量不足时顺延；同一 bus 的不同 commit 继续保持批次边界，不覆盖已有消息，也不挤出已排好的控制消息为晚到请求让位。
+- 即时请求和已 commit 的控制消息共用待发送帧队列，入队后统一检查积压，超过 3 帧时仅保留最后一帧。裁剪不再等待发送循环，断链期间持续入队也受约束；即时请求可能被裁剪，被裁剪的查询仍按响应超时处理。发送线程每周期直接取出一帧。
+
+#### Build / CI
+
+- CMake 安装导出目标新增包版本属性，使版本升级时主导出文件随之更新，并触发安装器清理旧版本的分配置导出文件。修复安装新版本 RelWithDebInfo 后，Release 消费项目仍通过残留配置链接旧版本动态库、导致新增接口链接失败的问题；同版本的多配置安装仍可共存。
+
+#### Test
+
+- 增加参数查询禁用重试、多次重试、成功后不重试以及配置变更不影响进行中查询的回归测试。
+- 更新 EtherCAT 回归测试，覆盖即时请求填充 commit 后空槽、不抢占已占用槽位、跨 commit 代次填槽、即时请求参与统一裁剪，以及不出队和断链期间的积压裁剪。
+
+#### Documentation
+
+- 更新使用指南，说明全局参数查询重试配置、即时请求与软同步控制消息的统一排队及过载丢弃语义。
+
+### 4.1.2
+
+#### Feature
+
+- Node.js 原生运行时新增 `packageRoot` 和 `loadAddon` 选项。打包器及 Node.js SEA 可指定平台包根目录，并自定义 `.node` 加载方式。见 [Node 原生包说明](../npm-native/README.md#打包与单可执行文件sea)。
+
+### 4.2.0
+
+#### Feature
+
+- 新增 `BaseAdapter::GetStatistics()` 和 Node 原生 `adapter.getStatistics()`，提供各总线的 CAN 收发错误计数、采样状态和数据年龄。SocketCAN 和 GsUsb 提供当前计数，Ethernet 保留最近一次错误事件的计数。
+- 新增 `RequireCurrentThreadPriority()`，用 `ThreadPriorityError` 和 `MemoryLockError` 区分调度设置与锁页失败。SocketCAN 和 SOEM EtherCAT 适配器构造时等待工作线程初始化，失败时回传异常并回收线程。
+
+#### Test
+
+- 增加总线统计快照、Ethernet 心跳与乱序处理，以及工作线程启动和锁页失败的回归测试。
+
+### 4.2.1
+
+#### Build / CI
+
+- Windows 的 GoogleTest 用例发现超时延长至 60 秒，容纳测试程序首次启动耗时。
+
+#### Test
+
+- 电流范围回归测试改用 `GetProperties()` 和 `SetProperties()`，消除弃用接口警告。
+
+### 4.2.2
+
+#### Build / CI
+
+- 将项目版本更新至 4.2.2，作为 4.2.0 和 4.2.1 累计变更的发布版本。
+
+### 4.2.3
+
+#### Fix
+
+- 电池状态和控制报文统一按 `基础 CAN ID + 2 × 电池索引` 寻址，修复并联场景下第二块电池无法正确收发的问题。
+
+#### Test
+
+- 增加并联电池的状态路由与控制报文寻址回归测试。
+
+### 4.3.0
+
+#### Breaking Changes
+
+- `MotorPackMsg` 和 `PortFrame` 的负载扩至 64 字节。Motor 的地址接口和 Port 的布局也随完整逻辑 CAN ID 支持而调整。应用与插件需要使用本版本头文件重新编译，设备插件 ABI 升至 2。见 [插件指南](plugin.md#64-字节内部消息与传输兼容性)。
+- Port 使用 `BasePort::kAnyCanId` 表示通配，显式 `0xFFFFFFFFU` 表示精确地址。用 `IsAnyCanId()` 判断通配状态。
+- 子电机集合帧使用 6 槽或 7 槽，每槽由 1 字节 DLC 和 8 字节数据组成。使用旧版无 DLC 集合帧的主机和固件需要同步升级。见 [子电机协议](submotor.md)。
+
+#### Feature
+
+- SocketCAN 和 GsUsb 支持最多 64 字节的 CAN FD 负载，由传输层按标准 DLC 映射补零。Ethernet 和 RelayWs 可与支持的对端协商 EMR2，按完整记录拆包并传输最多 64 字节的 CAN FD 记录。
+- 新增 `MakeCanAddress()` 和 `Bus::GetSubMotor()` 等子电机入口。子电机默认启用 CAN FD。Bus 按物理 CAN ID 和同步批次将子命令封装为 CAN FD + BRS 帧，接收反馈时按槽内 DLC 投递给已登记的子电机。见 [子电机协议](submotor.md)。
+- 新增 C++ `Bus::GetDexHand()` 和 Node.js `bus.getDexHand()`，支持通过经典 CAN 或 CAN FD + BRS 查询、配置灵巧手网关基址及仲裁域、数据域采样点。保存的采样点在网关重启后生效。见 [使用指南](using_guide.md#47-管理灵巧手网关)。
+- 使用 `EC_DEXTEROUS_HAND` 型号创建子电机时，驱动直接加载型号预置参数，省去逐个查询固件版本的步骤。
+- `Ethercat` 和 `EthercatIGH` 支持创建时通过顶层 `cycle_period_us` 设置通信周期，默认 1000 µs。见 [插件指南](plugin.md#ethercat--ethercatigh-通信周期)。
+- EtherCAT 的 CAN FD PDO 增加固定小槽分片，支持收发最多 64 字节。兼容原有槽宽和总线偏移，并支持三路十槽的 420 字节布局。见 [EtherCAT 通信协议](ethercat_protocol.md)。
+- Ethernet 增加协议协商结果和网关运行诊断日志。支持诊断的固件可上报 FIFO 溢出、DMA 超时、UDP 拒绝和 CAN 队列丢弃等计数。Ethernet 数据路径及 SOEM EtherCAT 的 PDO 收发阶段增加 Tracy 采样点。
+- Linux 支持设置 `ENCOS_MEMORY_LOCK=none`，在照常设置线程优先级的同时跳过进程锁页。原生驱动日志可通过 `ENCOS_LOG_OUTPUT=stderr` 输出到标准错误。
+
+#### Fix
+
+- Ethernet 管理线程仅查询已登记的总线及电机，修复适配器构造或总线注销期间隐式创建总线的问题。管理会话超时或能力复核失败后，数据工作线程停止，重建适配器后重新协商。
+- Linux Ethernet 启动时复用已生效的静态地址，或通过 NetworkManager 为电机专用网卡激活临时的 `192.168.100.254/24`，修复 DHCP 超时清除主机地址后电机反馈中断的问题。支持桌面和交互式 SSH 的 Polkit 授权，SDK 退出后由 NetworkManager 回收临时连接。没有 NetworkManager 管理的专用网卡如需由 SDK 配置地址，可设置 `host_network_exclusive`。见 [Ethernet 主机网卡配置](../plugins/adapter/ethernet/README.md#主机网卡自动配置)。
+
+#### Build / CI
+
+- GitHub Release 改用 Gitea 通用仓库中对应版本的 CI 原件。校验 `amd64`、`arm64` 各自的 DEB、RPM 和 tar.gz 后，按原文件名发布并附带 `SHA256SUMS`。见 [Linux 可移植发布](portable-linux.md)。
+- Linux DEB 增加 `libsystemd0` 和 `polkitd` 依赖，RPM 增加 `systemd-libs` 和 `polkit` 依赖。NetworkManager 是可选的运行时服务，DEB 和 RPM 均可在未安装该服务的机器上安装。见 [Linux 可移植发布](portable-linux.md)。
+
+#### Test
+
+- 增加长 CAN FD 帧、EMR2 兼容性、子电机同步聚合与路由、EtherCAT 周期配置、Ethernet 诊断及 GitHub 发布回滚的回归覆盖。
+- 增加 Ethernet 网卡配置分支测试，覆盖静态地址复用、DHCP 状态下的临时地址、占用保护和专用网卡自动配置。验证交互式 SSH 授权和异常退出清理，并在根板的 18 个模拟电机上完成强制 EMR1、自动协商 EMR2 各 10 分钟回归，均未出现反馈丢失或心跳超时。
+
+#### Documentation
+
+- 精简 README，补充内网 APT/DNF、GitHub Releases 和源码安装入口。使用指南增加 Linux 实时线程、调度长尾排查和性能调优说明。见 [README](../README.md) 和 [使用指南](using_guide.md)。
+
+### 4.3.1
+
+#### Fix
+
+- Linux Ethernet 按指定网卡和源地址校验网关直连路由，修复 VPN 网段重叠时创建适配器失败的问题。
+- NetworkManager 管理的专用网卡在手工断开后仍可激活临时静态连接，并保留禁用自动连接的设备设置。NetworkManager 禁用、休眠或设备状态无法确认时会报告错误。见 [Ethernet 主机网卡配置](../plugins/adapter/ethernet/README.md#主机网卡自动配置)。

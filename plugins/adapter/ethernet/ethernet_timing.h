@@ -116,7 +116,7 @@ inline void ApplyGatewayCanTiming(const nlohmann::json& scope, GatewayCanTiming*
         throw std::invalid_argument("ApplyGatewayCanTiming requires a non-null timing target");
     }
     for (const auto& [key, value] : scope.items()) {
-        if (!IsGatewayTimingField(key)) {
+        if (!IsGatewayTimingField(key) && key != "protocol" && key != "max_payload") {
             throw std::runtime_error("Ethernet extend field '" + key + "' is not supported");
         }
     }

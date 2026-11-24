@@ -83,25 +83,27 @@ if (!encos::DeleteAdapter(adapter)) {
 
 默认模式下，设备消息会直接交给具体 Adapter；无需调用 `Commit()`。若需要控制一条
 Bus 的批次边界，请调用该 Bus 的 `Commit()` 或 `SetSyncMode(true)`：从此以后该 Bus 的
-消息会保留到下一次 `bus->Commit()`，而同一 Adapter 的其他 Bus 继续按各自模式发送。
+受软同步约束的消息会保留到下一次 `bus->Commit()`，而同一 Adapter 的其他 Bus 继续按各自模式发送。
 `bus->SetSyncMode(false)` 会提交本 Bus 已保留的消息并恢复直接发送。
 
 `adapter->Commit()` 与 `adapter->SetSyncMode(bool)` 为兼容接口，等价于对当前所有 Bus
 执行相应批量操作，并会成为后续新建 Bus 的默认模式。首次 Commit 不会重新收集此前已经
 直接交给具体 Adapter 的普通消息；如需让第一批控制指令受控，应先显式进入同步模式。
 
-> **必须遵守的初始化顺序**：先在默认直接发送模式下完成 Bus 扫描以及 Motor、Battery、
-> Pms 等设备的全部创建和初始化，再调用 `bus->SetSyncMode(true)`、`bus->Commit()` 或
-> Adapter 级批量接口。
-> 通过固件初始化电机、读取或设置参数等“发送后在同一线程等待响应”的操作也必须在进入
-> 软同步模式前完成。软同步模式不会为这些创建、初始化或请求响应接口自动调用
-> `Commit()`；顺序错误会使请求留在该 Bus 的同步队列中并最终超时。
+电机的 `PVTControl`、`PosControl`、`SpdControl`、`CurControl` 和 `TorControl` 受软同步约束。
+IMU 启停、PMS 指令、电机参数读写、初始化、改 ID、复零、`Stop`、`Brake`，以及总线扫描和
+ID 管理请求均即时提交，无需等待 commit。Battery、Glove 和自定义 Device 保持原有软同步策略。
+即时提交不会隐式 commit 或清空已暂存的控制消息；后续 commit 仍会提交这些控制消息。
+
+普通电机响应/ACK 等待超时为 **200ms**；初始化固件版本探测仍使用 **100ms** 短超时。
+这些是主机等待时限，与 `SetCanTimeout` 设置的电机通信看门狗参数不同。
+等待反馈的 control 调用仍需要另一个执行路径及时 commit，否则会等待超时。
 
 ```cpp
 auto* adapter = encos::MakeAdapter("Can", "can0");
 auto* bus = adapter->GetBus(0);
 
-// 先完成扫描、设备创建和所有需要等待响应的初始化。
+// 可以先完成扫描和设备创建；这些管理请求在软同步开启后也会即时提交。
 auto motors = bus->ScanMotors();
 auto* motor = bus->GetMotor(1, encos::MotorModel::EC_A4310_P2);
 
@@ -115,7 +117,7 @@ bus->Commit();
 `bus->Commit()` 或 `adapter->Commit()` 返回只表示具体 Adapter 已接收这一批消息，不表示
 物理 CAN/EtherCAT/串口发送完成，也不表示设备已经执行或返回响应。对于 EtherCAT 和
 RelayWs，同一 Bus 的不同同步批次不会被合入同一个底层输出包；不同 Bus 仍可复用可用槽位。
-具体 Adapter 原有的发送循环、重试和周期调度方式不受软同步模式影响。
+EtherCAT（SOEM 和 IGH）的即时请求到达后直接填入统一待发送帧队列的空槽，不受 commit 代次限制；commit 用对应 Bus 的剩余槽位填入软同步控制消息，容量不足时追加后续帧。同一 Bus 的不同 commit 仍保持批次边界，晚到的即时请求可以填充前序帧的空槽，但不会挤出已占用槽位，也不会将已排好的控制消息移到后续帧。每次入队后统一检查积压，超过 3 帧时仅保留最后一帧，即时请求和控制消息都可能被裁剪；链路断开时也执行此规则。发送线程每周期取出一帧，即时入队不等于立即上线路，被裁剪的查询仍会等待到响应超时。
 
 ---
 
@@ -199,7 +201,7 @@ for (const auto& [idx, bus] : buses) {
 
 ### 4.1 通过已知电机型号创建
 
-当你明确知道电机型号时，可直接传入 `MotorModel` 枚举。库会使用该型号预定义的 PVT 控制范围和电流量程，无需向电机固件查询这些量程。不过首次创建仍会发送固件版本查询并短暂等待，因此应在默认直接发送模式下完成创建：
+当你明确知道电机型号时，可直接传入 `MotorModel` 枚举。库会使用该型号预定义的 PVT 控制范围和电流量程，无需向电机固件查询这些量程。普通电机首次创建时会发送固件版本查询并短暂等待，因此应在默认直接发送模式下完成创建。
 
 ```cpp
 auto bus = adapter->GetBus(0);
@@ -234,7 +236,7 @@ motor->PVTControl<0>(10.0f, 1.0f, 0.5f, 1.0f, 5.0f);
 `MotorProperties` 还带两个只读能力字段：
 
 - `brake`：电机是否带机械抱闸，**只在按型号初始化时**由型号表 `motor_models.csv` 的 `brake` 列给出；其它初始化方式一律为 `false`。可用 `Motor::HasBrake()` 直接查询。
-- `fw_version`：构造时查询到的固件版本（BCD `0xYYMMDDHH`），`0` 表示旧版固件或不支持该查询。
+- `fw_version`：构造时查询到的固件版本（BCD `0xYYMMDDHH`），`0` 表示版本未知，也用于旧版固件。
 
 `Motor::SetProperties()` 只更新上表的范围字段，不会覆盖 `kt`、`brake` 与 `fw_version`。旧名 `MotorPVTRanges` / `GetPVTRanges()` / `SetDriverPVTRanges()` 仍可用，但已标注弃用。
 
@@ -302,7 +304,7 @@ auto battery = bus->GetBattery(0);
 电池对象提供两类能力：
 
 - 状态监听：`GetStatus()` 返回 `0x3F4`、`0x2F4`、`0x0F4`、`0x1F4` 汇总后的状态快照。
-- 主控命令：可通过 `SendPassiveCommands()` 或薄封装方法如 `ClearFault()`、`RequestCharging(bool)`、`AllowDischarge(bool)` 向 `0x4F4 + idx` 发送控制位。
+- 主控命令：可通过 `SendPassiveCommands()` 或薄封装方法如 `ClearFault()`、`RequestCharging(bool)`、`AllowDischarge(bool)` 向 `0x4F4 + 2 * idx` 发送控制位。
 
 如果需要订阅状态变化，可注册回调：
 
@@ -315,6 +317,37 @@ battery->SetOnStatus([](const encos::BatteryStatus& status) {
 ```
 
 每条有效电池状态报文都会更新对应状态分组，并在接收线程中同步触发一次回调。回调携带当前汇总快照；未被本帧更新的分组可能来自较早的报文，不保证多个分组来自同一采样时刻。
+
+### 4.7 管理灵巧手网关
+
+通过连接到网关的 `Bus` 获取管理对象。选择与灵巧手网关实际相连的物理接口或转发总线。
+默认设备基址为 `0x001`，有效范围为 `1–247`。总线上只有一台灵巧手网关时，可用
+`GetDexHand(0)` 通过广播地址查询当前基址。EtherCAT 三总线十槽 PDO 要求使用非零 CAN ID。
+
+```cpp
+auto* hand = bus->GetDexHand(0x001);
+const auto points = hand->GetSamplePoints();
+const auto saved = hand->SetSamplePoints({750, 875});
+
+const auto address = hand->SetBaseId(0x015);
+if (address.value) {
+    hand = bus->GetDexHand(*address.value);
+    auto* motor = bus->GetMotor(*address.value, 1U, encos::MotorModel::EC_DEXTEROUS_HAND);
+    // 用新基址对应的子电机对象继续控制。
+}
+```
+
+管理方法立即发送短帧并等待应答，默认使用经典 CAN，等待时间为 500 ms。可通过
+`DexHandRequestOptions` 启用 CAN FD + BRS 或调整等待时间。同一请求地址一次允许一个管理请求。
+用 `reply.status` 区分固件拒绝、保存失败、固件忙和本地超时或取消，成功时 `reply.value`
+包含固件返回的参数。
+
+用 `EC_DEXTEROUS_HAND` 型号创建带子 ID 的关节时，初始化直接加载该型号的预置参数。
+
+采样点的单位为 0.1%，`750` 和 `875` 分别表示 75.0% 和 87.5%。查询读取已保存的值，
+设置应答使用当前时序，新采样点在网关重启后生效。基址设置应答沿用请求 ID，之后网关立即使用新基址。
+管理对象随总线销毁，可用 `encos::DeleteDexHand()` 提前释放。
+在单线程 Emscripten C++ 中，应等管理调用返回后再销毁设备或其父对象。
 
 ---
 
@@ -370,7 +403,14 @@ auto angle = motor->GetParameter<encos::MotorParameter::EncoderAngle>();        
 
 > **阻塞行为**：`GetParameter` 会发送查询指令并**阻塞等待**电机响应，返回后才继续执行；超时抛出 `std::runtime_error`。完整支持的参数列表见 API 头文件。
 
-> **固件版本**：驱动在构造电机时会发一帧固件版本查询（0x32）并记入 `GetProperties().fw_version`。`ProductId`/`HardwareVersion`/`FirmwareVersion`/`EncoderAngle` 属于新版查询，旧版固件不支持时会超时抛异常。`BrakeStatus` 属于旧版协议；新版协议不再提供该查询，无应答时同样会超时。`fw_version == 0` 也可能表示版本探测未收到应答，应结合设备固件能力判断。
+`encos::SetMotorRetryCount(unsigned int retry_count)` 设置进程内所有电机 `GetParameter` 的超时重试次数，
+`encos::GetMotorRetryCount()` 返回当前值。默认额外重试 1 次；设为 0 后只发送一次，超时即抛出异常。
+设置和读取均为线程安全；每次调用开始时读取配置，修改不影响已开始的调用。每次尝试最多等待 200ms，
+该设置不重复控制、写参数、扫描或日志操作。例如，测量单次查询延迟前调用 `encos::SetMotorRetryCount(0)`，
+可避免成功重试掩盖首次超时。
+
+
+> **固件版本**：驱动通常在构造电机时发送固件版本查询（0x32）并记入 `GetProperties().fw_version`。`EC_DEXTEROUS_HAND` 子电机直接加载型号预置，初始 `fw_version` 为 0。`ProductId`/`HardwareVersion`/`FirmwareVersion`/`EncoderAngle` 属于新版查询，旧版固件不支持时会超时抛异常。`BrakeStatus` 属于旧版协议；新版协议不再提供该查询，无应答时同样会超时。`fw_version == 0` 也可能表示版本探测未收到应答，应结合设备固件能力判断。
 
 ### 5.4 运动控制
 
@@ -671,7 +711,8 @@ struct MotorStatus {
 ## 九、Linux 系统配置与线程部署建议
 
 新版本驱动不要求 CPU 隔离，也不会把通信线程绑定到固定 CPU。Linux 部署主要需要确认
-总线访问权限和实时线程优先级权限。
+总线访问权限和实时线程优先级权限。这些是正常运行的基础条件，不代表普通桌面内核能
+保证每个控制周期准时完成；毫秒级周期的长尾排查与调优见 9.7 节。
 
 ### 9.1 基础运行权限
 
@@ -797,3 +838,119 @@ void InitRealtimeMutex() {
 3. 应用控制线程是否使用低于驱动通信线程的合理优先级
 4. 是否存在普通线程长时间持锁导致的优先级反转
 5. 日志、内存分配、文件 IO 或其他阻塞工作是否进入实时路径
+6. 报文是否已进入内核，但通信线程迟迟未获得 CPU；此时应检查内核工作队列、中断和
+   抢占模式，而不能仅凭接收函数耗时或反馈缺口判断网口丢包
+
+支持运行诊断的 Ethernet 网关会在 warn 日志中报告 `network diagnostic`，包含 slave/IP、
+端口或队列及累计错误计数。`rx_fifo_overflow` 表示板内 FIFO 溢出，`timeouts`（DMA）
+表示发送 DMA 超时，`queue_or_session_rejected` 表示 UDP 入队或会话拒绝。
+`baseline(since boot)` 是历史累计值，`(+N)` 才是相对上次快照的增量；相同快照不重复输出。
+需同时更新 driver 和网关固件；完全断链时以心跳超时日志为准。
+
+Node/V8 等托管运行时建议在创建适配器前设置 `ENCOS_MEMORY_LOCK=none`，避免进程级
+`mlockall` 与 GC 的 `madvise(MADV_DONTNEED)` 冲突；新版 emcli 默认采用此设置。
+它保留通信线程实时优先级，但不锁定进程内存，因此仍需关注缺页带来的延迟。
+原生 C++ 默认保持 `all`；环境变量不会解除此前已锁定的内存。
+
+### 9.7 性能调优注意事项
+
+**实时优先级和完整 WKC 不保证每个控制周期准时完成。** 实测中，报文已进入内核，
+FIFO 50 通信线程仍可能延迟数毫秒才处理。DRM 显示轮询 `output_poll_execute` 曾阻挡
+已唤醒线程；也观察到线程睡眠期间的长延迟，不能把所有反馈缺口都视为网口丢包。
+
+建议：
+
+- 用 Tracy 区分发送、接收与其他阶段，结合内核收包时间戳、调度和工作队列事件定位。
+- 动态抢占内核可用 `sudo cat /sys/kernel/debug/sched/preempt` 确认模式。
+  `preempt=full` 能减轻部分长尾，但不等同于 PREEMPT_RT，也不保证严格的周期上限。
+- 分别对照图形应用、DRM 轮询和 CPU 空闲状态；仅绑定通信线程 CPU 未必有效。
+  `/dev/cpu_dma_latency` 的临时约束可用于排查，但强约束会增加功耗，结束后应释放。
+- 保留丢弃旧控制批次的策略，分别统计超周期、WKC、队列裁剪和电机反馈缺口，
+  避免增大队列掩盖调度停顿。
+- 用实际负载持续压测，关注 P99.9、最大延迟和超周期次数，短测零缺口不代表修复。
+
+三网关、64 模拟电机、1 ms 周期下，仅 `full` 的 10 分钟复测仍有毫秒级长尾；
+增加 0 µs 空闲延迟约束后，同长度测试收发均为 38,400,000，零裁剪，交换周期最大
+1.266 ms。但放宽到 10 µs 后，120 秒内再次出现 DRM 阻挡和 192 条反馈缺口。
+0 µs 长测的 DRM 工作在 CPU 12，通信线程未进入该 CPU，存在执行位置的混杂因素；
+不能把零缺口全部归因于空闲约束，也不能据此承诺严格 1 ms 或认定 DRM 干扰已消除。
+
+#### 启用 `preempt=full`
+
+支持 `CONFIG_PREEMPT_DYNAMIC=y` 且提供下列 debugfs 接口的内核，可不重启切换。
+先记录原模式，写入后输出中的 `(full)` 表示当前生效：
+
+```bash
+sudo cat /sys/kernel/debug/sched/preempt
+preempt_before=$(sudo cat /sys/kernel/debug/sched/preempt | sed -n 's/.*(\([^)]*\)).*/\1/p')
+printf 'full\n' | sudo tee /sys/kernel/debug/sched/preempt
+sudo cat /sys/kernel/debug/sched/preempt
+```
+
+若 debugfs 未挂载，先执行 `sudo mount -t debugfs debugfs /sys/kernel/debug`；挂载后
+仍无该接口，需检查内核配置，不能仅靠创建文件启用。恢复时，在同一终端执行：
+
+```bash
+printf '%s\n' "$preempt_before" | sudo tee /sys/kernel/debug/sched/preempt
+```
+
+需要开机生效时，Ubuntu/Debian 的 GRUB 用户可用 `sudoedit /etc/default/grub`，在
+现有 `GRUB_CMDLINE_LINUX_DEFAULT` 引号内追加 `preempt=full`（已有 `preempt=` 时替换，
+保留其他参数），执行 `sudo update-grub` 后在计划重启时生效。重启后检查
+`cat /proc/cmdline` 和上述 debugfs 输出；撤销则移除新增参数或恢复原值，再更新 GRUB、
+重启。`full` 不等同于 PREEMPT_RT，参数含义见[内核启动参数文档](https://docs.kernel.org/admin-guide/kernel-parameters.html)。
+
+#### 设置 CPU 空闲延迟约束
+
+这是全局 CPU 退出空闲状态的延迟约束，单位为 µs，不改变控制周期，也不是实际延迟
+保证。下面以 `10` µs 为例；改为 `0` 更严格，本机实测会使 CPU 使用 POLL，增加功耗。
+在独立终端前台运行，保持进程存活，再从另一终端启动控制或压测：
+
+```bash
+sudo python3 - 10 <<'PY'
+import signal
+import struct
+import sys
+
+latency_us = int(sys.argv[1])
+if latency_us < 0:
+    raise SystemExit("延迟约束必须非负")
+with open("/dev/cpu_dma_latency", "wb", buffering=0) as request:
+    request.write(struct.pack("=i", latency_us))
+    print(f"已请求 CPU 空闲延迟 <= {latency_us} us；Ctrl+C 释放", flush=True)
+    try:
+        while True:
+            signal.pause()
+    except KeyboardInterrupt:
+        pass
+PY
+```
+
+写入成功后才会打印提示；可用 `sudo fuser /dev/cpu_dma_latency` 确认持有进程。
+按 Ctrl+C 退出即释放本次请求；其他进程的请求仍有效。**不能用一次性的 `echo` 代替**：
+接口要求特定数值格式，并且关闭文件描述符就撤销请求。无需重启，详见
+[PM QoS 接口文档](https://docs.kernel.org/power/pm_qos_interface.html)。
+
+#### 临时关闭 DRM 显示轮询
+
+先记录原值，再关闭并读回，预期为 `N`。这是显示接口连接检测，不是屏幕刷新；
+关闭后可能影响显示器、KVM 或扩展坞的热插拔识别，适合固定接屏环境的对照测试。
+
+```bash
+drm_poll_before=$(sudo cat /sys/module/drm_kms_helper/parameters/poll)
+printf 'N\n' | sudo tee /sys/module/drm_kms_helper/parameters/poll
+sudo cat /sys/module/drm_kms_helper/parameters/poll
+```
+
+测试后在同一终端恢复原值：
+
+```bash
+printf '%s\n' "$drm_poll_before" | sudo tee /sys/module/drm_kms_helper/parameters/poll
+sudo cat /sys/module/drm_kms_helper/parameters/poll
+```
+
+从 `N` 恢复为 `Y` 后，参数读回不代表轮询工作已经重新启动。本机 X11 会话在普通用户
+图形终端执行 `xrandr --query` 触发探测后，已通过工作队列轨迹确认轮询恢复；Wayland
+不能依赖 Xwayland 的 `xrandr`，需使用桌面环境的显示设置重新探测并验证。Linux 6.17
+该路径还会调用驱动的 HPD 禁用回调，不能保证硬件热插拔中断不受影响，见
+[DRM 探测实现](https://github.com/torvalds/linux/blob/v6.17/drivers/gpu/drm/drm_probe_helper.c)。

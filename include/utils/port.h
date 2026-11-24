@@ -22,9 +22,9 @@ namespace encos {
  * CAN ID 由 BasePort 保存；该结构仅保存帧负载、帧标志和实际长度。
  */
 struct PortFrame {
-    std::array<std::uint8_t, 8> data{}; /**< 帧负载 */
-    std::uint8_t frame_flags{0};        /**< CAN 帧标志 */
-    std::uint8_t len{0};                /**< 实际帧长度 */
+    std::array<std::uint8_t, 64> data{}; /**< 帧负载 */
+    std::uint8_t frame_flags{0};         /**< CAN 帧标志 */
+    std::uint8_t len{0};                 /**< 实际帧长度 */
 };
 
 /**
@@ -44,14 +44,20 @@ inline bool operator==(const PortFrame& lhs, const PortFrame& rhs) noexcept {
  */
 class BasePort {
 public:
+    /** @brief 独立于所有 uint32_t CAN ID 的通配标记类型 */
+    enum class AnyCanIdTag { kAny };
+
     /** @brief 表示 Port 可保存不同 CAN ID 的消息 */
-    static constexpr std::uint32_t kAnyCanId = std::numeric_limits<std::uint32_t>::max();
+    static constexpr AnyCanIdTag kAnyCanId = AnyCanIdTag::kAny;
 
     /**
      * @brief 构造指定 CAN ID 的 Port
      * @param can_id 该 Port 对应的 CAN ID
      */
     explicit BasePort(std::uint32_t can_id) noexcept : can_id_(can_id) {}
+
+    /** @brief 构造可保存不同 CAN ID 消息的 Port */
+    explicit BasePort(AnyCanIdTag) noexcept : can_id_(std::nullopt) {}
 
     virtual ~BasePort() = default;
 
@@ -62,17 +68,25 @@ public:
 
     /**
      * @brief 获取构造时指定的 CAN ID
-     * @return 不可修改的 CAN ID
+     * @return 固定 CAN ID；通配 Port 为兼容旧接口返回 UINT32_MAX，需用 IsAnyCanId 区分
      */
     std::uint32_t GetCanId() const noexcept {
-        return can_id_;
+        return can_id_.value_or(std::numeric_limits<std::uint32_t>::max());
+    }
+
+    /**
+     * @brief 查询 Port 是否使用通配 CAN ID
+     * @return 通配 Port 返回 true，包括 UINT32_MAX 在内的固定 CAN ID 返回 false
+     */
+    bool IsAnyCanId() const noexcept {
+        return !can_id_.has_value();
     }
 
     /** @brief 清除调用点之前已经发布的未读消息 */
     virtual void Clear() noexcept = 0;
 
 private:
-    const std::uint32_t can_id_;
+    const std::optional<std::uint32_t> can_id_;
 };
 
 namespace detail {
@@ -366,11 +380,19 @@ public:
     using Callback = std::function<void(const Message&)>;
 
     /**
-     * @brief 构造 Port
-     * @param can_id Port 对应的 CAN ID；多 ID 邮箱使用 kAnyCanId
+     * @brief 构造固定 CAN ID 的 Port
+     * @param can_id Port 对应的 CAN ID，支持完整 uint32_t 范围
      * @param callback 发布完成后在生产者线程同步执行的可选回调
      */
-    explicit Port(std::uint32_t can_id = BasePort::kAnyCanId, Callback callback = {})
+    explicit Port(std::uint32_t can_id, Callback callback = {})
+        : BasePort(can_id), callback_(std::move(callback)) {}
+
+    /**
+     * @brief 构造可保存不同 CAN ID 消息的 Port，也是默认构造行为
+     * @param can_id 通配标记 kAnyCanId
+     * @param callback 发布完成后在生产者线程同步执行的可选回调
+     */
+    explicit Port(AnyCanIdTag can_id = BasePort::kAnyCanId, Callback callback = {})
         : BasePort(can_id), callback_(std::move(callback)) {}
 
     Port(const Port&) = delete;

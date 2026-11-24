@@ -81,9 +81,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ENCOS_STATIC_MODE)
     add_executable(EthercatFdBrokerExecutable
         transport/linux/fd_broker_executable.cc
     )
-    target_link_libraries(EthercatFdBrokerExecutable PRIVATE
-        EncosMotorDriverBase
-    )
+    if(ENCOS_PORTABLE_LINUX)
+        target_link_libraries(EthercatFdBrokerExecutable PRIVATE FdBrokerStandaloneLog)
+    else()
+        target_link_libraries(EthercatFdBrokerExecutable PRIVATE EncosMotorDriverBase)
+    endif()
     target_include_directories(EthercatFdBrokerExecutable PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../utils/fdBroker
     )

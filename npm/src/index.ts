@@ -33,3 +33,12 @@ export type {
   WebSerialRequestOptions,
   WebSerialStatus,
 } from './types.js'
+
+export type {
+  AdapterStatistics,
+  BusStatistics,
+  CanBusStatistics,
+  CanErrorCounters
+} from './adapter.js'
+
+export { StatisticsStatus, ErrorCounterKind } from './adapter.js'

@@ -41,7 +41,9 @@ public:
             throw std::invalid_argument("No Ethernet peers");
     }
     bool Send(unsigned slave, const MotorMessages& messages) override {
-        const auto payload = EncodePayload(messages);
+        return SendPayload(slave, EncodePayload(messages));
+    }
+    bool SendPayload(unsigned slave, const std::vector<uint8_t>& payload) override {
         return peers_.at(slave)->Send(payload.data(), payload.size());
     }
     MotorMessages Receive() override {
@@ -50,7 +52,7 @@ public:
         for (const auto& peer : peers_) {
             // Bound each peer's work so continuous traffic cannot starve other slaves or TX.
             for (unsigned batch = 0; batch < 64; ++batch) {
-                std::array<uint8_t, 1449> packet{};
+                std::array<uint8_t, 1473> packet{};
                 const auto size = peer.second->Receive(packet.data(), packet.size());
                 if (!size)
                     break;

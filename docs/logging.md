@@ -356,7 +356,7 @@ Linux 和 Windows 共用 `Ethercat` 插件的通信循环、状态检查及恢�
 | `Invalid EtherCAT slave count` / `Unknown ... Sync Manager type` / `Zero-length PDO ...` | Error | 从站描述无效或不受支持 | 检查从站固件、PDO/Sync Manager 描述和主站兼容性 |
 | `I/O map ... overflows` / `upper bound ... exceeds ...` | Error | 映射尺寸溢出或超过安全上限 | 减少/修正 PDO 映射；不要简单扩大缓冲区绕过拓扑异常 |
 | `SOEM mapped <n> bytes into a <capacity> byte I/O map` | Error | SOEM 实际映射越过预分配容量 | 停止使用该配置，核对从站 PDO 描述与库支持范围 |
-| `Slave <n> has unsupported Obytes: <bytes>` | Warn | 输出字节数不能映射为支持的 CAN/CAN FD Bus 格式 | 核对从站固件的数据布局；该从站不会得到预期 Bus 映射 |
+| `Slave <n> has unsupported PDO sizes: <out> output, <in> input bytes` | Warn | PDO 字节数不匹配受支持的布局 | 核对网关固件和主站映射，三路十槽布局的两个方向都应是 420 字节 |
 | `Not all slaves reached operational state` + `Slave ... State=... StatusCode=...` | Error | 初始化阶段未全部进入 OP | 根据 EtherCAT AL status code 定位供电、配置、同步或看门狗问题 |
 
 Debug 级别还会输出 I/O map 上界、SAFE_OP 等待、每个从站映射出的 Bus 数和期望 WKC，适合保存完整初始化现场。
@@ -514,7 +514,7 @@ EncosDriver 同时使用三种错误报告方式：
 | `std::runtime_error`: `Bus not initialized` | `Brake()`、ID/零位/参数设置、`GetParameter()` 等 | Motor 已脱离有效 Bus 或初始化不完整；停止控制并检查对象生命周期 |
 | `std::out_of_range`: `SetPos position exceeds int16 centidegree range` | `SetPos(now_pos)` | 目标换算为 0.01° 后超出 `int16_t`；限制输入到协议可表示范围 |
 | `std::invalid_argument`: `Invalid motor communication mode` | `SetCommunicationMode()` | 传入枚举值不在 ClassicCan、CanFd、CanOpen 范围内 | 不要从未校验整数直接强转枚举 |
-| `std::runtime_error`: `Get motor parameter timeout` | `GetParameter<Param>()`、间接调用它的 `InitMotorPVTParam()` | 500 ms 内没有匹配响应 | 确认未过早进入软同步模式，检查 ID、Bus、帧格式和链路 |
+| `std::runtime_error`: `Get motor parameter timeout` | `GetParameter<Param>()`、间接调用它的 `InitMotorPVTParam()` | 200 ms 内没有匹配响应 | 检查 ID、Bus、帧格式、链路和发送队列负载 |
 | `std::invalid_argument`: `Unknown motor model: <name>` | `StringToMotorModel()` | 型号名称不在生成表中 | 用 `GetAllMotorModelStrings()` 校验配置 |
 | `std::invalid_argument`: `Unknown motor model enum` | `MotorModelToString()` | 传入无效枚举值 | 校验反序列化整数，不要构造表外枚举 |
 

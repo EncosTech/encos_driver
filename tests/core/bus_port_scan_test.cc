@@ -262,6 +262,39 @@ TEST(BusPortScanTests, DestroyBusWaitsForScanBatchAcceptance) {
     EXPECT_TRUE(manager.DestroyAdapter(adapter));
 }
 
+TEST(BusPortScanTests, FullCanFdPayloadSurvivesSynchronizedSendAndUnknownMailbox) {
+    auto& manager = EncosDriverManager::Instance();
+    DriverManagerTestAccess::Reset(manager);
+    auto* adapter = static_cast<TestAdapter*>(manager.CreateAdapterWithFactory("bus-port-fd", [] {
+        return new TestAdapter("bus-port-fd");
+    }));
+    auto* bus = manager.CreateBus(adapter, 0);
+    ASSERT_NE(bus, nullptr);
+    {
+        auto writer = BaseAdapterTestAccess::MakeDeviceWriter(adapter, bus);
+        bus->SetSyncMode(true);
+        MotorPackMsg message{};
+        message.id = 0x401;
+        message.frame_flags = kCanFrameFlagFdMask;
+        message.len = 64;
+        ASSERT_EQ(sizeof(message.data), 64U);
+        for (std::size_t i = 0; i < sizeof(message.data); ++i) {
+            message.data[i] = static_cast<uint8_t>(i + 1);
+        }
+        writer(message);
+        EXPECT_TRUE(adapter->GetSentMessages().empty());
+        bus->Commit();
+        const auto sent = adapter->GetSentMessages();
+        ASSERT_EQ(sent.size(), 1U);
+        EXPECT_EQ(sent[0].data, message);
+        adapter->SimulateOnMessage(sent);
+        const auto received = BusPortTestAccess::Drain(bus);
+        ASSERT_EQ(received.size(), 1U);
+        EXPECT_EQ(received[0].data, message);
+    }
+    EXPECT_TRUE(manager.DestroyAdapter(adapter));
+}
+
 TEST(BusPortScanTests, UnknownFramesStayInTheirOwningBusMailbox) {
     auto& manager = EncosDriverManager::Instance();
     DriverManagerTestAccess::Reset(manager);
@@ -400,6 +433,28 @@ TEST(BusPortScanTests, ScanUsesCanFdRepliesAsHighestPriorityForCanDiscoveredIds)
     auto* bus = manager.CreateBus(adapter, 0);
     ASSERT_NE(bus, nullptr);
 
+    const auto discovered = BusPortTestAccess::Scan(bus);
+
+    ASSERT_EQ(discovered.size(), 3u);
+    EXPECT_TRUE(discovered.at(1)->IsCanFdEnabled());
+    EXPECT_FALSE(discovered.at(2)->IsCanFdEnabled());
+    EXPECT_TRUE(discovered.at(3)->IsCanFdEnabled());
+    EXPECT_EQ(adapter->CanFdProbeIds(), (std::set<int>{1, 2, 3}));
+    EXPECT_TRUE(manager.DestroyAdapter(adapter));
+}
+
+TEST(BusPortScanTests, ScanAndInitializationCompleteInSyncModeWithoutCommit) {
+    auto& manager = EncosDriverManager::Instance();
+    DriverManagerTestAccess::Reset(manager);
+    auto* adapter = static_cast<ProtocolEchoDiscoveryAdapter*>(
+        manager.CreateAdapterWithFactory("protocol-echo-discovery", [] {
+            return new ProtocolEchoDiscoveryAdapter();
+        }));
+    ASSERT_NE(adapter, nullptr);
+    auto* bus = manager.CreateBus(adapter, 0);
+    ASSERT_NE(bus, nullptr);
+
+    bus->SetSyncMode(true);
     const auto discovered = BusPortTestAccess::Scan(bus);
 
     ASSERT_EQ(discovered.size(), 3u);

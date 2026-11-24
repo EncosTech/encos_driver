@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -18,6 +19,8 @@ namespace encos::wasm {
 
 namespace {
 
+thread_local RuntimeStore* thread_store = nullptr;
+
 std::string DefaultLoggerName(const std::string& adapter_type, const std::string& logger_name) {
     if (!logger_name.empty()) {
         return logger_name;
@@ -28,8 +31,28 @@ std::string DefaultLoggerName(const std::string& adapter_type, const std::string
 }  // namespace
 
 RuntimeStore& Store() {
+    if (thread_store != nullptr) {
+        return *thread_store;
+    }
     static RuntimeStore store;
     return store;
+}
+
+RuntimeStore* SetThreadStore(RuntimeStore* store) {
+    auto* previous = thread_store;
+    thread_store = store;
+    return previous;
+}
+
+void RuntimeStore::DisposeAll() {
+    std::vector<std::uint32_t> handles;
+    for (const auto& [handle, entry] : adapters_) {
+        (void) entry;
+        handles.push_back(handle);
+    }
+    for (auto handle : handles) {
+        DisposeAdapter(handle);
+    }
 }
 
 ErrorCode SetResultError(ErrorCode code, const std::string& message) {
@@ -51,7 +74,8 @@ std::uint32_t RuntimeStore::AllocateHandle() {
 Result<std::uint32_t> RuntimeStore::CreateAdapter(const std::string& adapter_type,
                                                   const std::string& interface_name,
                                                   const std::string& logger_name,
-                                                  LogLevel log_level) {
+                                                  LogLevel log_level,
+                                                  const nlohmann::json& extend) {
     if (adapter_type.empty()) {
         return Result<std::uint32_t>::Failure(ErrorCode::InvalidArgument,
                                               "adapter_type must not be empty");
@@ -74,7 +98,7 @@ Result<std::uint32_t> RuntimeStore::CreateAdapter(const std::string& adapter_typ
     BaseAdapter* adapter = nullptr;
     try {
         adapter = EncosDriverManager::Instance().CreateAdapter(adapter_type, interface_name,
-                                                               logger_name, log_level);
+                                                               logger_name, log_level, extend);
     } catch (...) {
         adapter_handle_leases_.erase(nullptr);
         adapters_.erase(entry_it);
@@ -674,7 +698,7 @@ ErrorCode RuntimeStore::InjectFakeRawMessage(std::uint32_t adapter_handle, int b
     if (data == nullptr) {
         return ErrorCode::InvalidArgument;
     }
-    if (len < 0 || len > 8) {
+    if (len < 0 || len > static_cast<int>(sizeof(MotorPackMsg::data))) {
         return ErrorCode::InvalidArgument;
     }
 
@@ -724,4 +748,446 @@ const ErrorState& RuntimeStore::LastError() const {
     return last_error_;
 }
 
+Result<std::uint32_t> RuntimeStore::AdoptBus(std::uint32_t parent, Bus* pointer) {
+    auto adapter = ResolveAdapter(parent);
+    if (!adapter.Ok() || !pointer)
+        return Result<std::uint32_t>::Failure(ErrorCode::InvalidHandle, "invalid parent or bus");
+    for (auto& [handle, entry] : buses_)
+        if (entry.adapter_handle == parent && entry.bus == pointer)
+            return Result<std::uint32_t>::Success(handle);
+    auto handle = AllocateHandle();
+    const int index = pointer->GetBusIndex();
+    buses_[handle] = BusEntry{parent, pointer, BusKey{index, -1, index}, {}, {}, {}, true};
+    adapter.value->child_bus_handles.push_back(handle);
+    adapter.value->bus_handles_by_raw_index[index] = handle;
+    return Result<std::uint32_t>::Success(handle);
+}
+Result<std::uint32_t> RuntimeStore::AdoptMotor(std::uint32_t parent, Motor* pointer) {
+    auto bus = ResolveBus(parent);
+    if (!bus.Ok() || !pointer)
+        return Result<std::uint32_t>::Failure(ErrorCode::InvalidHandle, "invalid parent or motor");
+    RefreshMotorIndices();
+    for (auto& [handle, entry] : motors_)
+        if (entry.bus_handle == parent && entry.motor == pointer)
+            return Result<std::uint32_t>::Success(handle);
+    auto handle = AllocateHandle();
+    std::optional<int> index;
+    for (const auto& item : EncosDriverManager::Instance().GetMotors(bus.value->bus))
+        if (item.second == pointer)
+            index = item.first;
+    if (!index)
+        return Result<std::uint32_t>::Failure(ErrorCode::InvalidHandle, "motor is not registered");
+    motors_[handle] = MotorEntry{bus.value->adapter_handle, parent, *index, pointer, true};
+    bus.value->motor_handles_by_index[*index] = handle;
+    adapters_.at(bus.value->adapter_handle).child_motor_handles.push_back(handle);
+    return Result<std::uint32_t>::Success(handle);
+}
+void RuntimeStore::RefreshMotorIndices() {
+    for (auto& [handle, bus] : buses_) {
+        (void) handle;
+        bus.motor_handles_by_index.clear();
+    }
+    for (auto it = motors_.begin(); it != motors_.end();) {
+        auto& motor = it->second;
+        auto bus = ResolveBus(motor.bus_handle);
+        std::optional<int> index;
+        if (bus.Ok())
+            for (const auto& item : EncosDriverManager::Instance().GetMotors(bus.value->bus))
+                if (item.second == motor.motor)
+                    index = item.first;
+        if (!index) {
+            it = motors_.erase(it);
+            continue;
+        }
+        motor.motor_idx = *index;
+        bus.value->motor_handles_by_index[*index] = it->first;
+        ++it;
+    }
+}
+Result<std::uint32_t> RuntimeStore::AdoptBattery(std::uint32_t parent, Battery* pointer,
+                                                 int index) {
+    auto bus = ResolveBus(parent);
+    if (!bus.Ok() || !pointer)
+        return Result<std::uint32_t>::Failure(ErrorCode::InvalidHandle,
+                                              "invalid parent or battery");
+    for (auto& [handle, entry] : batteries_)
+        if (entry.bus_handle == parent && entry.battery == pointer)
+            return Result<std::uint32_t>::Success(handle);
+    auto handle = AllocateHandle();
+    batteries_[handle] = BatteryEntry{bus.value->adapter_handle, parent, index, pointer, true};
+    bus.value->battery_handles_by_index[index] = handle;
+    adapters_.at(bus.value->adapter_handle).child_battery_handles.push_back(handle);
+    return Result<std::uint32_t>::Success(handle);
+}
+Result<std::uint32_t> RuntimeStore::AdoptImu(std::uint32_t parent, Imu* pointer, int index) {
+    auto bus = ResolveBus(parent);
+    if (!bus.Ok() || !pointer)
+        return Result<std::uint32_t>::Failure(ErrorCode::InvalidHandle, "invalid parent or imu");
+    for (auto& [handle, entry] : imus_)
+        if (entry.bus_handle == parent && entry.imu == pointer)
+            return Result<std::uint32_t>::Success(handle);
+    auto handle = AllocateHandle();
+    imus_[handle] = ImuEntry{bus.value->adapter_handle, parent, index, pointer, true};
+    bus.value->imu_handles_by_index[index] = handle;
+    adapters_.at(bus.value->adapter_handle).child_imu_handles.push_back(handle);
+    return Result<std::uint32_t>::Success(handle);
+}
+Result<std::uint32_t> RuntimeStore::AdoptPms(std::uint32_t parent, Pms* pointer) {
+    auto bus = ResolveBus(parent);
+    if (!bus.Ok() || !pointer)
+        return Result<std::uint32_t>::Failure(ErrorCode::InvalidHandle, "invalid parent or pms");
+    for (auto& [handle, entry] : pmss_)
+        if (entry.bus_handle == parent && entry.pms == pointer)
+            return Result<std::uint32_t>::Success(handle);
+    auto handle = AllocateHandle();
+    pmss_[handle] = PmsEntry{bus.value->adapter_handle, parent, pointer};
+    return Result<std::uint32_t>::Success(handle);
+}
+Result<std::uint32_t> RuntimeStore::AdoptDexHand(std::uint32_t parent, DexHand* hand) {
+    auto bus = ResolveBus(parent);
+    if (!bus.Ok() || !hand) {
+        return Result<std::uint32_t>::Failure(ErrorCode::InvalidHandle,
+                                              "invalid parent or DexHand");
+    }
+    auto& handles = bus.value->dex_hand_handles;
+    for (const auto& [handle, pointer] : handles) {
+        if (pointer == hand) {
+            return Result<std::uint32_t>::Success(handle);
+        }
+    }
+    const auto handle = AllocateHandle();
+    handles.emplace(handle, hand);
+    return Result<std::uint32_t>::Success(handle);
+}
+Result<std::uint32_t> RuntimeStore::AdoptGlove(std::uint32_t parent, Glove* pointer,
+                                               int slave_index) {
+    if (!ResolveAdapter(parent).Ok() || !pointer)
+        return Result<std::uint32_t>::Failure(ErrorCode::InvalidHandle, "invalid parent or glove");
+    for (auto& [handle, entry] : gloves_)
+        if (entry.adapter_handle == parent && entry.glove == pointer)
+            return Result<std::uint32_t>::Success(handle);
+    auto handle = AllocateHandle();
+    gloves_[handle] = GloveEntry{parent, pointer, slave_index};
+    return Result<std::uint32_t>::Success(handle);
+}
+Result<PmsEntry*> RuntimeStore::ResolvePms(std::uint32_t handle) {
+    auto it = pmss_.find(handle);
+    if (it == pmss_.end() || !ResolveBus(it->second.bus_handle).Ok())
+        return Result<PmsEntry*>::Failure(ErrorCode::InvalidHandle, "invalid pms handle");
+    return Result<PmsEntry*>::Success(&it->second);
+}
+Result<DexHand*> RuntimeStore::ResolveDexHand(std::uint32_t handle) {
+    for (const auto& entry : buses_) {
+        const auto& handles = entry.second.dex_hand_handles;
+        if (auto it = handles.find(handle); it != handles.end()) {
+            return Result<DexHand*>::Success(it->second);
+        }
+    }
+    return Result<DexHand*>::Failure(ErrorCode::InvalidHandle, "invalid DexHand handle");
+}
+Result<GloveEntry*> RuntimeStore::ResolveGlove(std::uint32_t handle) {
+    auto it = gloves_.find(handle);
+    if (it == gloves_.end() || !ResolveAdapter(it->second.adapter_handle).Ok())
+        return Result<GloveEntry*>::Failure(ErrorCode::InvalidHandle, "invalid glove handle");
+    return Result<GloveEntry*>::Success(&it->second);
+}
+ErrorCode RuntimeStore::DisposeMotor(std::uint32_t handle) {
+    auto resolved = ResolveMotor(handle);
+    if (!resolved.Ok())
+        return resolved.code;
+    auto* pointer = resolved.value->motor;
+    if (!EncosDriverManager::Instance().DestroyMotor(pointer))
+        return ErrorCode::OperationFailed;
+    for (auto it = motors_.begin(); it != motors_.end();) {
+        if (it->second.motor == pointer)
+            it = motors_.erase(it);
+        else
+            ++it;
+    }
+    for (auto& [bus_handle, bus] : buses_) {
+        (void) bus_handle;
+        for (auto it = bus.motor_handles_by_index.begin();
+             it != bus.motor_handles_by_index.end();) {
+            if (motors_.count(it->second) == 0)
+                it = bus.motor_handles_by_index.erase(it);
+            else
+                ++it;
+        }
+    }
+    return ErrorCode::Ok;
+}
+ErrorCode RuntimeStore::DisposeBattery(std::uint32_t handle) {
+    auto resolved = ResolveBattery(handle);
+    if (!resolved.Ok())
+        return resolved.code;
+    auto* pointer = resolved.value->battery;
+    if (!EncosDriverManager::Instance().DestroyBattery(pointer))
+        return ErrorCode::OperationFailed;
+    for (auto it = batteries_.begin(); it != batteries_.end();) {
+        if (it->second.battery == pointer)
+            it = batteries_.erase(it);
+        else
+            ++it;
+    }
+    for (auto& [bus_handle, bus] : buses_) {
+        (void) bus_handle;
+        for (auto it = bus.battery_handles_by_index.begin();
+             it != bus.battery_handles_by_index.end();) {
+            if (batteries_.count(it->second) == 0)
+                it = bus.battery_handles_by_index.erase(it);
+            else
+                ++it;
+        }
+    }
+    return ErrorCode::Ok;
+}
+ErrorCode RuntimeStore::DisposeImu(std::uint32_t handle) {
+    auto resolved = ResolveImu(handle);
+    if (!resolved.Ok())
+        return resolved.code;
+    auto* pointer = resolved.value->imu;
+    if (!EncosDriverManager::Instance().DestroyImu(pointer))
+        return ErrorCode::OperationFailed;
+    for (auto it = imus_.begin(); it != imus_.end();) {
+        if (it->second.imu == pointer)
+            it = imus_.erase(it);
+        else
+            ++it;
+    }
+    for (auto& [bus_handle, bus] : buses_) {
+        (void) bus_handle;
+        for (auto it = bus.imu_handles_by_index.begin(); it != bus.imu_handles_by_index.end();) {
+            if (imus_.count(it->second) == 0)
+                it = bus.imu_handles_by_index.erase(it);
+            else
+                ++it;
+        }
+    }
+    return ErrorCode::Ok;
+}
+ErrorCode RuntimeStore::DisposePms(std::uint32_t handle) {
+    auto resolved = ResolvePms(handle);
+    if (!resolved.Ok())
+        return resolved.code;
+    auto* pointer = resolved.value->pms;
+    if (!EncosDriverManager::Instance().DestroyPms(pointer))
+        return ErrorCode::OperationFailed;
+    for (auto it = pmss_.begin(); it != pmss_.end();) {
+        if (it->second.pms == pointer)
+            it = pmss_.erase(it);
+        else
+            ++it;
+    }
+    return ErrorCode::Ok;
+}
+ErrorCode RuntimeStore::DisposeDexHand(std::uint32_t handle) {
+    auto resolved = ResolveDexHand(handle);
+    if (!resolved.Ok()) {
+        return resolved.code;
+    }
+    auto* hand = resolved.value;
+    if (!EncosDriverManager::Instance().DestroyDexHand(hand)) {
+        return ErrorCode::OperationFailed;
+    }
+    for (auto& entry : buses_) {
+        auto& handles = entry.second.dex_hand_handles;
+        for (auto it = handles.begin(); it != handles.end();) {
+            if (it->second == hand) {
+                it = handles.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    return ErrorCode::Ok;
+}
+ErrorCode RuntimeStore::DisposeGlove(std::uint32_t handle) {
+    auto resolved = ResolveGlove(handle);
+    if (!resolved.Ok())
+        return resolved.code;
+    auto* pointer = resolved.value->glove;
+    if (!EncosDriverManager::Instance().DestroyGlove(pointer))
+        return ErrorCode::OperationFailed;
+    for (auto it = gloves_.begin(); it != gloves_.end();) {
+        if (it->second.glove == pointer)
+            it = gloves_.erase(it);
+        else
+            ++it;
+    }
+    std::unordered_set<std::uint32_t> removed_buses;
+    for (auto it = buses_.begin(); it != buses_.end();) {
+        auto parent = ResolveAdapter(it->second.adapter_handle);
+        bool alive = false;
+        if (parent.Ok())
+            for (const auto& bus : EncosDriverManager::Instance().GetBuses(parent.value->adapter))
+                if (bus.second == it->second.bus)
+                    alive = true;
+        if (!alive) {
+            removed_buses.insert(it->first);
+            it = buses_.erase(it);
+        } else
+            ++it;
+    }
+    for (auto it = motors_.begin(); it != motors_.end();) {
+        if (removed_buses.count(it->second.bus_handle))
+            it = motors_.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = batteries_.begin(); it != batteries_.end();) {
+        if (removed_buses.count(it->second.bus_handle))
+            it = batteries_.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = imus_.begin(); it != imus_.end();) {
+        if (removed_buses.count(it->second.bus_handle))
+            it = imus_.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = pmss_.begin(); it != pmss_.end();) {
+        if (removed_buses.count(it->second.bus_handle))
+            it = pmss_.erase(it);
+        else
+            ++it;
+    }
+    for (auto& adapter : adapters_)
+        for (auto it = adapter.second.bus_handles_by_raw_index.begin();
+             it != adapter.second.bus_handles_by_raw_index.end();) {
+            if (removed_buses.count(it->second))
+                it = adapter.second.bus_handles_by_raw_index.erase(it);
+            else
+                ++it;
+        }
+    return ErrorCode::Ok;
+}
+ErrorCode RuntimeStore::DisposeBus(std::uint32_t handle) {
+    auto resolved = ResolveBus(handle);
+    if (!resolved.Ok())
+        return resolved.code;
+    auto* pointer = resolved.value->bus;
+    if (!EncosDriverManager::Instance().DestroyBus(pointer))
+        return ErrorCode::OperationFailed;
+    std::unordered_set<std::uint32_t> deleted;
+    for (auto it = buses_.begin(); it != buses_.end();) {
+        if (it->second.bus == pointer) {
+            deleted.insert(it->first);
+            it = buses_.erase(it);
+        } else
+            ++it;
+    }
+    for (auto it = motors_.begin(); it != motors_.end();) {
+        if (deleted.count(it->second.bus_handle))
+            it = motors_.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = batteries_.begin(); it != batteries_.end();) {
+        if (deleted.count(it->second.bus_handle))
+            it = batteries_.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = imus_.begin(); it != imus_.end();) {
+        if (deleted.count(it->second.bus_handle))
+            it = imus_.erase(it);
+        else
+            ++it;
+    }
+    for (auto it = pmss_.begin(); it != pmss_.end();) {
+        if (deleted.count(it->second.bus_handle))
+            it = pmss_.erase(it);
+        else
+            ++it;
+    }
+    for (auto& [adapter_handle, adapter] : adapters_) {
+        (void) adapter_handle;
+        for (auto it = adapter.bus_handles_by_raw_index.begin();
+             it != adapter.bus_handles_by_raw_index.end();) {
+            if (deleted.count(it->second))
+                it = adapter.bus_handles_by_raw_index.erase(it);
+            else
+                ++it;
+        }
+    }
+    return ErrorCode::Ok;
+}
+bool RuntimeStore::IsHandleAlive(std::uint32_t handle) {
+    return ResolveAdapter(handle).Ok() || ResolveBus(handle).Ok() || ResolveMotor(handle).Ok() ||
+           ResolveBattery(handle).Ok() || ResolveImu(handle).Ok() || ResolvePms(handle).Ok() ||
+           ResolveGlove(handle).Ok();
+}
+bool RuntimeStore::IsHandleDescendant(std::uint32_t source, std::uint32_t target) const {
+    if (source == target)
+        return true;
+    std::uint32_t adapter = 0, bus = 0;
+    if (auto it = buses_.find(source); it != buses_.end()) {
+        adapter = it->second.adapter_handle;
+        bus = source;
+    }
+    if (auto it = motors_.find(source); it != motors_.end()) {
+        adapter = it->second.adapter_handle;
+        bus = it->second.bus_handle;
+    }
+    if (auto it = batteries_.find(source); it != batteries_.end()) {
+        adapter = it->second.adapter_handle;
+        bus = it->second.bus_handle;
+    }
+    if (auto it = imus_.find(source); it != imus_.end()) {
+        adapter = it->second.adapter_handle;
+        bus = it->second.bus_handle;
+    }
+    if (auto it = pmss_.find(source); it != pmss_.end()) {
+        adapter = it->second.adapter_handle;
+        bus = it->second.bus_handle;
+    }
+    if (auto it = gloves_.find(source); it != gloves_.end())
+        adapter = it->second.adapter_handle;
+    if (adapter == target)
+        return true;
+    auto target_bus = buses_.find(target);
+    auto source_bus = buses_.find(bus);
+    auto target_glove = gloves_.find(target);
+    if (target_glove != gloves_.end() && source_bus != buses_.end()) {
+        const auto glove_adapter = adapters_.find(target_glove->second.adapter_handle);
+        const auto source_adapter = adapters_.find(source_bus->second.adapter_handle);
+        if (glove_adapter != adapters_.end() && source_adapter != adapters_.end() &&
+            glove_adapter->second.adapter == source_adapter->second.adapter) {
+            for (int finger = 0; finger < 5; ++finger)
+                if (source_bus->second.key.raw_idx ==
+                    target_glove->second.slave_index * 65536 + finger)
+                    return true;
+        }
+    }
+    if (target_bus != buses_.end() && source_bus != buses_.end() &&
+        target_bus->second.bus == source_bus->second.bus)
+        return true;
+    if (auto left = motors_.find(source); left != motors_.end()) {
+        auto right = motors_.find(target);
+        if (right != motors_.end() && left->second.motor == right->second.motor)
+            return true;
+    }
+    if (auto left = batteries_.find(source); left != batteries_.end()) {
+        auto right = batteries_.find(target);
+        if (right != batteries_.end() && left->second.battery == right->second.battery)
+            return true;
+    }
+    if (auto left = imus_.find(source); left != imus_.end()) {
+        auto right = imus_.find(target);
+        if (right != imus_.end() && left->second.imu == right->second.imu)
+            return true;
+    }
+    if (auto left = pmss_.find(source); left != pmss_.end()) {
+        auto right = pmss_.find(target);
+        if (right != pmss_.end() && left->second.pms == right->second.pms)
+            return true;
+    }
+    if (auto left = gloves_.find(source); left != gloves_.end()) {
+        auto right = gloves_.find(target);
+        if (right != gloves_.end() && left->second.glove == right->second.glove)
+            return true;
+    }
+    return false;
+}
 }  // namespace encos::wasm

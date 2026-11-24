@@ -11,8 +11,8 @@
 
 namespace encos {
 
-/** @brief 当前支持的设备插件驱动 ABI 版本 */
-inline constexpr std::uint32_t kDeviceDriverAbiVersion = 1u;
+/** @brief 当前支持的设备插件驱动 ABI 版本；v2 将内部 CAN 负载扩至 64 字节 */
+inline constexpr std::uint32_t kDeviceDriverAbiVersion = 2u;
 
 /** @brief 能力位：认领整条总线，接收本总线上所有未被其它设备路由命中的帧 */
 inline constexpr std::uint32_t kDeviceCapabilityClaimBus = 0x1u;

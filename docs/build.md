@@ -2,6 +2,8 @@
 
 本文档说明 EncosDriver 当前支持的构建模式，以及常用 CMake 参数的含义。
 
+需要分发跨 Linux 发行版的二进制时，使用 [Linux 可移植发布流程](portable-linux.md)：在 glibc 2.28 基线镜像中构建，通过 `ENCOS_PORTABLE_LINUX=ON` 静态链接私有依赖，再由同一份完整产物生成单包 `libencosdriver` 的 DEB、RPM 和 TGZ，均包含八种适配器插件。包管理器不声明 IGH 依赖；IGH 内核主站和 Ethernet 的 AF_XDP/BPF 运行条件仍由宿主机提供。下文的本机标准构建仍使用当前系统依赖，不保证可在更旧的发行版运行。
+
 ## 依赖
 
 基础依赖：
@@ -361,15 +363,15 @@ pnpm --dir npm test
 
 ## Windows 构建
 
-Windows 使用 **MinGW-w64**（[w64devkit](https://github.com/skeeto/w64devkit)）工具链，动态与静态
-模式均可构建。`Can`、`EthercatIGH`、`RelayWs` 为 Linux 专属，Windows 上会自动跳过。
+Windows 统一使用 **vcpkg** 管理依赖和构建本库，支持 MSVC（`x64-windows`）与
+MinGW-w64（`x64-mingw-dynamic`）。下方源码构建示例使用 MinGW-w64，动态与静态模式均可构建。`Can`、`EthercatIGH`、`RelayWs` 为 Linux 专属，Windows 上会自动跳过。
 
-验证环境：Windows 11 x64、w64devkit（GCC 14.2 / MinGW-w64）、CMake 4.0.3、Ninja、
-vcpkg 2026-07-27。
+本次包安装验证环境：Windows x64、w64devkit（GCC 14.2 / MinGW-w64），覆盖 Debug/Release。
+MSVC 兼容性已有验证，本次未重新执行 MSVC 构建。
 
 ### 依赖（vcpkg）
 
-Windows 依赖统一由 **vcpkg** 提供，使用 MinGW 专用的 `x64-mingw-dynamic` triplet。原生构建强制
+Windows 依赖统一由 **vcpkg** 提供，以下示例使用 MinGW 专用的 `x64-mingw-dynamic` triplet。原生构建强制
 依赖 `zstd`，默认还使用 `spdlog`/`fmt`（`ENCOS_ENABLE_SPDLOG`）。
 
 先把 MinGW 的 `bin` 加入当前终端 `PATH`（路径按实际解压位置调整；vcpkg 探测 triplet 编译器时
@@ -381,6 +383,8 @@ set PATH=C:\w64devkit\bin;%PATH%
 git clone --depth 1 https://github.com/microsoft/vcpkg.git %USERPROFILE%\vcpkg
 %USERPROFILE%\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 set VCPKG_ROOT=%USERPROFILE%\vcpkg
+set PATH=%VCPKG_ROOT%;%PATH%
+set VCPKG_DEFAULT_HOST_TRIPLET=x64-mingw-dynamic
 
 vcpkg install spdlog fmt zstd --triplet x64-mingw-dynamic
 ```
@@ -400,8 +404,8 @@ vcpkg install gtest --triplet x64-mingw-dynamic
 -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic
 ```
 
-> `x64-mingw-dynamic` 是动态 triplet，安装脚本会把 `libfmt.dll`/`libspdlog.dll`/`libzstd.dll`
-> 等共享依赖一并复制到安装前缀。
+> 依赖 DLL 由 vcpkg 管理。本库安装时不复制依赖 DLL，也不修改用户 `PATH` 或
+> `ENCOS_PLUGIN_PATH`；运行时通过 vcpkg applocal 部署依赖，并显式配置插件目录。
 
 ### 动态模式
 
@@ -484,48 +488,47 @@ ctest --test-dir build --output-on-failure
 - 依赖 POSIX shell 工具的发布脚本测试（`EncosReleaseToGithub` /
   `EncosPublishGithubReleaseWrapper`）在 Windows 上不注册。
 
-### 安装与消费
+### 通过 vcpkg 安装与消费
 
-Windows 动态模式支持 `ENCOS_ENABLE_INSTALL=ON`，同时生成安装规则和 `uninstall` 目标；CPack DEB 打包仅在 Linux 上配置。卸载脚本按安装清单删除文件，Windows 安装写入的用户环境变量需另行清理。
+其他项目应从[私有 registry](https://git.in.encos.cn/packages/vcpkg-registry) 安装 `encos-driver`。
+复制 registry 的 `examples/encos-driver/vcpkg-configuration.json` 到消费项目，保留固定 baseline，
+并配置能够读取 registry 和源码仓库的 Git SSH 公钥。在消费项目的 `vcpkg.json` 中声明：
+
+```json
+{
+  "dependencies": ["encos-driver"]
+}
+```
+
+需要 EtherCAT 时使用 `{ "name": "encos-driver", "features": ["ethercat"] }` 替代字符串依赖。
+在 MSVC x64 开发者命令提示符中构建消费项目：
 
 ```cmd
-cmake -S . -B build-install -G Ninja -DCMAKE_BUILD_TYPE=Release ^
-  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc ^
-  -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ^
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
   -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
-  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ^
-  -DCMAKE_INSTALL_PREFIX=C:/work/encos-prefix ^
-  -DENCOS_ENABLE_INSTALL=ON
-cmake --build build-install
-cmake --install build-install
+  -DVCPKG_TARGET_TRIPLET=x64-windows -DVCPKG_HOST_TRIPLET=x64-windows
+cmake --build build
 ```
 
-安装阶段自动完成运行期环境配置（仅用户级，无需管理员；新终端生效）：
+MinGW 使用上述源码构建示例中的编译器参数，并将 target/host triplet 都设为
+`x64-mingw-dynamic`。首次配置会通过 vcpkg 安装本库及其依赖。
 
-- 把 `spdlog`/`fmt`/`zstd` 等共享依赖一并安装到 `<prefix>\bin`；
-- 把 `<prefix>\bin` **前置**到用户 `PATH`（前置可避免其他目录中同名旧版依赖被优先加载，导致
-  `0xC0000139` 入口点错误）；
-- 设置用户环境变量 `ENCOS_PLUGIN_PATH=<prefix>\lib\encosPlugins`。
+消费项目的 CMake 配置：
 
-安装后不需要手动复制 DLL 或设置 `PATH`/`ENCOS_PLUGIN_PATH`。消费方（如 `motor_cli`）同样使用
-vcpkg 工具链并指向安装前缀：
-
-```cmd
-cmake -S ../motor_cli -B build-cli -G Ninja -DCMAKE_BUILD_TYPE=Release ^
-  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc ^
-  -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ ^
-  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
-  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic ^
-  -DCMAKE_PREFIX_PATH="<prefix>"
-cmake --build build-cli
+```cmake
+find_package(encos_driver CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE Encos::encos_driver)
+encos_deploy_plugins(my_app)
 ```
 
-当前终端若尚未刷新环境变量，可临时：
+`encos_deploy_plugins()` 由 registry 包提供，将当前配置的插件及 helper 复制到程序旁的
+`plugins` 目录；链接依赖 DLL 由 vcpkg applocal 部署。默认插件路径是工作目录下的
+`./plugins`，应从程序目录启动，或调用 `encos::SetPluginPath()` 设置绝对路径。
+应用发布时还需将插件目录和依赖 DLL 纳入自己的部署包。
 
-```cmd
-set PATH=<prefix>\bin;%PATH%
-set ENCOS_PLUGIN_PATH=<prefix>\lib\encosPlugins
-```
+源码开发仍可使用 `ENCOS_ENABLE_INSTALL=ON` 与 `cmake --install` 安装本库产物，
+但不会安装依赖 DLL或写入用户环境变量。自行设置当前进程的 DLL 搜索路径和插件路径。
+安装仅支持动态模式；CPack DEB 打包仅支持 Linux。
 
 ### 换行符与生成文件
 

@@ -20,6 +20,7 @@
 #include "ethernet/protocol/gateway_wire.h"
 #include "ethernet_slave.h"
 #include "management_heartbeat.h"
+#include "network_diagnostics.h"
 #include "transport/datagram.h"
 
 namespace encos::ethernet {
@@ -234,14 +235,59 @@ std::vector<Endpoint> DiscoverSlaves(DiscoveryChannel& channel, const std::strin
         result.push_back(entry.second);
     return result;
 }
+
+RelayCapabilities ProbeRelayCapabilities(DatagramChannel& socket,
+                                         const std::array<uint8_t, 16>& identity) {
+    const auto request = RequestId();
+    std::array<uint8_t, 64> out{};
+    gw_packet(out.data(), GW_CAPABILITIES_GET, request, identity.data());
+    if (!socket.Send(out.data(), out.size()))
+        return {};
+    const auto deadline = Clock::now() + std::chrono::milliseconds(200);
+    while (Clock::now() < deadline) {
+        if (!socket.Wait(10))
+            continue;
+        std::array<uint8_t, 65> reply{};
+        const auto size = socket.Receive(reply.data(), reply.size());
+        if (!gw_packet_valid(reply.data(), size) || reply[5] != GW_CAPABILITIES ||
+            gw_get32(reply.data() + 8) != request ||
+            std::memcmp(reply.data() + 12, identity.data(), identity.size()) != 0)
+            continue;
+        const auto versions = gw_get32(reply.data() + 28);
+        const auto budget = gw_get32(reply.data() + 32);
+        if ((versions & 2U) == 0 || budget < 128 || budget > 1472 ||
+            !std::all_of(reply.begin() + 40, reply.begin() + 64, [](uint8_t value) {
+                return value == 0;
+            }))
+            return {};
+        return {true, static_cast<uint16_t>(budget), gw_get32(reply.data() + 36)};
+    }
+    return {};
+}
+
+bool RecheckRelayCapabilities(DatagramChannel& socket, const std::array<uint8_t, 16>& identity,
+                              const RelayCapabilities& confirmed, uint32_t previous_uptime,
+                              uint32_t current_uptime) {
+    if (current_uptime - previous_uptime < 0x80000000U)
+        return true;
+    const auto current = ProbeRelayCapabilities(socket, identity);
+    return current.emr2 && current.max_payload >= confirmed.max_payload &&
+           (current.features & confirmed.features) == confirmed.features;
+}
+
 struct ManagementClient::Impl {
     std::unique_ptr<DatagramChannel> sock;
     LoggerPtr logger;
     std::string peer_name;
     std::function<bool(unsigned)> has_devices;
+    std::function<void(const CanError&)> on_statistics;
+
     std::atomic<bool> running{true};
     std::thread worker;
     GatewayInitialization initialization;
+    RelayCapabilities capabilities;
+    std::atomic<bool> capabilities_valid{true};
+    std::atomic<bool> capabilities_checking{false};
     std::array<uint8_t, 16> identity{};
     // 重配请求槽：调用方入队，Loop() 在管理线程上执行——同一个 UDP 套接字只能有一个
     // 读者，两个线程各自 Wait/Receive 会互相吞掉应答。
@@ -256,20 +302,31 @@ struct ManagementClient::Impl {
     void FailPendingRequests() {
         std::lock_guard<std::mutex> lock(request_mutex);
         running = false;
+        capabilities_valid = false;
+        capabilities_checking = false;
         for (auto& request : pending_requests) {
             request.completion.set_exception(
                 std::make_exception_ptr(std::runtime_error("Ethernet management is stopping")));
         }
         pending_requests.clear();
     }
+
     explicit Impl(const Endpoint& endpoint, LoggerPtr log, const TimingFactory& make_timings,
-                  std::function<bool(unsigned)> devices)
-        : logger(std::move(log)), peer_name(endpoint.address), has_devices(std::move(devices)) {
+                  std::function<bool(unsigned)> devices,
+                  std::function<void(const CanError&)> statistics, bool start,
+                  const std::function<bool()>& probe_capabilities)
+        : logger(std::move(log)),
+          peer_name(endpoint.address),
+          has_devices(std::move(devices)),
+          on_statistics(std::move(statistics)) {
         auto management = endpoint;
         management.port = GW_MGMT_PORT;
         sock = ConnectDatagram(management);
         initialization = InitializeCanChannels(*sock, make_timings);
         identity = initialization.identity;
+        if (!probe_capabilities || probe_capabilities())
+            capabilities = ProbeRelayCapabilities(*sock, identity);
+
         for (unsigned channel = 0; channel < initialization.channel_count; ++channel) {
             const auto& timing = initialization.timings[channel];
             logger->info(
@@ -278,6 +335,12 @@ struct ManagementClient::Impl {
                 peer_name, channel, timing.nominal_bps, ToPerMille(timing.nominal_sample_point),
                 timing.data_bps, ToPerMille(timing.data_sample_point));
         }
+
+        if (start)
+            Start();
+    }
+
+    void Start() {
         worker = std::thread([this] {
             try {
                 Loop();
@@ -288,14 +351,17 @@ struct ManagementClient::Impl {
             } catch (...) {
                 // A management failure must not terminate the CAN transport process.
             }
+
             FailPendingRequests();
         });
     }
+
     ~Impl() {
         FailPendingRequests();
         if (worker.joinable())
             worker.join();
     }
+
     void Reconfigure(unsigned channel, const GatewayCanTiming& timing) {
         if (channel >= initialization.channel_count) {
             throw std::runtime_error("Ethernet gateway has no CAN channel " +
@@ -343,6 +409,8 @@ struct ManagementClient::Impl {
         auto next = Clock::now();
         ManagementHeartbeat heartbeat(next);
         bool warned = false;
+        std::optional<uint32_t> last_uptime;
+        NetworkDiagnosticTracker network_diagnostics;
         uint32_t request = RequestId();
         std::array<uint32_t, 8> recoveries{};
         std::array<Clock::time_point, 8> last_error_logs{};
@@ -351,6 +419,8 @@ struct ManagementClient::Impl {
             ServicePendingRequest();
             const auto now = Clock::now();
             if (heartbeat.CheckTimeout(now)) {
+                network_diagnostics.Reset();
+                capabilities_valid = false;
                 logger->error("Ethernet slave={} disconnected: heartbeat timeout (500 ms)",
                               SlaveId(peer_name));
             }
@@ -378,15 +448,36 @@ struct ManagementClient::Impl {
                 warned = false;
                 continue;
             }
+
+            if (const auto diagnostic = DecodeNetworkDiagnostic(packet.data(), 64, identity)) {
+                if (const auto message = network_diagnostics.Update(*diagnostic))
+                    logger->warn("Ethernet slave={} ip={} network diagnostic: {}",
+                                 SlaveId(peer_name), peer_name, *message);
+                continue;
+            }
+
             const auto event = DecodeCanError(packet.data(), 64, identity);
             if (!event || event->channel >= initialization.channel_count)
                 continue;
+            if (capabilities_valid && capabilities.emr2 && last_uptime &&
+                event->uptime - *last_uptime >= 0x80000000U) {
+                capabilities_checking = true;
+                if (!RecheckRelayCapabilities(*sock, identity, capabilities, *last_uptime,
+                                              event->uptime))
+                    capabilities_valid = false;
+                capabilities_checking = false;
+            }
+            last_uptime = event->uptime;
             const bool was_online = heartbeat.Online();
             if (!heartbeat.Report(event->sequence, event->uptime, Clock::now()))
                 continue;
             if (!was_online)
                 logger->warn("Ethernet slave={} connection restored", SlaveId(peer_name));
+
             const auto& e = *event;
+            if (on_statistics)
+                on_statistics(e);
+
             if (!has_devices || !has_devices(e.channel)) {
                 recoveries[e.channel] = e.recovered;
                 continue;
@@ -415,11 +506,19 @@ struct ManagementClient::Impl {
         (void) sock->Send(out.data(), out.size());
     }
 };
+
 ManagementClient::ManagementClient(const Endpoint& endpoint, LoggerPtr logger,
                                    const TimingFactory& make_timings,
-                                   std::function<bool(unsigned)> has_devices)
+                                   std::function<bool(unsigned)> has_devices,
+                                   std::function<void(const CanError&)> on_statistics, bool start,
+                                   std::function<bool()> probe_capabilities)
     : impl_(std::make_unique<Impl>(endpoint, std::move(logger), make_timings,
-                                   std::move(has_devices))) {}
+                                   std::move(has_devices), std::move(on_statistics), start,
+                                   probe_capabilities)) {}
+
+void ManagementClient::Start() {
+    impl_->Start();
+}
 
 void ManagementClient::ReconfigureChannel(unsigned channel, const GatewayCanTiming& timing) {
     impl_->Reconfigure(channel, timing);
@@ -428,4 +527,19 @@ const GatewayInitialization& ManagementClient::Initialization() const {
     return impl_->initialization;
 }
 ManagementClient::~ManagementClient() = default;
+}  // namespace encos::ethernet
+
+namespace encos::ethernet {
+
+bool ManagementClient::CapabilitiesReady() const {
+    return !impl_->capabilities_checking.load();
+}
+
+RelayCapabilities ManagementClient::Capabilities() const {
+    if (!impl_->capabilities_valid.load())
+        throw std::runtime_error(
+            "Ethernet management unavailable; recreate adapter instead of changing relay protocol");
+    return impl_->capabilities;
+}
+
 }  // namespace encos::ethernet

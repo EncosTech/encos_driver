@@ -34,6 +34,7 @@ EthercatHandle::EthercatHandle(std::string ifname, LoggerPtr logger, AdapterExte
     : EthercatBaseHandle(std::move(logger)),
       ifname_(std::move(ifname)),
       extend_(std::move(extend)) {
+    cycle_period_ = encos::ethercat::ExtractCyclePeriod(extend_);
     try {
         ParseWatchdogOptions();
         if (!Initialize()) {
@@ -120,12 +121,14 @@ bool EthercatHandle::Initialize() {
     for (int slave_idx = 1; slave_idx <= ctx_.slavecount; ++slave_idx) {
         auto& config = slave_configs_[static_cast<std::size_t>(slave_idx - 1)];
         const auto obytes = static_cast<std::size_t>(ctx_.slavelist[slave_idx].Obytes);
-        config = ClassifyOutputPdoSize(obytes);
+        const auto ibytes = static_cast<std::size_t>(ctx_.slavelist[slave_idx].Ibytes);
+        config = ClassifyOutputPdoSize(obytes, ibytes);
         if (HasSupportedPdo(config)) {
             ENCOS_LOG_DEBUG(logger_, "Slave {} configured with {} Buses from {} output bytes.",
                             slave_idx, config.bus_count, obytes);
         } else {
-            logger_->warn("Slave {} has unsupported Obytes: {}", slave_idx, obytes);
+            logger_->warn("Slave {} has unsupported PDO sizes: {} output, {} input bytes",
+                          slave_idx, obytes, ibytes);
         }
     }
 
@@ -384,6 +387,7 @@ bool EthercatHandle::TransitionToOperational() {
 }
 
 void EthercatHandle::DegradedHandler() {
+    ResetInputFragments();
     SetSendQueueWarningsSuppressed(true);
     if (in_operational_.exchange(false)) {
         logger_->warn(
@@ -661,14 +665,20 @@ void EthercatHandle::WriteOutputs(const OutputFrame& packets) {
     }
 }
 
-MotorMessages EthercatHandle::ReadInputs() {
+MotorMessages EthercatHandle::ReadInputs(std::chrono::microseconds period) {
     const auto count = static_cast<std::size_t>(ctx_.slavecount);
     std::vector<const uint8_t*> inputs;
     inputs.reserve(count);
     for (std::size_t slave = 0; slave < count; ++slave) {
-        inputs.push_back(reinterpret_cast<const uint8_t*>(ctx_.slavelist[slave + 1].inputs));
+        const auto& device = ctx_.slavelist[slave + 1];
+        if (slave < slave_configs_.size() && UsesCanFdSlots(slave_configs_[slave].format) &&
+            device.Ibytes < slave_configs_[slave].message_size) {
+            inputs.push_back(nullptr);
+        } else {
+            inputs.push_back(reinterpret_cast<const uint8_t*>(device.inputs));
+        }
     }
-    return DecodeInputs(inputs, count);
+    return DecodeInputs(inputs, count, period);
 }
 
 void EthercatHandle::Send(const MotorMessage& message) {
@@ -710,24 +720,33 @@ void EthercatHandle::SendSynchronized(const MotorMessages& messages) {
     QueueSynchronizedMessages(messages);
 }
 
-void EthercatHandle::ExchangeOnce() {
+void EthercatHandle::ExchangeOnce(std::chrono::microseconds period) {
     if (!running_.load()) {
         return;
     }
     const bool was_operational = in_operational_.load();
     OutputFrame frame;
     if (was_operational) {
-        PrepareNextFrame(frame, static_cast<std::size_t>(ctx_.slavecount));
+        PrepareNextFrame(frame);
     }
     WriteOutputs(frame);
-    io_.send(&ctx_);
-    wkc_.store(io_.receive(&ctx_, EC_TIMEOUTRET));
+
+    {
+        ENCOS_TRACY_ZONE("EtherCAT::SendProcessData");
+        io_.send(&ctx_);
+    }
+    {
+        ENCOS_TRACY_ZONE("EtherCAT::ReceiveProcessData");
+        wkc_.store(io_.receive(&ctx_, EC_TIMEOUTRET));
+    }
+
     const bool bad_wkc = wkc_.load() < expected_wkc_.load() || expected_wkc_.load() <= 0;
     if (wkc_error_iteration_.load() >= kWkcErrorPeriod) {
         wkc_error_iteration_.store(0);
         wkc_error_count_.store(0);
     }
     if (bad_wkc) {
+        ResetInputFragments();
         if (!was_operational) {
             // 恢复阶段的坏 WKC 不属于正常 OP 链路错误，不能消耗降级阈值。
             slaves_operational_ = false;
@@ -759,12 +778,18 @@ void EthercatHandle::ExchangeOnce() {
     if (Ok()) {
         ReceiveCallback callback = CopyReceiveCallback();
         if (callback) {
-            callback(ReadInputs());
+            callback(ReadInputs(period));
+            return;
         }
     }
+    ResetInputFragments();
 }
 
 void EthercatHandle::Loop(std::chrono::microseconds period) {
+    if (period.count() <= 0) {
+        throw std::invalid_argument("EtherCAT loop period must be positive");
+    }
+    ResetInputFragments();
     auto next_wake = std::chrono::steady_clock::now();
     auto last_overrun_warn = std::chrono::steady_clock::now();
     bool has_warned_overrun = false;
@@ -782,7 +807,7 @@ void EthercatHandle::Loop(std::chrono::microseconds period) {
             CheckState();
             next_state_check = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
         }
-        ExchangeOnce();
+        ExchangeOnce(period);
         ServicePendingReconfigure();
         first_cycle = false;
         if (wkc_.load() < expected_wkc_.load() || expected_wkc_.load() <= 0) {

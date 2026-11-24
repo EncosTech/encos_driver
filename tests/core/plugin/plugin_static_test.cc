@@ -45,6 +45,19 @@ TEST(StaticPluginTests, ExtendAwareStaticFactoryReceivesTheConfiguration) {
     }
 }
 
+#if defined(_WIN32)
+TEST(StaticPluginTests, SocketCanIsUnavailableOnWindows) {
+    EXPECT_THAT(encos::GetAvailableAdapterTypes(), ::testing::Not(::testing::Contains("Can")));
+    try {
+        (void) encos::MakeAdapter("Can", "static-can-unused-interface", "can_extend_logger",
+                                  encos::LogLevel::Off, nlohmann::json{{"sample_point", 1.5}});
+        FAIL() << "expected SocketCAN to be unavailable";
+    } catch (const std::runtime_error& error) {
+        EXPECT_THAT(std::string(error.what()),
+                    ::testing::HasSubstr("Static adapter type not found: Can"));
+    }
+}
+#else
 TEST(StaticPluginTests, CanStaticFactoryRejectsInvalidTimingBeforeTouchingTheInterface) {
     try {
         (void) encos::MakeAdapter("Can", "static-can-unused-interface", "can_extend_logger",
@@ -54,6 +67,8 @@ TEST(StaticPluginTests, CanStaticFactoryRejectsInvalidTimingBeforeTouchingTheInt
         EXPECT_THAT(std::string(error.what()), ::testing::HasSubstr("CAN extend 'sample_point'"));
     }
 }
+
+#endif
 
 TEST(StaticPluginTests, PluginWithoutExtendSupportIgnoresTheConfiguration) {
     // Fake 未声明 ENCOS_PLUGIN_STATIC_FACTORY_EXTEND：形参被忽略，构造行为不变
@@ -65,10 +80,15 @@ TEST(StaticPluginTests, PluginWithoutExtendSupportIgnoresTheConfiguration) {
 }
 
 TEST(StaticPluginTests, ExtendRejectsABusTheAdapterDoesNotHave) {
-    // Can 只有总线 (0, 0)：该拒绝发生在打开接口之前，因此无需硬件
+    // Can 与 Slcan 都只有总线 (0, 0)：该拒绝发生在打开接口之前，因此无需硬件。
+#if defined(_WIN32)
+    constexpr const char* kAdapterType = "Slcan";
+#else
+    constexpr const char* kAdapterType = "Can";
+#endif
     const auto extend = nlohmann::json::parse(R"({"buses": {"1:0": {"bitrate": 500000}}})");
     try {
-        (void) encos::MakeAdapter("Can", "static-can-unknown-bus", "can_extend_logger",
+        (void) encos::MakeAdapter(kAdapterType, "static-can-unknown-bus", "can_extend_logger",
                                   encos::LogLevel::Off, extend);
         FAIL() << "expected the unknown bus to be rejected";
     } catch (const std::runtime_error& error) {

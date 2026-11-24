@@ -11,14 +11,18 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <fstream>
 #include <sched.h>
 #include <signal.h>
+#include <sstream>
 #include <string>
 #include <sys/capability.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <system_error>
 #include <thread>
 #include <unistd.h>
 #include <utility>
@@ -152,10 +156,6 @@ bool SetCurrentThreadPriorityDirectly(int priority) {
     return sched_setscheduler(0, SCHED_FIFO, &parameters) == 0;
 }
 
-bool LockCurrentProcessMemory() {
-    return mlockall(MCL_CURRENT | MCL_FUTURE) == 0;
-}
-
 int ExecutePinnedHelper(const PinnedExecutable& helper, const ThreadPriorityRequest& request) {
     const std::string process_id = std::to_string(request.process_id);
     const std::string thread_id = std::to_string(request.thread_id);
@@ -271,6 +271,60 @@ std::optional<PinnedExecutable> OpenPinnedExecutable(const std::string& path) {
     return PinnedExecutable(fd, {status.st_dev, status.st_ino}, path);
 }
 
+void RunThreadPrioritySetup(const std::function<void()>& set_priority,
+                            const std::function<int()>& lock_memory) {
+    platform::LockGuard<platform::Mutex> lock(priority_request_mutex);
+    set_priority();
+    if (lock_memory() == 0) {
+        return;
+    }
+    const int error = errno;
+    std::ostringstream message;
+    message << "MemoryLockError: thread priority was set, but mlockall(MCL_CURRENT | MCL_FUTURE) "
+               "failed: "
+            << std::error_code(error, std::generic_category()).message() << " (errno=" << error
+            << "). ";
+    rlimit limit{};
+    if (getrlimit(RLIMIT_MEMLOCK, &limit) == 0) {
+        const auto describe = [](rlim_t value) {
+            return value == RLIM_INFINITY ? std::string("unlimited")
+                                          : std::to_string(value) + " bytes";
+        };
+        message << "RLIMIT_MEMLOCK soft=" << describe(limit.rlim_cur)
+                << ", hard=" << describe(limit.rlim_max) << ". ";
+    }
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.rfind("VmSize:", 0) == 0 || line.rfind("VmRSS:", 0) == 0 ||
+            line.rfind("VmLck:", 0) == 0) {
+            message << line << "; ";
+        }
+    }
+    message << "This is a process memory-lock failure, not a missing ThreadPriorityHelper "
+               "CAP_SYS_NICE. "
+            << "Inspect limits in the launching shell: ulimit -Sl; ulimit -Hl. "
+            << "If the hard limit is sufficient, run: ulimit -Sl $(ulimit -Hl), then restart the "
+               "application. "
+            << "If necessary, an administrator can raise this shell's limit with: "
+            << "sudo prlimit --pid $$ --memlock=unlimited:unlimited, then restart. "
+            << "Check available RAM before allowing unlimited locking. For Node emcli, avoid tsx "
+               "mappings: "
+            << "pnpm --filter @encos/emcli build && node apps/emcli/dist/main.js tui. "
+            << "If limits are already sufficient, inspect memory pressure and mappings; "
+               "--max-old-space-size "
+            << "limits the JS heap only, not all virtual mappings.";
+    throw MemoryLockError(message.str());
+}
+
+bool ShouldLockProcessMemory(const char* policy) {
+    if (policy == nullptr || std::string(policy) == "all")
+        return true;
+    if (std::string(policy) == "none")
+        return false;
+    throw MemoryLockError("ENCOS_MEMORY_LOCK must be all or none");
+}
+
 void RunSerializedPriorityRequestForTesting(const std::function<void()>& action) {
     platform::LockGuard<platform::Mutex> lock(priority_request_mutex);
     action();
@@ -280,37 +334,62 @@ void RunSerializedPriorityRequestForTesting(const std::function<void()>& action)
 
 namespace encos::utils {
 
-bool SetCurrentThreadPriority(int priority) {
-    bool success = false;
-    detail::RunSerializedPriorityRequestForTesting([&]() {
+void RequireCurrentThreadPriority(int priority) {
+    detail::RunThreadPrioritySetup(
+        [&]() {
 #ifdef ENCOS_STATIC_MODE
-        success = detail::SetCurrentThreadPriorityDirectly(priority);
-#else
-        detail::ThreadPriorityRequest request{getpid(), static_cast<pid_t>(syscall(SYS_gettid)),
-                                              priority};
-        if (detail::ValidateThreadPriorityRequest(request, getpid(), getuid()) !=
-            detail::HelperExitCode::kSuccess) {
-            return;
-        }
-        auto helper = detail::OpenConfiguredHelper();
-        if (!helper) {
-            return;
-        }
-        if (!detail::HasRequiredCapability(helper->fd())) {
-            const char* disable_gui = std::getenv("ENCOS_DISABLE_PRIORITY_GUI");
-            if ((disable_gui && std::string(disable_gui) == "1") ||
-                !detail::GrantCapability(*helper)) {
-                return;
+            if (!detail::SetCurrentThreadPriorityDirectly(priority)) {
+                throw ThreadPriorityError(
+                    "ThreadPriorityError: could not set SCHED_FIFO priority; check priority range "
+                    "and CAP_SYS_NICE");
             }
-        }
-        success = detail::ExecutePinnedHelper(*helper, request) ==
-                  static_cast<int>(detail::HelperExitCode::kSuccess);
+#else
+            detail::ThreadPriorityRequest request{getpid(), static_cast<pid_t>(syscall(SYS_gettid)),
+                                                  priority};
+            const auto validation =
+                detail::ValidateThreadPriorityRequest(request, getpid(), getuid());
+            if (validation != detail::HelperExitCode::kSuccess) {
+                throw ThreadPriorityError("ThreadPriorityError: invalid scheduling request (code=" +
+                                          std::to_string(static_cast<int>(validation)) + ")");
+            }
+            auto helper = detail::OpenConfiguredHelper();
+            if (!helper) {
+                throw ThreadPriorityError(
+                    "ThreadPriorityError: ThreadPriorityHelper executable was not found or is not "
+                    "executable");
+            }
+            if (!detail::HasRequiredCapability(helper->fd())) {
+                const char* disable_gui = std::getenv("ENCOS_DISABLE_PRIORITY_GUI");
+                if ((disable_gui && std::string(disable_gui) == "1") ||
+                    !detail::GrantCapability(*helper)) {
+                    throw ThreadPriorityError(
+                        "ThreadPriorityError: could not authorize CAP_SYS_NICE for " +
+                        helper->path() + "; check pkexec/Polkit and ENCOS_DISABLE_PRIORITY_GUI");
+                }
+            }
+            const int result = detail::ExecutePinnedHelper(*helper, request);
+            if (result != static_cast<int>(detail::HelperExitCode::kSuccess)) {
+                throw ThreadPriorityError(
+                    "ThreadPriorityError: ThreadPriorityHelper failed to set SCHED_FIFO priority "
+                    "(exit=" +
+                    std::to_string(result) + ", helper=" + helper->path() + ")");
+            }
 #endif
-        if (success) {
-            success = detail::LockCurrentProcessMemory();
-        }
-    });
-    return success;
+        },
+        []() {
+            return detail::ShouldLockProcessMemory(std::getenv("ENCOS_MEMORY_LOCK"))
+                       ? mlockall(MCL_CURRENT | MCL_FUTURE)
+                       : 0;
+        });
+}
+
+bool SetCurrentThreadPriority(int priority) {
+    try {
+        RequireCurrentThreadPriority(priority);
+        return true;
+    } catch (const std::runtime_error&) {
+        return false;
+    }
 }
 
 }  // namespace encos::utils
@@ -327,6 +406,13 @@ bool SetCurrentThreadPriority(int priority) {
     return SetThreadPriority(GetCurrentThread(), priority < 50 ? THREAD_PRIORITY_ABOVE_NORMAL
                                                                : THREAD_PRIORITY_HIGHEST) != 0;
 }
+void RequireCurrentThreadPriority(int priority) {
+    if (!SetCurrentThreadPriority(priority)) {
+        throw ThreadPriorityError(
+            "ThreadPriorityError: could not set Windows thread priority (error=" +
+            std::to_string(GetLastError()) + ")");
+    }
+}
 }  // namespace encos::utils
 
 #else
@@ -335,6 +421,11 @@ namespace encos::utils {
 
 bool SetCurrentThreadPriority(int) {
     return false;
+}
+
+void RequireCurrentThreadPriority(int) {
+    throw ThreadPriorityError(
+        "ThreadPriorityError: thread priority setup is unsupported on this platform");
 }
 
 }  // namespace encos::utils

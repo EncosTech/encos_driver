@@ -7,6 +7,7 @@
 
 #if defined(__linux__) && !defined(__EMSCRIPTEN__)
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -186,6 +187,64 @@ TEST(ThreadPriorityHelperTests, PreservesVerifiedPathForCapabilityGrant) {
     EXPECT_EQ(pinned->path(), helper_path);
     EXPECT_TRUE(pinned->MatchesPath(pinned->path()));
     unlink(helper_path);
+}
+
+TEST(ThreadPriorityHelperTests, ExplicitManagedRuntimePolicyDoesNotRequireProcessLock) {
+    EXPECT_TRUE(ShouldLockProcessMemory(nullptr));
+    EXPECT_TRUE(ShouldLockProcessMemory("all"));
+    EXPECT_FALSE(ShouldLockProcessMemory("none"));
+    EXPECT_THROW(ShouldLockProcessMemory("invalid"), MemoryLockError);
+}
+
+TEST(ThreadPriorityHelperTests, SchedulingFailureDoesNotAttemptMemoryLock) {
+    bool locked = false;
+    EXPECT_THROW(RunThreadPrioritySetup(
+                     []() {
+                         throw ThreadPriorityError("scheduling failed");
+                     },
+                     [&]() {
+                         locked = true;
+                         return 0;
+                     }),
+                 ThreadPriorityError);
+    EXPECT_FALSE(locked);
+}
+
+TEST(ThreadPriorityHelperTests, MemoryLockFailureHasSeparateTypeAndRepairCommands) {
+    bool priority_set = false;
+    try {
+        RunThreadPrioritySetup(
+            [&]() {
+                priority_set = true;
+            },
+            []() {
+                errno = ENOMEM;
+                return -1;
+            });
+        FAIL() << "Expected MemoryLockError";
+    } catch (const MemoryLockError& error) {
+        const std::string message = error.what();
+        EXPECT_TRUE(priority_set);
+        EXPECT_NE(message.find("errno=" + std::to_string(ENOMEM)), std::string::npos);
+        EXPECT_NE(message.find("RLIMIT_MEMLOCK soft="), std::string::npos);
+        EXPECT_NE(message.find("ulimit -Sl"), std::string::npos);
+        EXPECT_NE(message.find("sudo prlimit --pid $$"), std::string::npos);
+        EXPECT_NE(message.find("node apps/emcli/dist/main.js tui"), std::string::npos);
+    }
+}
+
+TEST(ThreadPriorityHelperTests, SuccessfulSetupRunsBothStagesInOrder) {
+    bool priority_set = false;
+    EXPECT_NO_THROW(RunThreadPrioritySetup(
+        [&]() {
+            priority_set = true;
+        },
+        [&]() {
+            EXPECT_TRUE(priority_set);
+            return 0;
+        }));
+    EXPECT_THROW(RequireCurrentThreadPriority(0), ThreadPriorityError);
+    EXPECT_FALSE(SetCurrentThreadPriority(0));
 }
 
 TEST(ThreadPriorityHelperTests, SerializesConcurrentRequests) {

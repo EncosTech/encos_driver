@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <dylib.hpp>
 #include <functional>
+#if defined(__linux__)
+#include <dlfcn.h>
+#endif
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -39,6 +42,23 @@ std::map<std::string, std::shared_ptr<dylib::library>> loaded_device_plugins;
 platform::Mutex device_plugin_loader_mutex;
 
 namespace {
+
+template <typename Function>
+Function* LoadPluginFunction(dylib::library& library, const char* name) {
+#if defined(__linux__)
+    // 插件入口为精确的 C 符号；缺失的可选入口不应触发 C++ 符号枚举。
+    // dylib 的 ELF 枚举依赖节布局，修改 RPATH 后该假设不成立。
+    dlerror();
+    auto* symbol = dlsym(library.native_handle(), name);
+    const auto* error = dlerror();
+    if (error != nullptr || symbol == nullptr) {
+        throw dylib::symbol_not_found(name, error != nullptr ? error : "Null plugin symbol");
+    }
+    return reinterpret_cast<Function*>(symbol);
+#else
+    return library.get_function<Function>(name);
+#endif
+}
 
 bool IsHiddenAdapterType(const std::string& adapter_type) {
     for (const auto& hidden : kHiddenAdapterTypes) {
@@ -86,7 +106,8 @@ const DeviceDriverDescriptorV1* ResolveDeviceDriverFromPath(const std::string& d
     const auto library = AcquireDeviceLibrary(device_type, plugin_path);
     const DeviceDriverDescriptorV1* (*factory)() = nullptr;
     try {
-        factory = library->get_function<const DeviceDriverDescriptorV1*()>("MakeDeviceDriver");
+        factory =
+            LoadPluginFunction<const DeviceDriverDescriptorV1*()>(*library, "MakeDeviceDriver");
     } catch (const std::exception&) {
         throw std::runtime_error(
             "PluginLoader: Failed to find MakeDeviceDriver function in device plugin " +
@@ -159,7 +180,8 @@ BaseAdapter* EncosDriverManager::CreateAdapter(const std::string& adapter_type,
         }
         // 优先使用支持 extend 的入口。新增符号缺失是正常情况，回退到旧入口。
         try {
-            auto create_extend = it->second->get_function<CreateAdapterExtendFunc>("MakeAdapterV2");
+            auto create_extend =
+                LoadPluginFunction<CreateAdapterExtendFunc>(*it->second, "MakeAdapterV2");
             if (create_extend != nullptr) {
                 return (*create_extend)(interface_name.c_str(), logger_name.c_str(),
                                         LogLevelToInt(log_level), extend_json.c_str());
@@ -167,7 +189,7 @@ BaseAdapter* EncosDriverManager::CreateAdapter(const std::string& adapter_type,
         } catch (const dylib::symbol_not_found&) {
             // 插件未导出 MakeAdapterV2，走下方回退路径
         }
-        auto create_func = it->second->get_function<CreateAdapterFunc>("MakeAdapter");
+        auto create_func = LoadPluginFunction<CreateAdapterFunc>(*it->second, "MakeAdapter");
         if (create_func == nullptr) {
             throw std::runtime_error(
                 "PluginLoader: Failed to find MakeAdapter function in plugin " + adapter_type);
@@ -221,7 +243,8 @@ std::vector<std::string> GetAvailableAdapterTypes() {
                 }
                 try {
                     auto library = std::make_shared<dylib::library>(entry.path().string());
-                    auto create_func = library->get_function<CreateAdapterFunc>("MakeAdapter");
+                    auto create_func =
+                        LoadPluginFunction<CreateAdapterFunc>(*library, "MakeAdapter");
                     if (create_func) {
                         adapter_types.push_back(adapter_type);
                     }
@@ -315,7 +338,8 @@ std::vector<std::string> EnumeratePluginInterfaces(const std::string& adapter_ty
     }
     EnumerateAdapterInterfacesFunc* enumerate = nullptr;
     try {
-        enumerate = library->get_function<EnumerateAdapterInterfacesFunc>("EnumerateInterfaces");
+        enumerate =
+            LoadPluginFunction<EnumerateAdapterInterfacesFunc>(*library, "EnumerateInterfaces");
     } catch (const std::exception&) {
         throw std::runtime_error(
             "PluginLoader: Failed to find EnumerateInterfaces function in "

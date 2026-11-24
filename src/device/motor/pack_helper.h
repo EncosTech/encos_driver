@@ -23,7 +23,7 @@ namespace encos {
 
 using namespace std::chrono;
 
-constexpr milliseconds kWaitTimeout{500};
+constexpr milliseconds kWaitTimeout = detail::kMotorResponseTimeout;
 /**
  * @brief 初始化时探测固件版本（0x32）的等待时长
  *
@@ -250,7 +250,7 @@ inline std::optional<bool> WaitForPacket(const std::function<MotorMessages()>& R
 }
 
 template <int FeedbackType>
-auto WaitForFeedback(const std::function<MotorMessages()>& Read, uint16_t motor_idx,
+auto WaitForFeedback(const std::function<MotorMessages()>& Read, uint32_t motor_idx,
                      const MotorProperties& ranges, milliseconds timeout = kWaitTimeout)
     -> std::conditional_t<FeedbackType == 0, bool, std::optional<FeedbackStruct<FeedbackType>>> {
     static_assert(FeedbackType == 0 || FeedbackType == 1 || FeedbackType == 2 || FeedbackType == 3,

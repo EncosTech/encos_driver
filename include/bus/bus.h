@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "device/motor/can_address.h"
 #include "device/motor/types.h"
 #include "encos/export.h"
 #include "external/json.hpp"
@@ -19,6 +20,7 @@ namespace encos {
 class Motor;
 class BaseAdapter;
 class Battery;
+class DexHand;
 class Device;
 class EncosDriverManager;
 class Imu;
@@ -92,6 +94,50 @@ public:
      * @return 非拥有的 `Motor` 裸指针
      */
     Motor* GetMotor(int motor_idx, bool canfd);
+    /** @brief 使用完整 32 位逻辑地址取得电机，不截断子 ID */
+    Motor* GetMotor(CanId motor_idx, MotorModel model) {
+        return GetMotor(LegacyCanIdBits(motor_idx), model);
+    }
+
+    /** @brief 使用完整 32 位逻辑地址取得电机，不截断子 ID */
+    Motor* GetMotor(CanId motor_idx, MotorModel model, bool canfd) {
+        return GetMotor(LegacyCanIdBits(motor_idx), model, canfd);
+    }
+
+    /** @brief 使用完整 32 位逻辑地址取得电机，不截断子 ID */
+    Motor* GetMotor(CanId motor_idx, MotorProperties ranges) {
+        return GetMotor(LegacyCanIdBits(motor_idx), ranges);
+    }
+
+    /** @brief 使用完整 32 位逻辑地址取得电机，不截断子 ID */
+    Motor* GetMotor(CanId motor_idx, MotorProperties ranges, bool canfd) {
+        return GetMotor(LegacyCanIdBits(motor_idx), ranges, canfd);
+    }
+
+    /** @brief 使用完整 32 位逻辑地址取得电机，不截断子 ID */
+    Motor* GetMotor(CanId motor_idx) {
+        return GetMotor(LegacyCanIdBits(motor_idx));
+    }
+
+    /** @brief 使用完整 32 位逻辑地址取得电机，不截断子 ID */
+    Motor* GetMotor(CanId motor_idx, bool canfd) {
+        return GetMotor(LegacyCanIdBits(motor_idx), canfd);
+    }
+
+    /** @brief 通过物理 CAN ID、子 ID（1–7）和型号取得子电机 */
+    Motor* GetMotor(CanId can_id, unsigned sub_id, MotorModel model);
+    /** @brief 通过物理 CAN ID、子 ID（1–7）和参数范围取得子电机 */
+    Motor* GetMotor(CanId can_id, unsigned sub_id, MotorProperties ranges);
+    /** @brief 通过物理 CAN ID 和子 ID（1–7）自动识别子电机参数 */
+    Motor* GetSubMotor(CanId can_id, unsigned sub_id);
+
+    /**
+     * @brief 获取（或创建）指定请求地址的灵巧手管理设备
+     * @param base_id 当前基址（1–247）；仅有一个网关时可用广播地址 0
+     * @return 非拥有的 `DexHand` 裸指针
+     * @throws std::invalid_argument 地址超出 0–247
+     */
+    DexHand* GetDexHand(int base_id = 1);
 
     /**
      * @brief 获取（或创建）指定索引的 `Battery` 包装器
@@ -152,6 +198,10 @@ public:
      * 此方法不会创建新的 `Motor` 实例。仅返回已创建的现有实例。
      */
     Motor* SelectMotor(int motor_idx);
+    /** @brief 使用完整逻辑地址查找已注册电机 */
+    Motor* SelectMotor(CanId motor_idx) {
+        return SelectMotor(LegacyCanIdBits(motor_idx));
+    }
 
     /**
      * @brief 获取此总线上的所有现有电机
@@ -221,7 +271,10 @@ public:
 
     /**
      * @brief 设置当前总线的软同步发送模式
-     * @param enabled true 时消息等待当前总线 Commit；false 时恢复直接发送
+     * @param enabled true 时运动控制等待当前总线 Commit；false 时恢复直接发送
+     * PVTControl、PosControl、SpdControl、CurControl、TorControl
+     * 等待提交，带反馈的调用也不会自动提交。 Stop、Brake、参数、扫描、ID 管理、IMU 和 PMS
+     * 即时发送；其他设备保持原有策略。
      */
     void SetSyncMode(bool enabled);
 
@@ -236,7 +289,7 @@ private:
     auto AcquireOperation();
     auto TryAcquireOperation();
     void SendImuControl(bool enabled);
-    void SubmitDeviceMessage(void* channel, const MotorPackMsg& message);
+    void SubmitDeviceMessage(void* channel, const MotorPackMsg& message, bool immediate);
     void UnregisterSendChannel(void* channel);
 
     /** @brief 取走当前总线未知 ID 邮箱中的全部帧 */

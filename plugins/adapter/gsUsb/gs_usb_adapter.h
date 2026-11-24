@@ -17,6 +17,7 @@
 #include "adapter/base_adapter.h"
 #include "export.h"
 #include "gs_usb_timing.h"
+#include "utils/statistics_wait.h"
 #include "winusb_device.h"
 
 namespace encos {
@@ -75,6 +76,13 @@ protected:
 
 private:
     void ReceiveLoop();
+
+    StatisticsWait statistics_wait_;
+
+    void StatisticsLoop();
+
+    std::thread statistics_thread_;
+
     bool WriteFrame(const MotorMessage& message);
     bool WriteBuffer(const std::uint8_t* data, std::size_t size);
 

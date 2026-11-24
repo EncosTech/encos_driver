@@ -61,6 +61,19 @@ HelperExitCode ParseThreadPriorityRequest(int argc, const char* const argv[],
 HelperExitCode ValidateThreadPriorityRequest(const ThreadPriorityRequest& request,
                                              pid_t expected_parent, uid_t expected_uid);
 std::optional<PinnedExecutable> OpenPinnedExecutable(const std::string& path);
+
+/** @brief 串行执行调度设置与锁页，分别报告错误；回调用于无提权测试。 */
+void RunThreadPrioritySetup(const std::function<void()>& set_priority,
+                            const std::function<int()>& lock_memory);
+
+/**
+ * @brief 解析 Linux 进程锁页策略。
+ * @param policy `ENCOS_MEMORY_LOCK` 的值，未设置时传入 `nullptr`。
+ * @return 未设置或为 `all` 时返回 `true`，为 `none` 时返回 `false`。
+ * @throws MemoryLockError 策略值无效。
+ */
+bool ShouldLockProcessMemory(const char* policy);
+
 void RunSerializedPriorityRequestForTesting(const std::function<void()>& action);
 
 }  // namespace encos::utils::detail

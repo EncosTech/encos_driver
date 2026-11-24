@@ -13,6 +13,11 @@ namespace encos {
 
 class BaseAdapterTestAccess {
 public:
+    static std::function<void(const MotorPackMsg&)> MakeDeviceWriter(BaseAdapter* adapter,
+                                                                     Bus* bus) {
+        return adapter->MakeDeviceWriter(bus);
+    }
+
     static void SetRawMessageCallback(BaseAdapter* adapter,
                                       std::function<void(const MotorMessages&)> callback) {
         adapter->SetRelayRawMessageCallback(std::move(callback));

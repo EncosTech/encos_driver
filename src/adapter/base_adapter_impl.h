@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <string>
 
@@ -16,6 +17,11 @@ namespace encos {
 
 struct BaseAdapter::Impl {
     void OnMessage(BaseAdapter& owner, const MotorMessages& messages);
+
+    mutable platform::Mutex statistics_mutex;
+    std::optional<AdapterStatistics> statistics;
+    std::vector<std::optional<std::chrono::steady_clock::time_point>> statistics_times;
+    std::uint64_t statistics_stale_ms = 0;
 
     AdapterRouteDomain route_domain;
     std::atomic<std::size_t> unknown_bus_drop_count{0};

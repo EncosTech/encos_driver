@@ -11,6 +11,7 @@
 
 #include "adapter/base_adapter.h"
 #include "bus/bus_impl.h"
+#include "bus/submotor_packet.h"
 #include "device/battery/battery.h"
 #include "device/glove/glove.h"
 #include "device/imu/imu.h"
@@ -28,7 +29,7 @@ Bus::Bus(BaseAdapter* adapter, int idx, LoggerPtr logger) : impl_(std::make_uniq
     impl_->adapter = adapter;
     impl_->logger_ = std::move(logger);
     impl_->writer = [this, adapter](const MotorMessages& messages) {
-        adapter->SubmitBusMessages(this, messages);
+        adapter->SubmitBusMessages(this, messages, true);
     };
 }
 
@@ -40,6 +41,32 @@ auto Bus::AcquireOperation() {
 
 auto Bus::TryAcquireOperation() {
     return EncosDriverManager::Instance().TryAcquireBusOperation(this);
+}
+
+Motor* Bus::GetMotor(CanId can_id, unsigned sub_id, MotorModel model) {
+    if (sub_id == 0) {
+        throw std::invalid_argument("Sub-motor ID must be in [1, 7]");
+    }
+    return GetMotor(MakeCanAddress(can_id, sub_id), model);
+}
+
+Motor* Bus::GetMotor(CanId can_id, unsigned sub_id, MotorProperties ranges) {
+    if (sub_id == 0) {
+        throw std::invalid_argument("Sub-motor ID must be in [1, 7]");
+    }
+    return GetMotor(MakeCanAddress(can_id, sub_id), ranges);
+}
+
+Motor* Bus::GetSubMotor(CanId can_id, unsigned sub_id) {
+    if (sub_id == 0) {
+        throw std::invalid_argument("Sub-motor ID must be in [1, 7]");
+    }
+    return GetMotor(MakeCanAddress(can_id, sub_id));
+}
+
+DexHand* Bus::GetDexHand(int base_id) {
+    auto operation = AcquireOperation();
+    return EncosDriverManager::Instance().CreateDexHand(this, base_id);
 }
 
 Motor* Bus::GetMotor(int motor_idx, MotorModel model) {
@@ -319,6 +346,12 @@ bool Bus::ResetMotorsId(bool wait_for_ack) {
     if (!operation) {
         return false;
     }
+    for (const auto& [id, motor] : EncosDriverManager::Instance().GetMotors(this)) {
+        (void) motor;
+        if (CanSubId(static_cast<CanId>(id)) != 0) {
+            return false;
+        }
+    }
     platform::LockGuard<platform::Mutex> consumer_lock(impl_->consumer_mutex);
     MotorPackMsg message{};
     message.id = 0x7FF;
@@ -362,6 +395,12 @@ bool Bus::SendAutoAssignCanId(uint16_t assign_id) {
     if (!operation) {
         return false;
     }
+    for (const auto& [id, motor] : EncosDriverManager::Instance().GetMotors(this)) {
+        (void) motor;
+        if (CanSubId(static_cast<CanId>(id)) != 0) {
+            return false;
+        }
+    }
     platform::LockGuard<platform::Mutex> consumer_lock(impl_->consumer_mutex);
     MotorPackMsg message{};
     message.id = 0x7FF;
@@ -392,12 +431,13 @@ int Bus::GetBusIndex() const {
     return impl_->idx;
 }
 
-void Bus::SubmitDeviceMessage(void* channel, const MotorPackMsg& message) {
+void Bus::SubmitDeviceMessage(void* channel, const MotorPackMsg& message, bool immediate) {
     MotorMessage outgoing{};
     outgoing.bus_idx = impl_->idx;
     outgoing.data = message;
+    ValidateSubMotorMessage(outgoing);
     outgoing.data.frame_flags = SanitizeCanFrameFlags(outgoing.data.frame_flags);
-    impl_->adapter->SubmitDeviceMessage(this, channel, outgoing);
+    impl_->adapter->SubmitDeviceMessage(this, channel, outgoing, immediate);
 }
 
 void Bus::UnregisterSendChannel(void* channel) {
@@ -449,8 +489,8 @@ Bus::Impl::SendChannel::~SendChannel() {
     bus->UnregisterSendChannel(this);
 }
 
-void Bus::Impl::SendChannel::Push(const MotorPackMsg& message) {
-    bus->SubmitDeviceMessage(this, message);
+void Bus::Impl::SendChannel::Push(const MotorPackMsg& message, bool immediate) {
+    bus->SubmitDeviceMessage(this, message, immediate);
 }
 
 MotorMessages Bus::Impl::DrainOutgoingLocked() {

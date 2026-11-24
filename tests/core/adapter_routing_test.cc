@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -12,6 +13,7 @@
 
 #include "bus/bus.h"
 #include "device/battery/battery.h"
+#include "device/motor/can_address.h"
 #include "device/motor/motor.h"
 #include "driver_manager_test_access.h"
 #include "encos/driver_manager.h"
@@ -53,11 +55,167 @@ MotorPackMsg MakeStatusMessage(std::uint32_t id) {
     return message;
 }
 
+Battery* CreatePacketRoute(Bus* bus, int device_id, std::uint32_t can_id,
+                           EncosDriverManager::ReceiveCallback callback) {
+    auto& impl = DriverManagerTestAccess::Internals(EncosDriverManager::Instance());
+    auto recipe = impl.MakeBatteryRecipe(bus, device_id);
+    recipe.can_ids = {can_id};
+    const auto bind = recipe.bind;
+    recipe.bind = [bind, callback](void* device) {
+        auto binding = bind(device);
+        binding.callback = callback;
+        return binding;
+    };
+    return static_cast<Battery*>(impl.CreateDevice(bus, device_id, recipe));
+}
+
+TEST_F(AdapterRoutingTest, GroupedFdDeliversExactFirstThenDlcSizedSlotsIncludingZeroData) {
+    for (const auto length : {54, 63, 64}) {
+        const std::uint32_t id = 0x500U + length;
+        const int device_id = length * 10;
+        std::vector<MotorPackMsg> received;
+        const auto collect = [&](const MotorPackMsg& packet) {
+            received.push_back(packet);
+        };
+        ASSERT_NE(CreatePacketRoute(bus_, device_id, id, collect), nullptr);
+        ASSERT_NE(CreatePacketRoute(bus_, device_id + 1, MakeCanAddress(id, 1), collect), nullptr);
+        ASSERT_NE(CreatePacketRoute(bus_, device_id + 2, MakeCanAddress(id, 4), collect), nullptr);
+        ASSERT_NE(CreatePacketRoute(bus_, device_id + 3, MakeCanAddress(id, 7), collect), nullptr);
+        MotorMessage message{};
+        message.bus_idx = 3;
+        message.data.id = id;
+        message.data.frame_flags = kCanFrameFlagFdMask | kCanFrameFlagEff;
+        message.data.len = static_cast<uint8_t>(length);
+        message.data.data[0] = 3;
+        std::fill_n(message.data.data + 1, 8, 0xAA);
+        message.data.data[27] = 8;
+        if (length != 54) {
+            message.data.data[54] = 2;
+            std::fill_n(message.data.data + 55, 8, 0xBB);
+        }
+        if (length == 64)
+            message.data.data[63] = 0xCC;
+        unsigned raw_calls = 0;
+        adapter_->SetRawMessageCallbackForTests([&](const MotorMessages& raw) {
+            ++raw_calls;
+            ASSERT_EQ(raw.size(), 1u);
+            EXPECT_EQ(raw.front().data, message.data);
+        });
+        adapter_->SimulateOnMessage({message});
+        EXPECT_EQ(raw_calls, 1u);
+        ASSERT_EQ(received.size(), length == 54 ? 3u : 4u);
+        EXPECT_EQ(received.front(), message.data);
+        const std::array<uint8_t, 3> slots{1, 4, 7};
+        for (std::size_t i = 0; i + 1 < received.size(); ++i) {
+            MotorPackMsg expected{};
+            expected.id = MakeCanAddress(id, slots[i]);
+            expected.frame_flags = message.data.frame_flags;
+            const auto offset = (slots[i] - 1) * 9;
+            expected.len = message.data.data[offset];
+            std::copy_n(message.data.data + offset + 1, expected.len, expected.data);
+            EXPECT_EQ(received[i + 1], expected);
+        }
+        received.clear();
+        message.data.len = 64;
+        message.data.data[54] = 0;
+        adapter_->SimulateOnMessage({message});
+        EXPECT_EQ(received.size(), 3u);
+        received.clear();
+        message.data.data[45] = 9;
+        adapter_->SimulateOnMessage({message});
+        ASSERT_EQ(received.size(), 1u);
+        EXPECT_EQ(received.front(), message.data);
+        adapter_->SetRawMessageCallbackForTests({});
+    }
+}
+
+TEST_F(AdapterRoutingTest, GroupedFdRequiresPhysicalIdFdFlagAndExactLength) {
+    auto& manager = EncosDriverManager::Instance();
+    unsigned deliveries = 0;
+    ASSERT_NE(CreatePacketRoute(bus_, 1, MakeCanAddress(0x522, 2),
+                                [&](const MotorPackMsg&) {
+                                    ++deliveries;
+                                }),
+              nullptr);
+    MotorPackMsg message{};
+    message.id = 0x522;
+    message.frame_flags = kCanFrameFlagFdMask;
+    message.data[9] = 2;
+    for (const auto length : {0, 8, 48, 55, 56, 57, 62, 65}) {
+        message.len = static_cast<uint8_t>(length);
+        EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, message));
+    }
+    message.len = 54;
+    for (const auto flags : {0, int(kCanFrameFlagFdBit1), int(kCanFrameFlagFdBit2)}) {
+        message.frame_flags = static_cast<uint8_t>(flags);
+        EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, message));
+    }
+    message.frame_flags = kCanFrameFlagFdMask;
+    message.id = MakeCanAddress(0x522, 1);
+    EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, message));
+    EXPECT_EQ(deliveries, 0u);
+    message.id = 0x522;
+    EXPECT_TRUE(manager.DispatchReceive(adapter_, 3, message));
+    EXPECT_EQ(deliveries, 1u);
+    message.data[45] = 9;
+    EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, message));
+    EXPECT_EQ(deliveries, 1u);
+    message.data[45] = 0;
+    message.data[9] = 0;
+    EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, message));
+    EXPECT_EQ(deliveries, 1u);
+    message.id = 0x523;
+    EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, message));
+}
+
+TEST_F(AdapterRoutingTest, GroupedSystemIdUsesExactAndChildRoutesWithoutBroadcast) {
+    auto& manager = EncosDriverManager::Instance();
+    std::vector<std::uint32_t> received;
+    const auto collect = [&](const MotorPackMsg& packet) {
+        received.push_back(packet.id);
+    };
+    ASSERT_NE(CreatePacketRoute(bus_, 1, 0x7FF, collect), nullptr);
+    ASSERT_NE(CreatePacketRoute(bus_, 2, MakeCanAddress(0x7FF, 3), collect), nullptr);
+    ASSERT_NE(CreatePacketRoute(bus_, 3, 0x524, collect), nullptr);
+    MotorPackMsg message{};
+    message.id = 0x7FF;
+    message.data[18] = 8;
+    message.len = 64;
+    message.frame_flags = kCanFrameFlagFdMask;
+    EXPECT_TRUE(manager.DispatchReceive(adapter_, 3, message));
+    EXPECT_EQ(received, (std::vector<std::uint32_t>{0x7FF, MakeCanAddress(0x7FF, 3)}));
+    received.clear();
+    message.len = 8;
+    EXPECT_FALSE(manager.DispatchReceive(adapter_, 3, message));
+    EXPECT_EQ(received.size(), 3u);
+}
+
+TEST_F(AdapterRoutingTest, GroupedCallbackCanDeleteLaterChildBeforeItsRouteIsAcquired) {
+    auto& manager = EncosDriverManager::Instance();
+    unsigned deliveries = 0;
+    auto* child = CreatePacketRoute(bus_, 1, MakeCanAddress(0x525, 1), [&](const MotorPackMsg&) {
+        ++deliveries;
+    });
+    ASSERT_NE(child, nullptr);
+    ASSERT_NE(CreatePacketRoute(bus_, 2, 0x525,
+                                [&](const MotorPackMsg&) {
+                                    EXPECT_TRUE(manager.DestroyBattery(child));
+                                }),
+              nullptr);
+    MotorPackMsg message{};
+    message.id = 0x525;
+    message.data[0] = 8;
+    message.len = 54;
+    message.frame_flags = kCanFrameFlagFdMask;
+    EXPECT_TRUE(manager.DispatchReceive(adapter_, 3, message));
+    EXPECT_EQ(deliveries, 0u);
+}
+
 TEST_F(AdapterRoutingTest, SerializesRegisteredCallbackDelivery) {
     auto& manager = EncosDriverManager::Instance();
     auto* battery = manager.CreateBattery(bus_, 10);
     ASSERT_NE(battery, nullptr);
-    const std::vector<std::uint32_t> ids{0x3FE, 0x2FE, 0x0FE, 0x1FE};
+    const std::vector<std::uint32_t> ids{0x408, 0x308, 0x108, 0x208};
 
     std::atomic<unsigned> deliveries{0};
     std::atomic<unsigned> active_callbacks{0};
@@ -170,7 +328,7 @@ TEST_F(AdapterRoutingTest, RoutesAreIsolatedByAdapterAndRawBus) {
     ASSERT_NE(first_battery, nullptr);
     ASSERT_NE(same_adapter_battery, nullptr);
     ASSERT_NE(second_adapter_battery, nullptr);
-    const std::vector<std::uint32_t> ids{0x3F5, 0x2F5, 0x0F5, 0x1F5};
+    const std::vector<std::uint32_t> ids{0x3F6, 0x2F6, 0x0F6, 0x1F6};
     std::atomic<unsigned> first_deliveries{0};
     std::atomic<unsigned> same_adapter_deliveries{0};
     std::atomic<unsigned> second_adapter_deliveries{0};

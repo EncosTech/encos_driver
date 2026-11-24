@@ -4,11 +4,11 @@
 #include "encos/encos_driver.h"
 #include "encos_version.h"
 
+namespace encos {
+
 extern "C" const char* encos_get_version() {
     return ENCOS_PROJECT_VERSION;
 }
-
-namespace encos {
 
 BaseAdapter* MakeAdapter(const std::string& adapter_type, const std::string& interface_name,
                          const std::string& logger_name, LogLevel log_level) {
@@ -49,6 +49,10 @@ bool DeleteImu(Imu* imu) {
 
 bool DeletePms(Pms* pms) {
     return EncosDriverManager::Instance().DestroyPms(pms);
+}
+
+bool DeleteDexHand(DexHand* hand) {
+    return EncosDriverManager::Instance().DestroyDexHand(hand);
 }
 
 bool DeleteDevice(Device* device) {

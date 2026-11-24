@@ -33,6 +33,7 @@ struct RelayFrame {
  * @param type 帧类型
  * @param records 电机消息记录，单帧最多 255 条，超过时自动拆帧
  * @return 编码后的字节序列（多帧直接拼接）
+ * @throws std::invalid_argument 任一消息负载长度超过 EMR1 的 8 字节上限
  */
 ENCOS_BASE_API std::vector<uint8_t> EncodeRelayFrames(RelayFrameType type,
                                                       const std::vector<MotorMessage>& records);

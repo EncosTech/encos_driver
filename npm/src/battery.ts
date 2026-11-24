@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Encos
 // SPDX-License-Identifier: MIT
 
+import type { BatteryStatus, StatusCallback } from './native-types.js'
+import { NumericBuffer } from './backend.js'
 import { assertOk } from './native.js'
 import type { BusWrapper } from './bus.js'
 import type { BatteryPassiveCommands, BatteryStatusResult } from './types.js'
@@ -22,14 +24,14 @@ export class BatteryWrapper {
 
   getStatus(): BatteryStatusResult {
     this.#assertLive()
-    const values = this.runtime.module._malloc(27 * 8)
-    const meta = this.runtime.module._malloc(3 * 4)
+    const values = new NumericBuffer('double', 27)
+    const meta = new NumericBuffer('i32', 3)
     try {
       const code = this.runtime.calls.batteryGetStatus(this.handle, values, 27, meta, 3)
       assertOk(this.runtime, code, 'failed to get battery status')
-      const hasState = this.runtime.module.getValue(meta, 'i32') !== 0
-      const hasTemp = this.runtime.module.getValue(meta + 4, 'i32') !== 0
-      const hasActiveCommands = this.runtime.module.getValue(meta + 8, 'i32') !== 0
+      const hasState = meta.get(0) !== 0
+      const hasTemp = meta.get(1) !== 0
+      const hasActiveCommands = meta.get(2) !== 0
       return {
         state: hasState
           ? {
@@ -74,8 +76,8 @@ export class BatteryWrapper {
           : undefined,
       }
     } finally {
-      this.runtime.module._free(values)
-      this.runtime.module._free(meta)
+      values.release()
+      meta.release()
     }
   }
 
@@ -115,6 +117,18 @@ export class BatteryWrapper {
     assertOk(this.runtime, code, 'failed to set battery discharge permission')
   }
 
+  setOnStatus(callback: StatusCallback<BatteryStatus>): void {
+    this.#assertLive()
+    this.runtime._subscribe('battery.onStatus', { handle: this.handle }, callback)
+  }
+  dispose(): void {
+    if (this.disposed) return
+    this.#assertLive()
+    this.runtime._invoke('battery.dispose', { handle: this.handle })
+    this.disposed = true
+    this.bus.batteries.delete(this.index)
+  }
+
   #assertLive(): void {
     this.bus.adapter._assertLiveForChild()
     if (this.disposed || this.bus.disposed) {
@@ -122,7 +136,7 @@ export class BatteryWrapper {
     }
   }
 
-  #doubleAt(ptr: number, index: number): number {
-    return this.runtime.module.getValue(ptr + index * 8, 'double')
+  #doubleAt(ptr: NumericBuffer, index: number): number {
+    return ptr.get(index)
   }
 }

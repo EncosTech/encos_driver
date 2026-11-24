@@ -14,6 +14,7 @@
 
 #include "ethercat_base_handle.h"
 #include "ethercat_can_timing.h"
+#include "ethercat_cycle_options.h"
 
 /**
  * @brief IGH 主站版 EtherCAT handle（直连模式）。
@@ -44,13 +45,12 @@ public:
     void Send(const MotorMessages& messages);
     void SendSynchronized(const MotorMessages& messages);
 
-    /**
-     * @brief 周期收发循环。
-     * @param period 循环周期。
-     *               当 period <= 0 时按从站数量自动选择：
-     *               1~5: 250us(4kHz), 6~10: 500us(2kHz), >10: 1000us(1kHz)。
-     */
-    void Loop(std::chrono::microseconds period = std::chrono::microseconds(1000));
+    /** @brief 使用构造时配置的通信周期运行 */
+    void Loop() {
+        Loop(cycle_period_);
+    }
+    /** @brief 使用显式指定的正数周期运行 */
+    void Loop(std::chrono::microseconds period);
 
     EthercatIGHHandle(const EthercatIGHHandle&) = delete;
     EthercatIGHHandle& operator=(const EthercatIGHHandle&) = delete;
@@ -96,6 +96,11 @@ private:
         unsigned int in_motor_num{0};
         unsigned int in_can_ide{0};
         std::vector<MotorOffsets> in_motor{};
+
+        uint8_t fragmented_output_sync{0};
+        uint8_t fragmented_input_sync{0};
+        unsigned int fragmented_output{0};
+        unsigned int fragmented_input{0};
     };
 
     bool Initialize();
@@ -123,7 +128,7 @@ private:
      * @return 所有 SDO 都成功注册时返回 true
      */
     bool ApplyCanTimingSdos();
-    MotorMessages ReadInputs();
+    MotorMessages ReadInputs(std::chrono::microseconds period);
     void WriteOutputs(const OutputFrame& packets);
     void ClearOutput(std::size_t slave);
     void ClearOutputs();
@@ -139,6 +144,7 @@ private:
     std::string interface_name_;
     // 已解析的扩展配置信封（CAN 位时序）。
     AdapterExtend extend_;
+    std::chrono::microseconds cycle_period_{encos::ethercat::kDefaultCyclePeriod};
     // IGH master index（ecrt_request_master 入参）。
     unsigned int master_index_{0};
     // 参与 PDO 映射的 slave 数量（来自主站实时扫描结果）。

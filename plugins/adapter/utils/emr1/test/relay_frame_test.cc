@@ -23,6 +23,12 @@ protected:
     }
 };
 
+TEST_F(RelayFrameTest, RejectsPayloadBeyondLegacyWireCapacity) {
+    auto message = MakeMessage(0, 1, kCanFrameFlagFdMask, 64, {});
+    EXPECT_THROW(EncodeRelayFrames(RelayFrameType::RelayToHelper, {message}),
+                 std::invalid_argument);
+}
+
 TEST_F(RelayFrameTest, EncodesEmptyFrame) {
     const auto bytes = EncodeRelayFrames(RelayFrameType::RelayToHelper, {});
     ASSERT_EQ(bytes.size(), 8u);

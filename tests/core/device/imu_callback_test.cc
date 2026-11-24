@@ -197,7 +197,7 @@ TEST_F(MotorTestFixture, ImuDeletionUnregistersDirectReportRoutes) {
     }
 
     MotorPackMsg battery_message{};
-    battery_message.id = 0x3F8u;
+    battery_message.id = 0x3FCu;
     battery_message.len = 8;
     battery_message.data[1] = 60;
     EXPECT_TRUE(manager.DispatchReceive(adapter, 0, battery_message));

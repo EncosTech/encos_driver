@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+runner:
+  file: C:/Users/encos/work/gitea-runner/.runner
+  capacity: 1
+  labels:
+    - windows-mingw-amd64:host
+host:
+  workdir_parent: C:/Users/encos/work/gitea-runner/jobs
+cache:
+  enabled: false
+log:
+  job:
+    dir: C:/Users/encos/work/gitea-runner/job-logs
+    retention: 168h
+    max_size: 100MB

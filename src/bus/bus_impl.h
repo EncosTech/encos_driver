@@ -23,7 +23,7 @@ struct Bus::Impl {
         explicit SendChannel(Bus* bus) : bus(bus) {}
         ~SendChannel();
 
-        void Push(const MotorPackMsg& message);
+        void Push(const MotorPackMsg& message, bool immediate);
 
         Bus* bus;
         Port<10, MotorMessage> port;

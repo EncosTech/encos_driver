@@ -1,0 +1,25 @@
+{
+  "name": "@encos/encos-driver-native",
+  "version": "0.0.0-development",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./types/index-native.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index-native.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "engines": { "node": ">=22" },
+  "files": ["dist", "types", "API.md", "LICENSE"],
+  "scripts": {
+    "pack:check": "node ../scripts/node/pack-selector.mjs --dist ../npm/dist --output ../../work/node-selector"
+  },
+  "optionalDependencies": {
+    "@encos/encos-driver-native-linux-x64-gnu": "0.0.0-development",
+    "@encos/encos-driver-native-linux-arm64-gnu": "0.0.0-development",
+    "@encos/encos-driver-native-win32-x64": "0.0.0-development"
+  },
+  "publishConfig": { "registry": "https://git.in.encos.cn/api/packages/packages/npm/" },
+  "license": "MIT"
+}

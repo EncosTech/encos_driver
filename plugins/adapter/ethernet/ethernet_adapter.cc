@@ -10,23 +10,36 @@
 
 #include "adapter/adapter_extend.h"
 #include "bus/bus.h"
+#include "can_statistics.h"
+#include "encos/driver_manager.h"
 #include "ethernet/protocol/gateway_payload.h"
 #include "ethernet_slave.h"
 #include "platform/os.h"
 #include "utils/adapter_extend_update.h"
 #include "utils/thread_priority.h"
+#include "utils/tracy.h"
 
 namespace encos {
 EthernetAdapter::EthernetAdapter(const std::string& name, const std::string& logger, LogLevel level,
                                  const AdapterExtend& extend)
     : BaseAdapter(name, logger, level) {
     multi_ = name.find('@') == std::string::npos;
-    ethernet::ConfigureHostInterface(name.substr(0, name.find('@')));
+    const auto explicit_endpoint =
+        multi_ ? std::optional<ethernet::Endpoint>{} : ethernet::ParseEndpoint(name);
+    const auto exclusive = extend.Common().value("host_network_exclusive", false);
+    host_interface_ = ethernet::ConfigureHostInterface(name.substr(0, name.find('@')), exclusive);
+    if (host_interface_)
+        host_interface_->ValidateRoute(explicit_endpoint ? explicit_endpoint->address
+                                                         : "255.255.255.255");
     Logger()->info("Ethernet host interface configured: 192.168.100.254/24");
-    const auto endpoints = multi_ ? ethernet::DiscoverSlaves(name)
-                                  : std::vector<ethernet::Endpoint>{ethernet::ParseEndpoint(name)};
+    const auto endpoints = explicit_endpoint ? std::vector<ethernet::Endpoint>{*explicit_endpoint}
+                                             : ethernet::DiscoverSlaves(name);
     if (endpoints.empty())
         throw std::runtime_error("No Ethernet slaves discovered on " + name);
+    if (host_interface_ && multi_) {
+        for (const auto& endpoint : endpoints)
+            host_interface_->ValidateRoute(endpoint.address);
+    }
 
     // 总线标识为 (slave, channel)：先校验信封没有指向未发现从站或超范围的通道
     std::set<std::pair<int, int>> available_buses;
@@ -43,36 +56,113 @@ EthernetAdapter::EthernetAdapter(const std::string& name, const std::string& log
         }
     }
 
+    AdapterStatistics statistics;
     for (const auto& endpoint : endpoints) {
         const unsigned slave = multi_ ? ethernet::SlaveId(endpoint.address) : 0;
         auto& peer = peers_[slave];
-        peer.outgoing.reserve(ethernet::kMaxPayloadMessages);
         Logger()->info("Ethernet discovered slave={} interface={} address={}", slave,
                        endpoint.interface_name, endpoint.address);
         try {
             peer.management = std::make_unique<ethernet::ManagementClient>(
                 endpoint, Logger(),
-                [&extend, slave](unsigned count) {
+                [&extend, slave, &peer](unsigned count) {
+                    const auto first = extend.Scope(static_cast<int>(slave), 0);
+                    const auto mode = first.value("protocol", std::string("auto"));
+                    const auto budget = first.value("max_payload", int64_t{1448});
+                    if (!first.value("max_payload", nlohmann::json(1448)).is_number_integer() ||
+                        budget < 128 || budget > 1472)
+                        throw std::invalid_argument(
+                            "Ethernet max_payload must be an integer in 128..1472");
+                    peer.protocol_mode = ParseRelayProtocolMode(mode);
+                    peer.max_payload = static_cast<std::size_t>(budget);
+                    peer.wire.session_id = static_cast<uint32_t>(
+                        std::chrono::steady_clock::now().time_since_epoch().count());
+                    for (unsigned channel = 1; channel < count; ++channel) {
+                        const auto scope =
+                            extend.Scope(static_cast<int>(slave), static_cast<int>(channel));
+                        if (!scope.value("max_payload", nlohmann::json(1448)).is_number_integer() ||
+                            scope.value("protocol", std::string("auto")) != mode ||
+                            scope.value("max_payload", int64_t{1448}) != budget)
+                            throw std::invalid_argument(
+                                "Ethernet protocol/max_payload must agree across peer channels");
+                    }
                     return ethernet::BuildGatewayChannelTimings(extend, static_cast<int>(slave),
                                                                 count);
                 },
                 [this, slave](unsigned channel) {
-                    return !GetBus((static_cast<int>(slave) << 16) | static_cast<int>(channel))
-                                ->GetMotors()
-                                .empty();
+                    return HasKnownMotors(slave, channel);
+                },
+                [this, slave, cached = std::array<BusStatistics, 8>{},
+                 ordering = std::array<ethernet::CanStatisticsOrder, 8>{}](
+                    const ethernet::CanError& event) mutable {
+                    const auto result = ordering[event.channel].Observe(
+                        event, ethernet::CanStatisticsOrder::Clock::now());
+                    if (result == ethernet::CanStatisticsOrder::Result::Rejected)
+                        return;
+
+                    auto& bus = cached[event.channel];
+                    if (result == ethernet::CanStatisticsOrder::Result::Restarted)
+                        bus = BusStatistics{};
+
+                    bus.slave_id = static_cast<int>(slave);
+                    bus.bus_id = static_cast<int>(event.channel);
+
+                    ethernet::ApplyCanStatistics(bus, event);
+                    UpdateStatistics(bus);
+                },
+                false,
+                [&peer] {
+                    return peer.protocol_mode == RelayProtocolMode::Auto;
                 });
+
+            const auto& negotiated = peer.management->Capabilities();
+            const auto selected = SelectRelayProtocol(peer.protocol_mode, negotiated);
+            const auto budget =
+                std::min(peer.max_payload, selected == RelayProtocol::Emr1
+                                               ? std::size_t(1448)
+                                               : (peer.protocol_mode == RelayProtocolMode::Auto
+                                                      ? std::size_t(negotiated.max_payload)
+                                                      : peer.max_payload));
+            Logger()->info(
+                "Ethernet slave={} ip={} EMR negotiation: requested={} selected={} "
+                "max_payload={} emr2_capability={} advertised_max_payload={} source={}",
+                slave, endpoint.address,
+                peer.protocol_mode == RelayProtocolMode::Auto
+                    ? "auto"
+                    : (peer.protocol_mode == RelayProtocolMode::Emr1 ? "EMR1" : "EMR2"),
+                selected == RelayProtocol::Emr1 ? "EMR1" : "EMR2", budget,
+                negotiated.emr2 ? "confirmed" : "unconfirmed",
+                negotiated.emr2 ? std::to_string(negotiated.max_payload) : "unknown",
+                peer.protocol_mode != RelayProtocolMode::Auto
+                    ? "explicit configuration"
+                    : (negotiated.emr2 ? "capability reply" : "legacy fallback"));
+
             const auto& initialized = peer.management->Initialization();
             peer.channel_count = initialized.channel_count;
+
+            for (unsigned channel = 0; channel < peer.channel_count; ++channel) {
+                BusStatistics bus;
+                bus.slave_id = static_cast<int>(slave);
+                bus.bus_id = static_cast<int>(channel);
+                statistics.buses.push_back(bus);
+            }
+
             timings_[slave] = initialized.timings;
         } catch (const std::exception& error) {
             Logger()->error("Slave {} CAN initialization failed: {}", slave, error.what());
             throw;
         }
     }
+    InitializeStatistics(statistics, 500);
+
+    for (auto& peer : peers_)
+        peer.second.management->Start();
+
     transport_ = ethernet::CreateTransport(endpoints, multi_);
     running_ = true;
     worker_ = std::thread(&EthernetAdapter::Worker, this);
 }
+
 EthernetAdapter::~EthernetAdapter() {
     running_ = false;
     if (transport_)
@@ -80,6 +170,7 @@ EthernetAdapter::~EthernetAdapter() {
     if (worker_.joinable())
         worker_.join();
 }
+
 std::unordered_map<int, Bus*> EthernetAdapter::GetBuses() {
     std::unordered_map<int, Bus*> buses;
     for (const auto& peer : peers_)
@@ -89,6 +180,7 @@ std::unordered_map<int, Bus*> EthernetAdapter::GetBuses() {
         }
     return buses;
 }
+
 bool EthernetAdapter::IsValidBus(int index) const {
     if (index < 0)
         return false;
@@ -98,6 +190,13 @@ bool EthernetAdapter::IsValidBus(int index) const {
     const auto peer = peers_.find(slave);
     return peer != peers_.end() && channel < peer->second.channel_count;
 }
+
+bool EthernetAdapter::HasKnownMotors(unsigned slave, unsigned channel) {
+    const auto buses = GetKnownBusesSnapshot();
+    const auto bus = buses.find((static_cast<int>(slave) << 16) | static_cast<int>(channel));
+    return bus != buses.end() && !EncosDriverManager::Instance().GetMotors(bus->second).empty();
+}
+
 bool EthernetAdapter::Ok() {
     return running_.load();
 }
@@ -106,6 +205,9 @@ bool EthernetAdapter::UpdateBusExtend(const std::string& extend_json) {
     const auto extend = AdapterExtend::Parse(extend_json);
     adapter_update::WarnIgnoredCommonFields(extend, Logger());
     for (const auto& bus : extend.DeclaredBuses()) {
+        const auto* changes = extend.BusOverride(bus.first, bus.second);
+        if (changes && (changes->contains("protocol") || changes->contains("max_payload")))
+            throw std::invalid_argument("Ethernet wire settings require adapter recreation");
         if (!IsValidBus((bus.first << 16) | bus.second)) {
             throw std::runtime_error("Ethernet adapter has no bus '" + std::to_string(bus.first) +
                                      ":" + std::to_string(bus.second) + "'");
@@ -126,6 +228,8 @@ bool EthernetAdapter::UpdateBusExtend(const std::string& extend_json) {
             throw std::runtime_error("Ethernet adapter has no bus '" + std::to_string(bus.first) +
                                      ":" + std::to_string(bus.second) + "'");
         }
+        if (override_json->contains("protocol") || override_json->contains("max_payload"))
+            throw std::invalid_argument("Ethernet wire settings require adapter recreation");
         const unsigned channel = static_cast<unsigned>(bus.second);
         ethernet::GatewayCanTiming timing;
         {
@@ -150,12 +254,16 @@ bool EthernetAdapter::UpdateBusExtend(const std::string& extend_json) {
     }
     return true;
 }
+
 void EthernetAdapter::Send(const MotorMessage& message) {
     SendSynchronized({message});
 }
+
 void EthernetAdapter::SendSynchronized(const MotorMessages& messages) {
+    ENCOS_TRACY_ZONE("Ethernet::QueueBatch");
     if (!Ok())
         throw std::runtime_error("Ethernet worker is not running");
+
     std::map<unsigned, MotorMessages> grouped;
     for (const auto& message : messages) {
         if (!IsValidBus(message.bus_idx)) {
@@ -171,26 +279,27 @@ void EthernetAdapter::SendSynchronized(const MotorMessages& messages) {
             local.bus_idx &= 0xffff;
         grouped[slave].push_back(local);
     }
-    std::map<unsigned, std::vector<MotorMessages>> batches;
-    for (const auto& group : grouped)
-        for (std::size_t offset = 0; offset < group.second.size();
-             offset += ethernet::kMaxPayloadMessages) {
-            const auto count =
-                std::min(ethernet::kMaxPayloadMessages, group.second.size() - offset);
-            MotorMessages batch(group.second.begin() + offset,
-                                group.second.begin() + offset + count);
-            (void) ethernet::EncodePayload(batch);
-            batches[group.first].push_back(std::move(batch));
-        }
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& group : grouped)
-            if (group.second.size() > peers_.at(group.first).pending.Available())
+        for (const auto& group : grouped) {
+            auto& peer = peers_.at(group.first);
+            auto options = peer.wire;
+            const auto caps =
+                peer.management ? peer.management->Capabilities() : RelayCapabilities{};
+            options.protocol = SelectRelayProtocol(peer.protocol_mode, caps);
+            options.max_payload =
+                std::min(peer.max_payload, options.protocol == RelayProtocol::Emr1
+                                               ? std::size_t(1448)
+                                               : (peer.protocol_mode == RelayProtocolMode::Auto
+                                                      ? std::size_t(caps.max_payload)
+                                                      : peer.max_payload));
+            (void) EncodeRelayPackets(RelayFrameType::RelayToHelper, group.second, options);
+            if (group.second.size() > peer.pending.Available())
                 throw std::runtime_error("Ethernet transmit queue full");
-        for (auto& group : batches)
-            for (auto& batch : group.second)
-                if (!peers_.at(group.first).pending.Push(std::move(batch)))
-                    throw std::logic_error("Ethernet transmit queue invariant violated");
+        }
+        for (auto& group : grouped)
+            if (!peers_.at(group.first).pending.Push(std::move(group.second)))
+                throw std::logic_error("Ethernet transmit queue invariant violated");
     }
     if (!messages.empty())
         transport_->Notify();
@@ -206,20 +315,59 @@ void EthernetAdapter::Worker() {
             Logger()->info("Ethernet worker priority configured");
         }
         while (running_) {
+            ENCOS_TRACY_ZONE("Ethernet::WorkerCycle");
+            ENCOS_TRACY_FRAME("Ethernet");
+
             bool sent = false;
             for (auto& entry : peers_) {
                 auto& peer = entry.second;
-                if (peer.outgoing.empty()) {
+                if (peer.protocol_mode == RelayProtocolMode::Auto && peer.management &&
+                    !peer.management->CapabilitiesReady())
+                    continue;
+                const auto caps =
+                    peer.management ? peer.management->Capabilities() : RelayCapabilities{};
+                const auto protocol = SelectRelayProtocol(peer.protocol_mode, caps);
+                if (!peer.packets.empty() && peer.wire.protocol != protocol)
+                    throw std::runtime_error(
+                        "Ethernet capabilities expired with queued data; rebuild adapter");
+                if (peer.packets.empty()) {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    peer.outgoing = peer.pending.Pop();
+                    auto batch = peer.pending.Pop();
+                    if (!batch.empty()) {
+                        peer.wire.protocol = protocol;
+                        peer.wire.max_payload = std::min(
+                            peer.max_payload, protocol == RelayProtocol::Emr1
+                                                  ? std::size_t(1448)
+                                                  : (peer.protocol_mode == RelayProtocolMode::Auto
+                                                         ? std::size_t(caps.max_payload)
+                                                         : peer.max_payload));
+                        auto packets =
+                            EncodeRelayPackets(RelayFrameType::RelayToHelper, batch, peer.wire);
+                        ++peer.wire.batch_id;
+                        for (auto& packet : packets)
+                            peer.packets.push_back(std::move(packet));
+                    }
                 }
-                if (!peer.outgoing.empty() && transport_->Send(entry.first, peer.outgoing)) {
-                    peer.outgoing.clear();
+                if (!peer.packets.empty() &&
+                    transport_->SendPayload(entry.first, peer.packets.front())) {
+                    peer.packets.pop_front();
                     sent = true;
                 }
                 const auto now = std::chrono::steady_clock::now();
-                if (now >= peer.heartbeat && transport_->Send(entry.first, {}))
-                    peer.heartbeat = now + std::chrono::seconds(1);
+                if (now >= peer.heartbeat && peer.packets.empty()) {
+                    std::vector<uint8_t> heartbeat;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        auto options = peer.wire;
+                        options.protocol = protocol;
+                        heartbeat = EncodeRelayPackets(RelayFrameType::RelayToHelper,
+                                                       MotorMessages{}, options)
+                                        .front();
+                        peer.wire.sequence = options.sequence;
+                    }
+                    if (transport_->SendPayload(entry.first, heartbeat))
+                        peer.heartbeat = now + std::chrono::seconds(1);
+                }
             }
             auto received = transport_->Receive();
             received.erase(std::remove_if(received.begin(), received.end(),
@@ -227,8 +375,11 @@ void EthernetAdapter::Worker() {
                                               return !IsValidBus(message.bus_idx);
                                           }),
                            received.end());
-            if (!received.empty())
+            if (!received.empty()) {
+                ENCOS_TRACY_ZONE("Ethernet::MessageCallback");
                 OnMessage(received);
+            }
+
             if (!sent && received.empty())
                 transport_->Wait(1);
         }
@@ -237,6 +388,7 @@ void EthernetAdapter::Worker() {
         running_ = false;
     }
 }
+
 BaseAdapter* CreateEthernetAdapterStatic(const std::string& name, const std::string& logger,
                                          LogLevel level) {
     // 委托给 extend 入口，使默认时序只在 GatewayCanTiming 中声明一次
@@ -248,6 +400,7 @@ BaseAdapter* CreateEthernetAdapterStaticWithExtend(const std::string& name,
                                                    const std::string& extend_json) {
     return new EthernetAdapter(name, logger, level, AdapterExtend::Parse(extend_json));
 }
+
 void EnumerateEthernetInterfaces(AdapterInterfaceEmit emit, void* context) {
     if (emit == nullptr) {
         return;

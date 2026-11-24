@@ -81,7 +81,7 @@ Endpoint ParseEndpoint(const std::string& text) {
     return result;
 }
 std::vector<uint8_t> EncodePacket(const Route& route, const std::vector<uint8_t>& payload) {
-    if (payload.size() > 1448)
+    if (payload.size() > 1472)
         throw std::invalid_argument("UDP payload exceeds MTU budget");
     std::vector<uint8_t> packet(42 + payload.size(), 0);
     std::copy(route.remote_mac.begin(), route.remote_mac.end(), packet.begin());

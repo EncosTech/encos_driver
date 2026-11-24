@@ -12,8 +12,10 @@
 
 #include "bus/bus.h"
 #include "device/battery/battery.h"
+#include "device/glove/glove.h"
 #include "device/imu/imu.h"
 #include "device/motor/motor.h"
+#include "device/pms/pms.h"
 #include "encos_motor.h"
 #include "plugins/adapter/fake/fake_adapter.h"
 
@@ -91,6 +93,7 @@ struct BusEntry {
     std::unordered_map<int, std::uint32_t> battery_handles_by_index;
     std::unordered_map<int, std::uint32_t> imu_handles_by_index;
     bool valid = true;
+    std::unordered_map<std::uint32_t, DexHand*> dex_hand_handles{};
 };
 
 struct MotorEntry {
@@ -117,13 +120,48 @@ struct ImuEntry {
     bool valid = true;
 };
 
+struct PmsEntry {
+    std::uint32_t adapter_handle = 0;
+    std::uint32_t bus_handle = 0;
+    Pms* pms = nullptr;
+};
+struct GloveEntry {
+    std::uint32_t adapter_handle = 0;
+    Glove* glove = nullptr;
+    int slave_index = -1;
+};
+
 class RuntimeStore {
     friend struct RuntimeStoreTestAccess;
 
 public:
+    Result<std::uint32_t> AdoptBus(std::uint32_t adapter_handle, Bus* bus);
+    Result<std::uint32_t> AdoptMotor(std::uint32_t bus_handle, Motor* motor);
+    Result<std::uint32_t> AdoptBattery(std::uint32_t bus_handle, Battery* battery, int index);
+    Result<std::uint32_t> AdoptImu(std::uint32_t bus_handle, Imu* imu, int index);
+    Result<std::uint32_t> AdoptPms(std::uint32_t bus_handle, Pms* pms);
+    Result<std::uint32_t> AdoptDexHand(std::uint32_t bus_handle, DexHand* hand);
+    Result<std::uint32_t> AdoptGlove(std::uint32_t adapter_handle, Glove* glove, int slave_index);
+    Result<PmsEntry*> ResolvePms(std::uint32_t handle);
+    Result<DexHand*> ResolveDexHand(std::uint32_t handle);
+    Result<GloveEntry*> ResolveGlove(std::uint32_t handle);
+    ErrorCode DisposeBus(std::uint32_t handle);
+    ErrorCode DisposeMotor(std::uint32_t handle);
+    ErrorCode DisposeBattery(std::uint32_t handle);
+    ErrorCode DisposeImu(std::uint32_t handle);
+    ErrorCode DisposePms(std::uint32_t handle);
+    ErrorCode DisposeDexHand(std::uint32_t handle);
+    ErrorCode DisposeGlove(std::uint32_t handle);
+    void RefreshMotorIndices();
+    bool IsHandleAlive(std::uint32_t handle);
+    bool IsHandleDescendant(std::uint32_t source, std::uint32_t target) const;
+    /** @brief 释放当前运行时持有的全部适配器句柄；调用方必须保证没有并发操作。 */
+    void DisposeAll();
+
     Result<std::uint32_t> CreateAdapter(const std::string& adapter_type,
                                         const std::string& interface_name,
-                                        const std::string& logger_name, LogLevel log_level);
+                                        const std::string& logger_name, LogLevel log_level,
+                                        const nlohmann::json& extend = nlohmann::json::object());
     Result<std::uint32_t> CreateFakeAdapter(const std::string& interface_name,
                                             const std::string& logger_name, LogLevel log_level);
     ErrorCode DisposeAdapter(std::uint32_t adapter_handle);
@@ -191,9 +229,13 @@ private:
     std::unordered_set<std::string> pending_adapter_interfaces_;
     LoggerPtr logger_ = CreateLogger("WasmRuntimeStore");
     ErrorState last_error_;
+    std::unordered_map<std::uint32_t, PmsEntry> pmss_;
+    std::unordered_map<std::uint32_t, GloveEntry> gloves_;
 };
 
 RuntimeStore& Store();
+/** @brief 切换当前线程的运行时并返回旧值；传入空指针恢复默认 WASM 运行时。 */
+RuntimeStore* SetThreadStore(RuntimeStore* store);
 ErrorCode SetResultError(ErrorCode code, const std::string& message);
 void SetOk();
 

@@ -21,8 +21,6 @@ GITHUB_RELEASE_REPOSITORY=acme/mirror
 GITHUB_RELEASE_REPOSITORY_URL=https://github.com/acme/mirror.git
 GITEA_URL=https://gitea.test
 GITEA_PACKAGE_OWNER=packages
-DEBIAN_DISTRIBUTIONS=jammy,noble
-DEBIAN_ARCHITECTURES=amd64,arm64
 EOF
 
 main_sha1=0123456789abcdef0123456789abcdef01234567
@@ -31,7 +29,7 @@ dry_run_output=$(bash "${wrapper}" \
   --main-sha1 "${main_sha1}" \
   --dry-run)
 [[ "${dry_run_output}" == *"acme/mirror"* ]]
-[[ "${dry_run_output}" == *"jammy,noble"* ]]
+[[ "${dry_run_output}" == *"/api/packages/packages/generic/encos-driver-linux"* ]]
 [[ "${dry_run_output}" == *"main"* ]]
 [[ "${dry_run_output}" == *"develop,feature-x"* ]]
 [[ "${dry_run_output}" == *"${main_sha1}"* ]]

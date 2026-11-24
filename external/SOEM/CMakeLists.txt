@@ -77,7 +77,7 @@ option(SOEM_INSTALL "Install SOEM targets and headers" OFF)
 set(CMAKE_C_OUTPUT_EXTENSION_REPLACE 1)
 set(CMAKE_CXX_OUTPUT_EXTENSION_REPLACE 1)
 
-add_library(soem
+add_library(soem STATIC
   src/ec_base.c
   src/ec_coe.c
   src/ec_config.c

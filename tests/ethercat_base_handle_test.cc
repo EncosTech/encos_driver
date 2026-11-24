@@ -96,8 +96,8 @@ public:
         QueueSynchronizedMessages(messages);
     }
 
-    bool NextFrame(Frame& frame, std::size_t slave_count = 1) {
-        return PrepareNextFrame(frame, slave_count);
+    bool NextFrame(Frame& frame) {
+        return PrepareNextFrame(frame);
     }
 
     std::vector<Frame> Pack(const encos::MotorMessages& messages) const {
@@ -105,7 +105,7 @@ public:
     }
 
     encos::MotorMessages Decode(const std::vector<const uint8_t*>& inputs) {
-        return DecodeInputs(inputs, 1);
+        return DecodeInputs(inputs, 1, std::chrono::milliseconds(1));
     }
 };
 
@@ -536,9 +536,9 @@ TEST(EthercatBaseHandleTests, SameLocalBusOnDifferentSlavesUsesIndependentGenera
     TestEthercatBaseHandle::Frame first_frame;
     TestEthercatBaseHandle::Frame second_frame;
     TestEthercatBaseHandle::Frame third_frame;
-    ASSERT_TRUE(handle.NextFrame(first_frame, 2));
-    ASSERT_TRUE(handle.NextFrame(second_frame, 2));
-    ASSERT_TRUE(handle.NextFrame(third_frame, 2));
+    ASSERT_TRUE(handle.NextFrame(first_frame));
+    ASSERT_TRUE(handle.NextFrame(second_frame));
+    ASSERT_TRUE(handle.NextFrame(third_frame));
 
     const auto* first_slave_first =
         reinterpret_cast<const EthercatClassicCanMsg8*>(first_frame[0].data());
@@ -555,7 +555,7 @@ TEST(EthercatBaseHandleTests, SameLocalBusOnDifferentSlavesUsesIndependentGenera
     EXPECT_EQ(first_slave_third->motor[1].id, 0x801U);
 }
 
-TEST(EthercatBaseHandleTests, ClassicCanScanBurstKeepsOnlyTheNewestFrameUnderHighBacklog) {
+TEST(EthercatBaseHandleTests, ClassicCanScanBurstKeepsOnlyNewestFrameUnderHighBacklog) {
     TestEthercatBaseHandle handle;
     handle.ConfigureClassicCan8Bus();
 
@@ -572,16 +572,16 @@ TEST(EthercatBaseHandleTests, ClassicCanScanBurstKeepsOnlyTheNewestFrameUnderHig
     }
     handle.Queue(scan_messages);
 
-    std::size_t frame_count = 0;
     TestEthercatBaseHandle::Frame frame;
-    while (handle.NextFrame(frame)) {
-        ASSERT_EQ(frame.size(), 1U);
-        ASSERT_FALSE(frame[0].empty());
-        EXPECT_EQ(frame[0].size(), sizeof(EthercatClassicCanMsg8));
-        ++frame_count;
-    }
-
-    EXPECT_EQ(frame_count, 1U);
+    ASSERT_TRUE(handle.NextFrame(frame));
+    ASSERT_EQ(frame.size(), 1U);
+    ASSERT_EQ(frame[0].size(), sizeof(EthercatClassicCanMsg8));
+    const auto* packet = reinterpret_cast<const EthercatClassicCanMsg8*>(frame[0].data());
+    EXPECT_EQ(packet->motor[0].id, 0x7FDU);
+    EXPECT_EQ(packet->motor[0].data[0], static_cast<uint8_t>(0x07U << 5U));
+    EXPECT_EQ(packet->motor[1].id, 0x7FEU);
+    EXPECT_EQ(packet->motor[2].len, 0U);
+    EXPECT_FALSE(handle.NextFrame(frame));
 }
 
 TEST(EthercatBaseHandleTests, CanFd8BusDecodeSkipsZeroLengthBlocksAndKeepsDuplicates) {

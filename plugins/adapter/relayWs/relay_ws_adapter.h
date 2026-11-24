@@ -13,7 +13,7 @@ namespace encos {
 class RelayWsAdapter : public BaseAdapter {
 public:
     RelayWsAdapter(const std::string& interface_name, const std::string& logger_name,
-                   LogLevel log_level);
+                   LogLevel log_level, const std::string& extend_json = "");
     ~RelayWsAdapter() override;
 
     std::unordered_map<int, Bus*> GetBuses() override;
@@ -29,6 +29,7 @@ private:
     void ReportDroppedIncomingFrames(std::chrono::steady_clock::time_point now);
     static void OnTimer(void* arg);
     void FlushSendBuffer();
+    void ResetWireSession();
     bool ConnectSession();
     bool ConnectSessionWithRetry(std::chrono::milliseconds timeout);
     bool WaitForConnection(std::chrono::milliseconds timeout);
@@ -39,6 +40,12 @@ private:
 
 BaseAdapter* CreateRelayWsAdapterStatic(const std::string& interface_name,
                                         const std::string& logger_name, LogLevel log_level);
+
+/** @brief 创建带连接级协议扩展配置的 RelayWs 适配器 */
+BaseAdapter* CreateRelayWsAdapterStaticWithExtend(const std::string& interface_name,
+                                                  const std::string& logger_name,
+                                                  LogLevel log_level,
+                                                  const std::string& extend_json);
 
 /**
  * @brief RelayWs 由远端地址指定接口，枚举结果为空
