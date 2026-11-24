@@ -59,12 +59,44 @@ sudo ./build/example_igh_demo 0 spd 0 2 0 11 2 1.0 2.0 1
 
 ## 支持的 PDO 网关格式
 
-EtherCAT 层根据从站输出 PDO 字节数识别网关类型：
+EtherCAT 层根据从站 PDO 字节数识别网关类型。
 
 - `86` 字节：classic CAN，2 路 bus，每路 3 个槽位
 - `336` 字节：CAN FD，3 路 bus，每路 8 个槽位
+- `420` 字节：CAN FD，3 路 bus，每路 10 个槽位，双向必须均为 420 字节
 - `896` 字节：CAN FD，8 路 bus，每路 8 个槽位
 - `1120` 字节：CAN FD，8 路 bus，每路 10 个槽位
+
+420 字节布局按从站 SII 报告的输入和输出同步管理器注册。每个方向的三路总线
+分别从字节偏移 0、140、280 开始。
+
+### 发送与接收完整 CAN FD 帧
+
+所有 CAN FD 布局使用 14 字节槽，每槽仍有 8 字节数据区。最多 64 字节的帧按
+顺序占用相邻槽，槽头保存小端 CAN ID、帧标志和整帧字节数。长帧的 `FRAME`
+位 4 为分片标志，位 5～7 为分片索引。电机命令的指定槽位和 8 字节载荷格式保持原样。
+
+`ec_master_send_can_frame()` 提交完整帧。周期发送时先保留电机命令指定的槽位，再
+按总线的提交顺序放入原始 CAN 帧。队首一帧所需的连续空间不足时，该帧及同路的
+后续帧等到后续 PDO。`ec_master_cycle_with_can_handler()` 接收、重组并交付完整帧，
+调用时传入实际周期，单位是微秒。无自定义回调的 `ec_master_cycle()` 使用 1000 µs。
+
+```c
+static void on_can_frame(uint16_t slave_id, uint16_t bus_id,
+                         const EcCanFrame* frame, void* user_data) {
+    (void) user_data;
+    printf("slave=%u bus=%u id=0x%X len=%u\n", slave_id, bus_id, frame->id, frame->len);
+}
+
+/* 主站就绪后提交一帧 20 字节的标准 FD+BRS 报文。 */
+const EcCanFrame frame = {.id = 0x123, .frame_flags = 0x06, .len = 20, .data = {1, 2, 3}};
+bool queued = ec_master_send_can_frame(&master, 0, 0, &frame);
+bool ready = ec_master_cycle_with_can_handler(&master, 1000, on_can_frame, NULL);
+```
+
+重组按从站、总线、CAN ID、基本帧标志与整帧长度识别。同一组仅保留至下一份有效
+PDO，且自首片起满两倍周期即过期。遇到坏 WKC、从站离开 OP 或重连时，未完成的
+接收组会被清除。此线格式没有帧序号，无法识别所有同键的新旧分片混合。
 
 
 ## Demo 用法

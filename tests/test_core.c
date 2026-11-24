@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Encos
+// SPDX-License-Identifier: MIT
+
 #include <stdio.h>
 #include <string.h>
 
@@ -28,6 +31,14 @@ static int test_pdo_identification(void) {
     CHECK(layout.bus_count == 3);
     CHECK(layout.slots_per_bus == 8);
     CHECK(layout.motor_offset == 0);
+
+    CHECK(!ec_identify_pdo_layout(420, &layout));
+    CHECK(!ec_identify_pdo_layout_sizes(420, 336, &layout));
+    CHECK(ec_identify_pdo_layout_sizes(420, 420, &layout));
+    CHECK(layout.bus_count == 3);
+    CHECK(layout.slots_per_bus == 10);
+    CHECK(ec_motor_slot_offset(&layout, 1, 0) == 140);
+    CHECK(ec_motor_slot_offset(&layout, 2, 0) == 280);
 
     CHECK(ec_identify_pdo_layout(896, &layout));
     CHECK(layout.format == EC_SLAVE_FORMAT_CAN_FD_8_BUS);

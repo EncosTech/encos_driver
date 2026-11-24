@@ -27,6 +27,7 @@ endif()
 
 add_library(example_igh_core STATIC
     src/adapter_config.c
+    src/can_fd_pdo.c
     src/demo_timing.c
     src/external_device.c
     src/ethercat_layer.c
@@ -53,6 +54,7 @@ endif()
 if(BUILD_TESTING)
     add_executable(example_igh_recovery_tests tests/test_recovery.c)
     target_link_libraries(example_igh_recovery_tests PRIVATE example_igh_core)
+    target_link_options(example_igh_recovery_tests PRIVATE "-Wl,--wrap=clock_gettime")
     target_link_options(example_igh_recovery_tests PRIVATE "-Wl,--wrap=ecrt_master_receive")
     target_link_options(example_igh_recovery_tests PRIVATE "-Wl,--wrap=ecrt_domain_process")
     target_link_options(example_igh_recovery_tests PRIVATE "-Wl,--wrap=ecrt_domain_state")
@@ -91,4 +93,17 @@ if(BUILD_TESTING)
     target_link_options(example_igh_demo_startup_tests PRIVATE "-Wl,--wrap=ec_master_close")
     target_link_options(example_igh_demo_startup_tests PRIVATE "-Wl,--wrap=demo_wait_until_next_cycle")
     add_test(NAME example_igh_demo_startup_tests COMMAND example_igh_demo_startup_tests)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(example_igh_pdo_registration_tests tests/test_pdo_registration.c)
+    target_link_libraries(example_igh_pdo_registration_tests PRIVATE example_igh_core)
+    foreach(symbol ecrt_request_master ecrt_release_master ecrt_master ecrt_master_get_slave
+                   ecrt_master_get_sync_manager ecrt_master_get_pdo ecrt_master_get_pdo_entry
+                   ecrt_master_create_domain ecrt_master_slave_config ecrt_slave_config_pdos
+                   ecrt_slave_config_reg_pdo_entry_pos ecrt_domain_reg_pdo_entry_list
+                   ecrt_master_activate ecrt_domain_data)
+        target_link_options(example_igh_pdo_registration_tests PRIVATE "-Wl,--wrap=${symbol}")
+    endforeach()
+    add_test(NAME example_igh_pdo_registration_tests COMMAND example_igh_pdo_registration_tests)
 endif()

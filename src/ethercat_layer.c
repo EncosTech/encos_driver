@@ -6,13 +6,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
+
+#include "can_fd_pdo.h"
 
 enum {
     EC_CLASSIC_CAN_2_BUS_SIZE = 86,
     EC_CLASSIC_CAN_8_BUS_SIZE = 340,
     EC_CLASSIC_CAN_8_BUS_MAPPED_SIZE = 338,
     EC_CAN_FD_3_BUS_SIZE = 336,
+    EC_CAN_FD_3_BUS_10_SLOTS_SIZE = 420,
     EC_CAN_FD_8_BUS_SIZE = 896,
     EC_CAN_FD_8_BUS_10_SLOTS_SIZE = 1120,
     EC_MAX_LAYOUT_SLAVES = 16,
@@ -37,6 +41,8 @@ static const char* format_name(EcSlaveFormat format) {
             return "ClassicCan2Bus";
         case EC_SLAVE_FORMAT_CAN_FD_3_BUS:
             return "CanFd3Bus";
+        case EC_SLAVE_FORMAT_CAN_FD_3_BUS_10_SLOTS:
+            return "CanFd3Bus10Slots";
         case EC_SLAVE_FORMAT_CAN_FD_8_BUS:
             return "CanFd8Bus";
         case EC_SLAVE_FORMAT_CAN_FD_8_BUS_10_SLOTS:
@@ -66,6 +72,10 @@ static size_t layout_slot_count(const EcSlavePdoLayout* layout) {
  * @return 识别成功返回 true，不支持返回 false
  */
 bool ec_identify_pdo_layout(size_t obytes, EcSlavePdoLayout* layout) {
+    return ec_identify_pdo_layout_sizes(obytes, 0, layout);
+}
+
+bool ec_identify_pdo_layout_sizes(size_t obytes, size_t ibytes, EcSlavePdoLayout* layout) {
     if (layout == NULL) {
         return false;
     }
@@ -85,6 +95,12 @@ bool ec_identify_pdo_layout(size_t obytes, EcSlavePdoLayout* layout) {
         layout->bus_count = 3;
         layout->slots_per_bus = 8;
         layout->motor_offset = 0;
+        return true;
+    }
+    if (obytes == EC_CAN_FD_3_BUS_10_SLOTS_SIZE && ibytes == obytes) {
+        layout->format = EC_SLAVE_FORMAT_CAN_FD_3_BUS_10_SLOTS;
+        layout->bus_count = 3;
+        layout->slots_per_bus = 10;
         return true;
     }
     if (obytes == EC_CAN_FD_8_BUS_SIZE) {
@@ -128,7 +144,7 @@ bool ec_validate_target(const EcLayoutTable* table, uint16_t slave_id, uint16_t 
         return false;
     }
 
-    return ec_motor_slot_offset(layout, bus_id, slot) + sizeof(MotorPackMsg) <= layout->pdo_size;
+    return ec_motor_slot_offset(layout, bus_id, slot) + EC_CAN_SLOT_SIZE <= layout->pdo_size;
 }
 
 /**
@@ -144,7 +160,54 @@ size_t ec_motor_slot_offset(const EcSlavePdoLayout* layout, uint16_t bus_id, uin
     }
 
     const size_t motor_index = ((size_t) bus_id * layout->slots_per_bus) + slot;
-    return layout->motor_offset + (motor_index * sizeof(MotorPackMsg));
+    return layout->motor_offset + (motor_index * EC_CAN_SLOT_SIZE);
+}
+
+static uint32_t read_slot_id(const uint8_t* bytes) {
+    return (uint32_t) bytes[0] | ((uint32_t) bytes[1] << 8U) | ((uint32_t) bytes[2] << 16U) |
+           ((uint32_t) bytes[3] << 24U);
+}
+
+static void write_slot_id(uint8_t* bytes, uint32_t id) {
+    for (unsigned int i = 0; i < 4; ++i) {
+        bytes[i] = (uint8_t) (id >> (8U * i));
+    }
+}
+
+static bool pack_motor_slot(uint8_t* raw, const EcSlavePdoLayout* layout,
+                            const MotorPackMsg* packet) {
+    if (ec_is_can_fd_layout(layout)) {
+        EcCanFrame frame = {
+            .id = packet->id,
+            .frame_flags = motor_sanitize_flags(packet->frame_flags),
+            .len = packet->len,
+        };
+        if (frame.len == 0 ||
+            (layout->format == EC_SLAVE_FORMAT_CAN_FD_3_BUS_10_SLOTS &&
+             (frame.frame_flags != packet->frame_flags || !ec_can_fd_frame_is_valid(&frame)))) {
+            return false;
+        }
+        memcpy(frame.data, packet->data, packet->len);
+        ec_can_fd_write_frame(raw, &frame);
+    } else {
+        write_slot_id(raw, packet->id);
+        raw[4] = packet->frame_flags;
+        raw[5] = packet->len;
+        memcpy(raw + 6, packet->data, sizeof(packet->data));
+    }
+    return true;
+}
+
+static MotorPackMsg to_motor_packet(const EcCanFrame* frame) {
+    MotorPackMsg packet = {.id = frame->id, .frame_flags = frame->frame_flags, .len = frame->len};
+    memcpy(packet.data, frame->data, frame->len);
+    return packet;
+}
+
+static MotorPackMsg unpack_motor_slot(const uint8_t* raw) {
+    MotorPackMsg packet = {.id = read_slot_id(raw), .frame_flags = raw[4], .len = raw[5]};
+    memcpy(packet.data, raw + 6, sizeof(packet.data));
+    return packet;
 }
 
 /**
@@ -166,7 +229,7 @@ bool ec_write_motor_packet(uint8_t* slave_output, const EcSlavePdoLayout* layout
     }
 
     const size_t offset = ec_motor_slot_offset(layout, bus_id, slot);
-    if (offset + sizeof(*packet) > layout->pdo_size) {
+    if (offset + EC_CAN_SLOT_SIZE > layout->pdo_size || packet->len > EC_CAN_SLOT_PAYLOAD_SIZE) {
         return false;
     }
 
@@ -181,8 +244,7 @@ bool ec_write_motor_packet(uint8_t* slave_output, const EcSlavePdoLayout* layout
         }
     }
 
-    memcpy(slave_output + offset, packet, sizeof(*packet));
-    return true;
+    return pack_motor_slot(slave_output + offset, layout, packet);
 }
 
 /**
@@ -204,12 +266,22 @@ bool ec_read_motor_packet(const uint8_t* slave_input, const EcSlavePdoLayout* la
     }
 
     const size_t offset = ec_motor_slot_offset(layout, bus_id, slot);
-    if (offset + sizeof(*packet) > layout->pdo_size) {
+    if (offset + EC_CAN_SLOT_SIZE > layout->pdo_size) {
         return false;
     }
 
-    memcpy(packet, slave_input + offset, sizeof(*packet));
-    return packet->len != 0;
+    const uint8_t* raw = slave_input + offset;
+    if (ec_is_can_fd_layout(layout)) {
+        EcCanFrame frame;
+        const bool legacy = layout->format != EC_SLAVE_FORMAT_CAN_FD_3_BUS_10_SLOTS;
+        if (!ec_can_fd_read_slot(raw, legacy, &frame) || frame.len > EC_CAN_SLOT_PAYLOAD_SIZE) {
+            return false;
+        }
+        *packet = to_motor_packet(&frame);
+        return true;
+    }
+    *packet = unpack_motor_slot(raw);
+    return packet->len != 0 && packet->len <= EC_CAN_SLOT_PAYLOAD_SIZE;
 }
 
 /**
@@ -287,6 +359,52 @@ static size_t detect_output_bytes(ec_master_t* master, uint16_t slave_pos, uint8
     return (output_bits + 7U) / 8U;
 }
 
+static bool find_420_byte_syncs(ec_master_t* master, uint16_t slave, uint8_t sync_count,
+                                EcSlaveOffsets* offsets) {
+    bool found_input = false;
+    bool found_output = false;
+    for (uint8_t sync = 0; sync < sync_count; ++sync) {
+        ec_sync_info_t info = {0};
+        if (ecrt_master_get_sync_manager(master, slave, sync, &info) != 0) {
+            return false;
+        }
+        if (info.n_pdos == 0) {
+            continue;
+        }
+        if ((info.dir != EC_DIR_INPUT && info.dir != EC_DIR_OUTPUT) ||
+            (info.dir == EC_DIR_INPUT ? found_input : found_output)) {
+            return false;
+        }
+        size_t bits = 0;
+        for (uint16_t pdo = 0; pdo < info.n_pdos; ++pdo) {
+            ec_pdo_info_t mapping = {0};
+            if (ecrt_master_get_pdo(master, slave, sync, pdo, &mapping) != 0 ||
+                mapping.n_entries == 0) {
+                return false;
+            }
+            for (uint16_t pos = 0; pos < mapping.n_entries; ++pos) {
+                ec_pdo_entry_info_t entry = {0};
+                if (ecrt_master_get_pdo_entry(master, slave, sync, pdo, pos, &entry) != 0 ||
+                    entry.bit_length == 0) {
+                    return false;
+                }
+                bits += entry.bit_length;
+            }
+        }
+        if (bits != 8 * EC_CAN_FD_3_BUS_10_SLOTS_SIZE) {
+            return false;
+        }
+        if (info.dir == EC_DIR_INPUT) {
+            found_input = true;
+            offsets->in_sync = sync;
+        } else {
+            found_output = true;
+            offsets->out_sync = sync;
+        }
+    }
+    return found_input && found_output;
+}
+
 /**
  * @brief 配置所有从站的 PDO 布局
  * @param[in,out] master 主站句柄
@@ -326,7 +444,13 @@ static bool configure_layouts(EcMaster* master) {
         }
 
         EcSlavePdoLayout* layout = &master->layout.slaves[slave];
-        if (ec_identify_pdo_layout(obytes, layout)) {
+        size_t ibytes = 0;
+        if (obytes == EC_CAN_FD_3_BUS_10_SLOTS_SIZE &&
+            find_420_byte_syncs(master->master, (uint16_t) slave, (uint8_t) slave_info.sync_count,
+                                &master->offsets[slave])) {
+            ibytes = EC_CAN_FD_3_BUS_10_SLOTS_SIZE;
+        }
+        if (ec_identify_pdo_layout_sizes(obytes, ibytes, layout)) {
             printf("slaveId=%zu ighSlave=%zu format=%s busCount=%zu slotsPerBus=%zu pdo=%zu\n",
                    slave, slave, format_name(layout->format), layout->bus_count,
                    layout->slots_per_bus, layout->pdo_size);
@@ -498,6 +622,34 @@ static bool configure_can_fd_slave(EcMaster* master, ec_slave_config_t* slave_co
     return true;
 }
 
+static void fill_slot_offsets(EcMotorOffsets* offsets, unsigned int start, size_t count) {
+    for (size_t slot = 0; slot < count; ++slot) {
+        const unsigned int base = start + (unsigned int) (slot * EC_CAN_SLOT_SIZE);
+        offsets[slot].id = base;
+        offsets[slot].frame_flags = base + 4;
+        offsets[slot].dlc = base + 5;
+        for (size_t i = 0; i < EC_CAN_SLOT_PAYLOAD_SIZE; ++i) {
+            offsets[slot].data[i] = base + 6 + (unsigned int) i;
+        }
+    }
+}
+
+static bool configure_420_byte_slave(EcMaster* master, ec_slave_config_t* config, size_t slave) {
+    EcSlaveOffsets* offsets = &master->offsets[slave];
+    const int output =
+        ecrt_slave_config_reg_pdo_entry_pos(config, offsets->out_sync, 0, 0, master->domain, NULL);
+    const int input =
+        ecrt_slave_config_reg_pdo_entry_pos(config, offsets->in_sync, 0, 0, master->domain, NULL);
+    if (output < 0 || input < 0) {
+        fprintf(stderr, "Failed to register 420-byte PDOs at IGH slave %zu.\n", slave);
+        return false;
+    }
+    const size_t count = layout_slot_count(&master->layout.slaves[slave]);
+    fill_slot_offsets(offsets->out_motor, (unsigned int) output, count);
+    fill_slot_offsets(offsets->in_motor, (unsigned int) input, count);
+    return true;
+}
+
 /**
  * @brief 配置域的 PDO Entry 注册
  * @param[in,out] master 主站句柄
@@ -531,6 +683,8 @@ static bool configure_domain_entries(EcMaster* master) {
         if (layout->format == EC_SLAVE_FORMAT_CLASSIC_CAN_2_BUS) {
             ok = configure_classic_slave(master, slave_config, regs, &reg_count, slave,
                                          EC_CLASSIC_CAN_2_BUS_SLOTS);
+        } else if (layout->format == EC_SLAVE_FORMAT_CAN_FD_3_BUS_10_SLOTS) {
+            ok = configure_420_byte_slave(master, slave_config, slave);
         } else {
             ok = configure_can_fd_slave(master, slave_config, regs, &reg_count, slave);
         }
@@ -634,38 +788,41 @@ void ec_master_close(EcMaster* master) {
     master->domain_pd = NULL;
     master->initialized = false;
     master->operational = false;
+    master->can_tx_count = 0;
+    memset(master->can_rx, 0, sizeof(master->can_rx));
 }
 
-/**
- * @brief 将报文写入域过程数据
- * @param[in,out] master 主站句柄
- * @param[in] offsets 偏移信息
- * @param[in] packet 要写入的报文
- */
-static void write_packet_to_domain(EcMaster* master, const EcMotorOffsets* offsets,
-                                   const MotorPackMsg* packet) {
-    EC_WRITE_U32(master->domain_pd + offsets->id, packet->id);
-    EC_WRITE_U8(master->domain_pd + offsets->frame_flags, packet->frame_flags);
-    EC_WRITE_U8(master->domain_pd + offsets->dlc, packet->len);
-    for (size_t i = 0; i < sizeof(packet->data); ++i) {
-        EC_WRITE_U8(master->domain_pd + offsets->data[i], packet->data[i]);
+static void write_slot_to_domain(EcMaster* master, const EcMotorOffsets* offsets,
+                                 const uint8_t* raw) {
+    memcpy(master->domain_pd + offsets->id, raw, 4);
+    master->domain_pd[offsets->frame_flags] = raw[4];
+    master->domain_pd[offsets->dlc] = raw[5];
+    for (size_t i = 0; i < EC_CAN_SLOT_PAYLOAD_SIZE; ++i) {
+        master->domain_pd[offsets->data[i]] = raw[6 + i];
     }
 }
 
-/**
- * @brief 从域过程数据读取报文
- * @param[in] master 主站句柄
- * @param[in] offsets 偏移信息
- * @param[out] packet 读取到的报文
- */
-static void read_packet_from_domain(const EcMaster* master, const EcMotorOffsets* offsets,
-                                    MotorPackMsg* packet) {
-    packet->id = EC_READ_U32(master->domain_pd + offsets->id);
-    packet->frame_flags = EC_READ_U8(master->domain_pd + offsets->frame_flags);
-    packet->len = EC_READ_U8(master->domain_pd + offsets->dlc);
-    for (size_t i = 0; i < sizeof(packet->data); ++i) {
-        packet->data[i] = EC_READ_U8(master->domain_pd + offsets->data[i]);
+static void read_slot_from_domain(const EcMaster* master, const EcMotorOffsets* offsets,
+                                  uint8_t* raw) {
+    memcpy(raw, master->domain_pd + offsets->id, 4);
+    raw[4] = master->domain_pd[offsets->frame_flags];
+    raw[5] = master->domain_pd[offsets->dlc];
+    for (size_t i = 0; i < EC_CAN_SLOT_PAYLOAD_SIZE; ++i) {
+        raw[6 + i] = master->domain_pd[offsets->data[i]];
     }
+}
+
+bool ec_master_send_can_frame(EcMaster* master, uint16_t slave_id, uint16_t bus_id,
+                              const EcCanFrame* frame) {
+    if (master == NULL || frame == NULL || !master->initialized || !master->operational ||
+        !ec_validate_target(&master->layout, slave_id, bus_id, 0) ||
+        !ec_is_can_fd_layout(&master->layout.slaves[slave_id]) ||
+        !ec_can_fd_frame_is_valid(frame) || master->can_tx_count >= EC_CAN_TX_QUEUE_CAPACITY) {
+        return false;
+    }
+    master->can_tx[master->can_tx_count++] =
+        (EcCanTxEntry){.frame = *frame, .slave_id = slave_id, .bus_id = bus_id};
+    return true;
 }
 
 /**
@@ -678,7 +835,8 @@ static void read_packet_from_domain(const EcMaster* master, const EcMotorOffsets
  */
 bool ec_master_send_packet(EcMaster* master, const MotorConfig* config, uint16_t slot,
                            const MotorPackMsg* packet) {
-    if (master == NULL || config == NULL || packet == NULL || !master->initialized) {
+    if (master == NULL || config == NULL || packet == NULL || !master->initialized ||
+        packet->len > EC_CAN_SLOT_PAYLOAD_SIZE) {
         return false;
     }
     if (!master->operational) {
@@ -691,6 +849,10 @@ bool ec_master_send_packet(EcMaster* master, const MotorConfig* config, uint16_t
     }
 
     const EcSlavePdoLayout* layout = &master->layout.slaves[config->slaveId];
+    uint8_t raw[EC_CAN_SLOT_SIZE];
+    if (!pack_motor_slot(raw, layout, packet)) {
+        return false;
+    }
     const size_t motor_slot = ((size_t) config->busId * layout->slots_per_bus) + slot;
     EcSlaveOffsets* slave_offsets = &master->offsets[config->slaveId];
 
@@ -704,8 +866,78 @@ bool ec_master_send_packet(EcMaster* master, const MotorConfig* config, uint16_t
         }
     }
 
-    write_packet_to_domain(master, &slave_offsets->out_motor[motor_slot], packet);
+    write_slot_to_domain(master, &slave_offsets->out_motor[motor_slot], raw);
     return true;
+}
+
+static size_t find_empty_run(const EcMaster* master, const EcMotorOffsets* offsets, size_t first,
+                             size_t limit, size_t count) {
+    size_t free_slots = 0;
+    for (size_t slot = first; slot < limit; ++slot) {
+        if (master->domain_pd[offsets[slot].dlc] == 0) {
+            if (++free_slots == count) {
+                return slot + 1 - count;
+            }
+        } else {
+            free_slots = 0;
+        }
+    }
+    return limit;
+}
+
+static void flush_can_output(EcMaster* master) {
+    size_t next_slot[16][8] = {0};
+    size_t remaining = 0;
+    for (size_t i = 0; i < master->can_tx_count; ++i) {
+        const EcCanTxEntry* entry = &master->can_tx[i];
+        const size_t slave = entry->slave_id;
+        const size_t bus = entry->bus_id;
+        const size_t limit = master->layout.slaves[slave].slots_per_bus;
+        const EcMotorOffsets* offsets = master->offsets[slave].out_motor + bus * limit;
+        const size_t count = ec_can_slots_for_length(entry->frame.len);
+        const size_t slot = find_empty_run(master, offsets, next_slot[slave][bus], limit, count);
+        if (slot == limit) {
+            next_slot[slave][bus] = limit;
+            master->can_tx[remaining++] = *entry;
+            continue;
+        }
+
+        uint8_t raw[8 * EC_CAN_SLOT_SIZE];
+        ec_can_fd_write_frame(raw, &entry->frame);
+        for (size_t part = 0; part < count; ++part) {
+            write_slot_to_domain(master, &offsets[slot + part], raw + part * EC_CAN_SLOT_SIZE);
+        }
+        next_slot[slave][bus] = slot + count;
+    }
+    master->can_tx_count = remaining;
+}
+
+static uint64_t monotonic_now_ns(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return 0;
+    }
+    return (uint64_t) now.tv_sec * 1000000000U + (uint64_t) now.tv_nsec;
+}
+
+static void process_motor_packet(EcMaster* master, uint16_t slave, uint16_t bus, uint16_t slot,
+                                 const MotorPackMsg* packet) {
+    if (external_device_process_packet(&master->external_devices[slave][bus], packet) ==
+        EXTERNAL_DEVICE_FRAME_MOTOR) {
+        printf("rx slaveId=%u busId=%u slot=%u ", slave, bus, slot);
+        motor_print_received_packet(packet, 30.0f);
+    }
+}
+
+static void deliver_can_frame(EcMaster* master, uint16_t slave, uint16_t bus, uint16_t slot,
+                              const EcCanFrame* frame, EcCanFrameHandler handler, void* user_data) {
+    if (handler != NULL) {
+        handler(slave, bus, frame, user_data);
+    }
+    if (frame->len <= EC_CAN_SLOT_PAYLOAD_SIZE) {
+        const MotorPackMsg packet = to_motor_packet(frame);
+        process_motor_packet(master, slave, bus, slot, &packet);
+    }
 }
 
 /**
@@ -726,8 +958,8 @@ static void clear_outputs(EcMaster* master) {
         }
         const size_t slot_count = layout_slot_count(layout);
         for (size_t slot = 0; slot < slot_count; ++slot) {
-            MotorPackMsg empty = {0};
-            write_packet_to_domain(master, &offsets->out_motor[slot], &empty);
+            const uint8_t empty[EC_CAN_SLOT_SIZE] = {0};
+            write_slot_to_domain(master, &offsets->out_motor[slot], empty);
         }
     }
 }
@@ -794,7 +1026,12 @@ static void update_link(EcMaster* master, bool all_operational, bool valid_wkc) 
  * @return 工作计数器完整返回 true，否则返回 false
  */
 bool ec_master_cycle(EcMaster* master) {
-    if (master == NULL || !master->initialized) {
+    return ec_master_cycle_with_can_handler(master, EC_DEFAULT_CYCLE_PERIOD_US, NULL, NULL);
+}
+
+bool ec_master_cycle_with_can_handler(EcMaster* master, uint32_t cycle_period_us,
+                                      EcCanFrameHandler handler, void* user_data) {
+    if (master == NULL || !master->initialized || cycle_period_us == 0) {
         return false;
     }
 
@@ -826,33 +1063,58 @@ bool ec_master_cycle(EcMaster* master) {
         clear_outputs(master);
     }
     if (!master->operational || !valid_wkc) {
+        memset(master->can_rx, 0, sizeof(master->can_rx));
+        if (!master->operational) {
+            master->can_tx_count = 0;
+        }
         ecrt_domain_queue(master->domain);
         ecrt_master_send(master->master);
         clear_outputs(master);
         return false;
     }
 
-    for (size_t slave = 0; slave < master->layout.slave_count; ++slave) {
+    const uint64_t now = monotonic_now_ns();
+    if (now == 0) {
+        memset(master->can_rx, 0, sizeof(master->can_rx));
+    }
+    const uint64_t deadline_ns = now + (uint64_t) cycle_period_us * 2000U;
+    for (uint16_t slave = 0; slave < master->layout.slave_count; ++slave) {
         const EcSlavePdoLayout* layout = &master->layout.slaves[slave];
         if (layout->format == EC_SLAVE_FORMAT_NONE) {
             continue;
         }
+        const bool can_fd = ec_is_can_fd_layout(layout);
+        const bool legacy = layout->format != EC_SLAVE_FORMAT_CAN_FD_3_BUS_10_SLOTS;
         const EcSlaveOffsets* offsets = &master->offsets[slave];
         for (uint16_t bus = 0; bus < layout->bus_count; ++bus) {
+            EcCanFdGroup* groups = master->can_rx[slave][bus];
+            if (can_fd) {
+                ec_can_fd_begin_input(groups, now);
+            }
             for (uint16_t slot = 0; slot < layout->slots_per_bus; ++slot) {
                 const size_t motor_slot = ((size_t) bus * layout->slots_per_bus) + slot;
-                MotorPackMsg packet = {0};
-                read_packet_from_domain(master, &offsets->in_motor[motor_slot], &packet);
-                if (packet.len != 0 &&
-                    external_device_process_packet(&master->external_devices[slave][bus],
-                                                   &packet) == EXTERNAL_DEVICE_FRAME_MOTOR) {
-                    printf("rx slaveId=%zu busId=%u slot=%u ", slave, bus, slot);
-                    motor_print_received_packet(&packet, 30.0f);
+                uint8_t raw[EC_CAN_SLOT_SIZE];
+                read_slot_from_domain(master, &offsets->in_motor[motor_slot], raw);
+                if (can_fd) {
+                    EcCanFrame frame;
+                    const bool complete =
+                        now != 0 ? ec_can_fd_receive_slot(raw, legacy, groups, deadline_ns, &frame)
+                                 : ec_can_fd_read_slot(raw, legacy, &frame) &&
+                                       frame.len <= EC_CAN_SLOT_PAYLOAD_SIZE;
+                    if (complete) {
+                        deliver_can_frame(master, slave, bus, slot, &frame, handler, user_data);
+                    }
+                } else {
+                    const MotorPackMsg packet = unpack_motor_slot(raw);
+                    if (packet.len != 0 && packet.len <= EC_CAN_SLOT_PAYLOAD_SIZE) {
+                        process_motor_packet(master, slave, bus, slot, &packet);
+                    }
                 }
             }
         }
     }
 
+    flush_can_output(master);
     ecrt_domain_queue(master->domain);
     ecrt_master_send(master->master);
     clear_outputs(master);

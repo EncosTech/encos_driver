@@ -32,6 +32,7 @@ typedef enum {
     EC_SLAVE_FORMAT_CAN_FD_3_BUS,          /*!< CAN FD，3 路总线 */
     EC_SLAVE_FORMAT_CAN_FD_8_BUS,          /*!< CAN FD，8 路总线 */
     EC_SLAVE_FORMAT_CAN_FD_8_BUS_10_SLOTS, /*!< CAN FD，8 路总线，每路 10 槽位 */
+    EC_SLAVE_FORMAT_CAN_FD_3_BUS_10_SLOTS, /*!< CAN FD，3 路总线，每路 10 槽位 */
 } EcSlaveFormat;
 
 /** @brief 单个从站的 PDO 布局信息 */
@@ -65,7 +66,42 @@ typedef struct {
     unsigned int in_motor_num;    /*!< 输入电机数量偏移 */
     unsigned int in_can_ide;      /*!< 输入 CAN IDE 偏移 */
     EcMotorOffsets in_motor[80];  /*!< 输入电机偏移数组 */
+    uint8_t out_sync;             /*!< 420 字节输出同步管理器编号 */
+    uint8_t in_sync;              /*!< 420 字节输入同步管理器编号 */
 } EcSlaveOffsets;
+
+/** @brief 完整的 CAN 报文，FRAME 仅含 EXT、FD、BRS 和 RTR 位 */
+typedef struct {
+    uint32_t id;         /**< CAN ID */
+    uint8_t frame_flags; /**< 低四位 CAN 标志 */
+    uint8_t len;         /**< 整帧有效载荷字节数 */
+    uint8_t data[64];    /**< 整帧数据，RTR 数据清零 */
+} EcCanFrame;
+
+/** @brief 每周期在收到完整 CAN 报文时调用，报文指针仅在本次调用中有效 */
+typedef void (*EcCanFrameHandler)(uint16_t slave_id, uint16_t bus_id, const EcCanFrame* frame,
+                                  void* user_data);
+
+enum {
+    EC_CAN_FD_GROUPS_PER_BUS = 5,
+    EC_CAN_TX_QUEUE_CAPACITY = 64,
+    EC_DEFAULT_CYCLE_PERIOD_US = 1000,
+};
+
+/** @brief 主站内部 CAN FD 分片重组状态 */
+typedef struct {
+    EcCanFrame frame;
+    uint64_t deadline_ns;
+    unsigned int received;
+    bool from_previous_pdo;
+} EcCanFdGroup;
+
+/** @brief 主站内部 CAN 发送队列项 */
+typedef struct {
+    EcCanFrame frame;
+    uint16_t slave_id;
+    uint16_t bus_id;
+} EcCanTxEntry;
 
 /** @brief IgH EtherCAT 主站句柄 */
 typedef struct {
@@ -86,15 +122,27 @@ typedef struct {
     unsigned int wkc_error_count;     /**< 当前 100 周期窗口内的坏 WKC 次数 */
     unsigned int wkc_error_iteration; /**< 当前错误统计窗口的周期数 */
     bool initialized;                 /*!< 是否已初始化 */
+    EcCanFdGroup can_rx[16][8][EC_CAN_FD_GROUPS_PER_BUS]; /**< 各通道的接收重组区 */
+    EcCanTxEntry can_tx[EC_CAN_TX_QUEUE_CAPACITY]; /**< 尚未放入输出 PDO 的 CAN 报文 */
+    size_t can_tx_count;                           /**< 待发送报文数量 */
 } EcMaster;
 
 /**
- * @brief 根据输出 PDO 字节数识别从站布局格式
+ * @brief 根据输出 PDO 字节数识别既有从站布局
  * @param[in] obytes 输出 PDO 字节数
  * @param[out] layout 布局信息输出
  * @return 识别成功返回 true，不支持返回 false
  */
 bool ec_identify_pdo_layout(size_t obytes, EcSlavePdoLayout* layout);
+
+/**
+ * @brief 根据双向 PDO 字节数识别从站布局，420 字节布局要求双向尺寸一致
+ * @param[in] obytes 输出 PDO 字节数
+ * @param[in] ibytes 输入 PDO 字节数
+ * @param[out] layout 布局信息输出
+ * @return 识别成功返回 true
+ */
+bool ec_identify_pdo_layout_sizes(size_t obytes, size_t ibytes, EcSlavePdoLayout* layout);
 
 /**
  * @brief 验证目标从站/总线/槽位是否有效
@@ -187,12 +235,34 @@ bool ec_master_send_packet(EcMaster* master, const MotorConfig* config, uint16_t
                            const MotorPackMsg* packet);
 
 /**
+ * @brief 按总线 FIFO 提交完整 CAN 报文，每帧在同一 PDO 周期发送全部分片
+ * @param[in,out] master 主站句柄
+ * @param[in] slave_id 从站编号
+ * @param[in] bus_id 总线编号
+ * @param[in] frame 长度为 1～64 字节的报文，超过 8 字节需要 FD 标志
+ * @return 就绪且成功入队返回 true，参数无效、非 CAN FD PDO 布局或队列已满返回 false
+ */
+bool ec_master_send_can_frame(EcMaster* master, uint16_t slave_id, uint16_t bus_id,
+                              const EcCanFrame* frame);
+
+/**
  * @brief 执行一次 EtherCAT 周期循环（接收、处理、发送）
  * @param[in,out] master 主站句柄
  * @return 全部已配置从站为 OP 且本周期 WKC 有效返回 true，恢复期间返回 false
  * @note 断联后应继续调用本函数以驱动自动恢复；恢复期间丢弃新命令并交换空 PDO
  */
 bool ec_master_cycle(EcMaster* master);
+
+/**
+ * @brief 按指定周期执行 EtherCAT 交换，并回调 CAN FD 布局上收到的完整 CAN 报文
+ * @param[in,out] master 主站句柄
+ * @param[in] cycle_period_us 调用者配置的循环周期，单位微秒，必须大于 0
+ * @param[in] handler 原始 CAN 报文回调，可为 NULL
+ * @param[in,out] user_data 传给回调的应用数据
+ * @return 全部从站为 OP 且本周期 WKC 有效返回 true
+ */
+bool ec_master_cycle_with_can_handler(EcMaster* master, uint32_t cycle_period_us,
+                                      EcCanFrameHandler handler, void* user_data);
 
 /**
  * @brief 打印主站布局信息
